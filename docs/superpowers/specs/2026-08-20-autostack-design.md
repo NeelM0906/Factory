@@ -1,6 +1,6 @@
 # AutoStack Product and Architecture Design
 
-**Status:** Approved architecture, written specification pending final review  
+**Status:** Approved
 **Date:** 2026-08-20  
 **Product:** AutoStack  
 **Delivery target:** Personal local-first milestone followed by a one-organization team pilot
