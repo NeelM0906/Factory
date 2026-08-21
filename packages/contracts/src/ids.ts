@@ -1,5 +1,3 @@
-import { randomUUID } from "node:crypto";
-
 import { z } from "zod";
 
 export const ID_PREFIX = {
@@ -92,7 +90,9 @@ const ID_SCHEMAS = {
   job: JobIdSchema
 } as const;
 
-export function createId<K extends IdKind>(kind: K, uuid: string = randomUUID()): IdFor<K> {
+const secureRandomUuid = (): string => globalThis.crypto.randomUUID();
+
+export function createId<K extends IdKind>(kind: K, uuid: string = secureRandomUuid()): IdFor<K> {
   const validUuid = z.uuid().parse(uuid);
   return ID_SCHEMAS[kind].parse(`${ID_PREFIX[kind]}_${validUuid}`) as IdFor<K>;
 }
@@ -113,7 +113,7 @@ export interface IdFactory {
   job(): JobId;
 }
 
-export function createIdFactory(random: () => string = randomUUID): IdFactory {
+export function createIdFactory(random: () => string = secureRandomUuid): IdFactory {
   const generate =
     <K extends IdKind>(kind: K) =>
     () =>
