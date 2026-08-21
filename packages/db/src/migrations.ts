@@ -53,6 +53,7 @@ export const MIGRATIONS: readonly Migration[] = [
         lease_token TEXT,
         lease_expires_at TEXT,
         heartbeat_at TEXT,
+        last_error_json TEXT,
         created_at TEXT NOT NULL,
         updated_at TEXT NOT NULL
       )`,
