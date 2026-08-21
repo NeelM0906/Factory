@@ -117,8 +117,7 @@ const hasImplicitWrapperShellCommandString = (
 ): boolean => {
   if (executable !== "sudo" && executable !== "doas") return false;
   return args.some(
-    (argument) =>
-      argument === "-s" || argument === "--shell" || argument === "-i" || argument === "--login"
+    (argument) => /^-[^-]*[si]/.test(argument) || argument === "--shell" || argument === "--login"
   );
 };
 const isForbiddenShellCommandString = (command: {

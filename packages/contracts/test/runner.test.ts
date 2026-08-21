@@ -182,6 +182,8 @@ describe("local runner contracts", () => {
       { executable: "sudo", args: ["-n", "zsh", "-c", "echo safe"] },
       { executable: "sudo", args: ["-s", "-c", "echo safe"] },
       { executable: "sudo", args: ["--shell"] },
+      { executable: "sudo", args: ["-ns"] },
+      { executable: "doas", args: ["-ni"] },
       { executable: "busybox", args: ["sh", "-c", "echo safe"] },
       { executable: "busybox", args: ["ash", "-c", "echo safe"] },
       { executable: "nice", args: ["sh", "-c", "echo safe"] },
