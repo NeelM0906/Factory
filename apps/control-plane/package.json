@@ -1,0 +1,23 @@
+{
+  "name": "@autostack/control-plane",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "tsx watch src/server.ts",
+    "build": "tsup",
+    "start": "node dist/server.js",
+    "check": "tsc -p tsconfig.json --noEmit",
+    "test": "vitest run",
+    "test:coverage": "vitest run --coverage"
+  },
+  "dependencies": {
+    "@autostack/contracts": "workspace:*",
+    "@autostack/db": "workspace:*",
+    "@autostack/domain": "workspace:*",
+    "@autostack/workflow": "workspace:*",
+    "@hono/node-server": "^1.19.1",
+    "hono": "^4.9.6",
+    "zod": "^4.1.5"
+  }
+}

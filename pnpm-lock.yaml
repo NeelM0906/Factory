@@ -33,6 +33,30 @@ importers:
         specifier: ^4.1.1
         version: 4.1.11(@types/node@24.13.3)(@vitest/coverage-v8@4.1.11)(vite@8.2.2(@types/node@24.13.3)(esbuild@0.27.7)(tsx@4.23.12))
 
+  apps/control-plane:
+    dependencies:
+      '@autostack/contracts':
+        specifier: workspace:*
+        version: link:../../packages/contracts
+      '@autostack/db':
+        specifier: workspace:*
+        version: link:../../packages/db
+      '@autostack/domain':
+        specifier: workspace:*
+        version: link:../../packages/domain
+      '@autostack/workflow':
+        specifier: workspace:*
+        version: link:../../packages/workflow
+      '@hono/node-server':
+        specifier: ^1.19.1
+        version: 1.19.17(hono@4.13.3)
+      hono:
+        specifier: ^4.9.6
+        version: 4.13.3
+      zod:
+        specifier: ^4.1.5
+        version: 4.4.3
+
   packages/contracts:
     dependencies:
       zod:
@@ -404,6 +428,12 @@ packages:
     engines: {node: '>=18'}
     cpu: [x64]
     os: [win32]
+
+  '@hono/node-server@1.19.17':
+    resolution: {integrity: sha512-dSneS5qhiauZWGDCeK4o695Xd9nUNjviSZCMQrj10eetr8Uln1ucn6bbphOM6UynAMMtNIzZNSpL9vnASJwrPQ==}
+    engines: {node: '>=18.14.1'}
+    peerDependencies:
+      hono: ^4
 
   '@jridgewell/gen-mapping@0.3.13':
     resolution: {integrity: sha512-2kkt/7niJ6MgEPxF0bYdQ6etZaA+fQvDcLKckhy1yIQOzaoKjBBjSj63/aLVjYE3qhRt5dvM+uUyfCg6UKCBbA==}
@@ -828,6 +858,10 @@ packages:
   has-flag@4.0.0:
     resolution: {integrity: sha512-EykJT/Q1KjTWctppgIAgfSO0tKVuZUjhgMr17kqTumMl6Afv3EISleU7qZUzoXDFTAHTDC4NOoG/ZxU3EvlMPQ==}
     engines: {node: '>=8'}
+
+  hono@4.13.3:
+    resolution: {integrity: sha512-r8AO2mYHoLxSHkgafNeC/BXyb2vWRxD3jem4Ts+ptav8oTG5FIRifAjuJEmZI4bSvvc2ns0GxmIYiZnHqN3mMw==}
+    engines: {node: '>=16.9.0'}
 
   html-escaper@2.0.2:
     resolution: {integrity: sha512-H2iMtd0I4Mt5eYiapRdIDjp+XzelXQ0tFE4JS7YFwFevXXMmOp9myNrUvCg0D6ws8iqkRPBfKHgbwig1SmlLfg==}
@@ -1393,6 +1427,10 @@ snapshots:
   '@esbuild/win32-x64@0.28.2':
     optional: true
 
+  '@hono/node-server@1.19.17(hono@4.13.3)':
+    dependencies:
+      hono: 4.13.3
+
   '@jridgewell/gen-mapping@0.3.13':
     dependencies:
       '@jridgewell/sourcemap-codec': 1.5.5
@@ -1741,6 +1779,8 @@ snapshots:
     optional: true
 
   has-flag@4.0.0: {}
+
+  hono@4.13.3: {}
 
   html-escaper@2.0.2: {}
 
