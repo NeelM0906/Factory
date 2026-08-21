@@ -33,6 +33,12 @@ importers:
         specifier: ^4.1.1
         version: 4.1.11(@types/node@24.13.3)(@vitest/coverage-v8@4.1.11)(vite@8.2.2(@types/node@24.13.3)(esbuild@0.27.7)(tsx@4.23.12))
 
+  apps/cli:
+    dependencies:
+      '@autostack/contracts':
+        specifier: workspace:*
+        version: link:../../packages/contracts
+
   apps/control-plane:
     dependencies:
       '@autostack/contracts':
