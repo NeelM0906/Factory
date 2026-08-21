@@ -201,6 +201,10 @@ describe("local runner contracts", () => {
       { executable: "/usr/bin/YASH", args: ["-c", "echo safe"] },
       { executable: "ksh93", args: ["-c", "echo safe"] },
       { executable: "rksh93", args: ["-c", "echo safe"] },
+      { executable: "oksh", args: ["-c", "echo safe"] },
+      { executable: "loksh", args: ["-c", "echo safe"] },
+      { executable: "pdksh", args: ["-c", "echo safe"] },
+      { executable: "wrapper-probe", args: ["oksh", "-c", "echo safe"] },
       { executable: "C:\\Program Files\\PowerShell\\pwsh.exe", args: ["-Command", "echo safe"] },
       { executable: "nu", args: ["--commands", "echo safe"] },
       { executable: "nu", args: ["--commands=echo safe"] },
@@ -303,6 +307,12 @@ describe("local runner contracts", () => {
     ).toThrow(/resolved shell command-string/i);
     expect(() =>
       assertResolvedCommandDoesNotUseShellCommandString("/opt/bin/ksh93", ["-c", "echo safe"])
+    ).toThrow(/resolved shell command-string/i);
+    expect(() =>
+      assertResolvedCommandDoesNotUseShellCommandString("/opt/homebrew/bin/oksh", [
+        "-c",
+        "echo safe"
+      ])
     ).toThrow(/resolved shell command-string/i);
     expect(() =>
       assertResolvedCommandDoesNotUseShellCommandString("/opt/bin/pwsh", ["–Command", "echo safe"])

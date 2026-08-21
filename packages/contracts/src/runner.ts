@@ -89,7 +89,7 @@ const ShellLikeExecutableBasenames = new Set([
   "tclsh"
 ]);
 const ShellFamilyBasenamePattern =
-  /^(?:sh|bash|zsh|dash|ksh(?:93)?|rksh(?:93)?|mksh|yash|ash|hush|csh|tcsh|xonsh|posh|osh|ysh)(?:[-_.].*)?$/;
+  /^(?:sh|bash|zsh|dash|[a-z]{0,3}ksh(?:[0-9]+)?|yash|ash|hush|csh|tcsh|xonsh|posh|osh|ysh)(?:[-_.].*)?$/;
 const TransitiveCommandWrapperBasenames = new Set([
   "env",
   "sudo",
