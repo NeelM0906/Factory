@@ -105,12 +105,66 @@ const eventBodies = [
 ] as const;
 
 describe("domain event contracts", () => {
+  it("records only safe canonical local execution evidence on the run stream", () => {
+    const authorization = {
+      id: "envauth_123e4567-e89b-42d3-a456-426614174000",
+      digest: "a".repeat(64),
+      approvalId: APPROVAL_ID,
+      approvalEvidenceDigest: "b".repeat(64),
+      scope: {
+        workspaceId: WORKSPACE_ID,
+        runId: RUN_ID,
+        environmentId: "env_123e4567-e89b-42d3-a456-426614174000",
+        repositoryIdentity: "github:autostack/contracts",
+        sourceCommit: "c".repeat(40),
+        branch: "autostack/event-evidence",
+        cwdRoot: ".",
+        resourceLimits: { cpu: 2, memoryMb: 2048, durationSeconds: 600 },
+        networkPolicy: "host",
+        filesystemDisclosure: "host_user",
+        allowedCredentialRefIds: []
+      },
+      createdAt: NOW,
+      expiresAt: "2026-08-21T13:00:00.000Z"
+    };
+    const recorded = PendingDomainEventSchema.parse({
+      ...context,
+      type: "environment.authorization_recorded",
+      payload: { runId: RUN_ID, environmentId: authorization.scope.environmentId, authorization }
+    });
+    expect(recorded.type).toBe("environment.authorization_recorded");
+    expect(() =>
+      PendingDomainEventSchema.parse({
+        ...context,
+        type: "environment.authorization_recorded",
+        payload: {
+          runId: RUN_ID,
+          environmentId: authorization.scope.environmentId,
+          authorization: {
+            ...authorization,
+            scope: { ...authorization.scope, repositoryIdentity: "ghp_0123456789abcdefghijklmnop" }
+          }
+        }
+      })
+    ).toThrow();
+    expect(() =>
+      PendingDomainEventSchema.parse({
+        ...context,
+        workspaceId: "ws_123e4567-e89b-42d3-a456-426614174099",
+        type: "environment.authorization_recorded",
+        payload: { runId: RUN_ID, environmentId: authorization.scope.environmentId, authorization }
+      })
+    ).toThrow();
+  });
+
   it("covers every declared event type with a valid payload fixture", () => {
     const parsedTypes = eventBodies.map((body) =>
       PendingDomainEventSchema.parse({ ...context, ...body })
     );
 
-    expect(parsedTypes.map(({ type }) => type)).toEqual(EVENT_TYPES);
+    expect(parsedTypes.map(({ type }) => type)).toEqual(EVENT_TYPES.slice(0, eventBodies.length));
+    expect(EVENT_TYPES).toContain("environment.authorization_recorded");
+    expect(EVENT_TYPES).toContain("environment.disposed");
   });
 
   it("rejects an unknown event type", () => {

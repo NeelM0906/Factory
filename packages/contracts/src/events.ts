@@ -3,6 +3,7 @@ import { z } from "zod";
 import {
   ActorSchema,
   ApprovalSchema,
+  ArtifactSchema,
   RunSchema,
   RunStageSchema,
   RunStatusSchema,
@@ -10,11 +11,23 @@ import {
 } from "./entities.js";
 import {
   ApprovalIdSchema,
+  CommandAuthorizationIdSchema,
+  CommandIdSchema,
+  EnvironmentAuthorizationIdSchema,
+  EnvironmentIdSchema,
   EventIdSchema,
   JobIdSchema,
   RunIdSchema,
   WorkspaceIdSchema
 } from "./ids.js";
+import {
+  ArtifactDescriptorSchema,
+  CommandAuthorizationSchema,
+  EnvironmentAuthorizationSchema,
+  PrepareEnvironmentRequestSchema,
+  PreparedEnvironmentSchema,
+  StartCommandRequestSchema
+} from "./runner.js";
 import { WorkflowFailureSchema } from "./workflow-failure.js";
 
 export const EVENT_TYPES = [
@@ -26,7 +39,16 @@ export const EVENT_TYPES = [
   "stage.succeeded",
   "stage.failed",
   "approval.requested",
-  "approval.decided"
+  "approval.decided",
+  "environment.authorization_recorded",
+  "command.authorization_recorded",
+  "environment.prepare_requested",
+  "environment.prepared",
+  "command.intent_recorded",
+  "command.started",
+  "command.completed",
+  "artifact.recorded",
+  "environment.disposed"
 ] as const;
 
 const EventContextSchema = z.object({
@@ -125,6 +147,145 @@ const DomainEventBodySchema = z.discriminatedUnion("type", [
         })
         .strict()
     })
+    .strict(),
+  z
+    .object({
+      type: z.literal("environment.authorization_recorded"),
+      payload: z
+        .object({
+          runId: RunIdSchema,
+          environmentId: EnvironmentIdSchema,
+          authorization: EnvironmentAuthorizationSchema
+        })
+        .strict()
+    })
+    .strict()
+    .superRefine((value, context) => {
+      const scope = value.payload.authorization.scope;
+      if (
+        scope.runId !== value.payload.runId ||
+        scope.environmentId !== value.payload.environmentId
+      ) {
+        context.addIssue({
+          code: "custom",
+          path: ["payload"],
+          message: "Environment authorization identity is invalid."
+        });
+      }
+    }),
+  z
+    .object({
+      type: z.literal("command.authorization_recorded"),
+      payload: z
+        .object({
+          runId: RunIdSchema,
+          environmentId: EnvironmentIdSchema,
+          commandId: CommandIdSchema,
+          authorization: CommandAuthorizationSchema
+        })
+        .strict()
+    })
+    .strict()
+    .superRefine((value, context) => {
+      const scope = value.payload.authorization.scope;
+      if (
+        scope.runId !== value.payload.runId ||
+        scope.environmentId !== value.payload.environmentId ||
+        scope.commandId !== value.payload.commandId
+      ) {
+        context.addIssue({
+          code: "custom",
+          path: ["payload"],
+          message: "Command authorization identity is invalid."
+        });
+      }
+    }),
+  z
+    .object({
+      type: z.literal("environment.prepare_requested"),
+      payload: z.object({ request: PrepareEnvironmentRequestSchema }).strict()
+    })
+    .strict(),
+  z
+    .object({
+      type: z.literal("environment.prepared"),
+      payload: z.object({ environment: PreparedEnvironmentSchema }).strict()
+    })
+    .strict(),
+  z
+    .object({
+      type: z.literal("command.intent_recorded"),
+      payload: z.object({ request: StartCommandRequestSchema }).strict()
+    })
+    .strict(),
+  z
+    .object({
+      type: z.literal("command.started"),
+      payload: z
+        .object({
+          runId: RunIdSchema,
+          environmentId: EnvironmentIdSchema,
+          commandId: CommandIdSchema,
+          startedAt: z.iso.datetime()
+        })
+        .strict()
+    })
+    .strict(),
+  z
+    .object({
+      type: z.literal("command.completed"),
+      payload: z
+        .object({
+          runId: RunIdSchema,
+          environmentId: EnvironmentIdSchema,
+          commandId: CommandIdSchema,
+          terminalSequence: z.number().int().positive(),
+          terminalDigest: z.string().regex(/^[0-9a-f]{64}$/i),
+          status: z.enum(["completed", "cancelled", "failed"]),
+          completedAt: z.iso.datetime()
+        })
+        .strict()
+    })
+    .strict(),
+  z
+    .object({
+      type: z.literal("artifact.recorded"),
+      payload: z
+        .object({
+          runId: RunIdSchema,
+          environmentId: EnvironmentIdSchema,
+          commandId: CommandIdSchema,
+          artifact: ArtifactDescriptorSchema
+        })
+        .strict()
+    })
+    .strict()
+    .superRefine((value, context) => {
+      if (
+        value.payload.artifact.runId !== value.payload.runId ||
+        value.payload.artifact.commandId !== value.payload.commandId
+      ) {
+        context.addIssue({
+          code: "custom",
+          path: ["payload", "artifact"],
+          message: "Artifact identity is invalid."
+        });
+      }
+    }),
+  z
+    .object({
+      type: z.literal("environment.disposed"),
+      payload: z
+        .object({
+          runId: RunIdSchema,
+          environmentId: EnvironmentIdSchema,
+          environmentAuthorizationId: EnvironmentAuthorizationIdSchema,
+          terminalEventSequence: z.number().int().positive(),
+          terminalEventDigest: z.string().regex(/^[0-9a-f]{64}$/i),
+          disposedAt: z.iso.datetime()
+        })
+        .strict()
+    })
     .strict()
 ]);
 
@@ -141,7 +302,41 @@ const StoredEventMetadataSchema = z.object({
   schemaVersion: z.literal(1)
 });
 
-export const PendingDomainEventSchema = EventContextSchema.and(DomainEventBodySchema);
+export const PendingDomainEventSchema = EventContextSchema.and(DomainEventBodySchema).superRefine(
+  (event, context) => {
+    const mismatchedWorkspace = (workspaceId: string) => {
+      if (event.workspaceId !== workspaceId) {
+        context.addIssue({
+          code: "custom",
+          path: ["workspaceId"],
+          message: "Event workspace does not match local execution evidence."
+        });
+      }
+    };
+    switch (event.type) {
+      case "environment.authorization_recorded":
+        mismatchedWorkspace(event.payload.authorization.scope.workspaceId);
+        break;
+      case "command.authorization_recorded":
+        mismatchedWorkspace(event.payload.authorization.scope.workspaceId);
+        break;
+      case "environment.prepare_requested":
+        mismatchedWorkspace(event.payload.request.workspaceId);
+        break;
+      case "environment.prepared":
+        mismatchedWorkspace(event.payload.environment.workspaceId);
+        break;
+      case "command.intent_recorded":
+        mismatchedWorkspace(event.payload.request.workspaceId);
+        break;
+      case "artifact.recorded":
+        mismatchedWorkspace(event.payload.artifact.workspaceId);
+        break;
+      default:
+        break;
+    }
+  }
+);
 export type PendingDomainEvent = z.infer<typeof PendingDomainEventSchema>;
 
 export const domainEventIdentity = (event: PendingDomainEvent) => {
@@ -163,6 +358,24 @@ export const domainEventIdentity = (event: PendingDomainEvent) => {
         kind: "run" as const,
         id: event.payload.approval.runId,
         workspaceId: event.payload.approval.workspaceId
+      };
+    case "environment.prepared":
+      return {
+        kind: "run" as const,
+        id: event.payload.environment.runId,
+        workspaceId: event.payload.environment.workspaceId
+      };
+    case "environment.prepare_requested":
+      return {
+        kind: "run" as const,
+        id: event.payload.request.runId,
+        workspaceId: event.payload.request.workspaceId
+      };
+    case "command.intent_recorded":
+      return {
+        kind: "run" as const,
+        id: event.payload.request.runId,
+        workspaceId: event.payload.request.workspaceId
       };
     default:
       return { kind: "run" as const, id: event.payload.runId, workspaceId: event.workspaceId };

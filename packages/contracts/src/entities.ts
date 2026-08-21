@@ -244,7 +244,7 @@ export const EnvironmentSchema = z
     sourceCommit: z.string().regex(/^[0-9a-f]{40}$/i),
     branch: z.string().min(1),
     workspacePath: z.string().min(1).optional(),
-    networkPolicy: z.enum(["none", "restricted", "repository"]),
+    networkPolicy: z.enum(["host", "none", "restricted", "repository"]),
     resourceLimits: z
       .object({
         cpu: z.number().positive(),

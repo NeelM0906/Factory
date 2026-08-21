@@ -8,6 +8,10 @@ export const ID_PREFIX = {
   stageRun: "stage",
   agentSession: "agt",
   environment: "env",
+  command: "cmd",
+  environmentAuthorization: "envauth",
+  commandAuthorization: "cmdauth",
+  repositoryCapability: "repocap",
   approval: "apr",
   artifact: "art",
   automation: "aut",
@@ -35,6 +39,19 @@ export const RunIdSchema = schemaFor(ID_PREFIX.run, "RunId");
 export const StageRunIdSchema = schemaFor(ID_PREFIX.stageRun, "StageRunId");
 export const AgentSessionIdSchema = schemaFor(ID_PREFIX.agentSession, "AgentSessionId");
 export const EnvironmentIdSchema = schemaFor(ID_PREFIX.environment, "EnvironmentId");
+export const CommandIdSchema = schemaFor(ID_PREFIX.command, "CommandId");
+export const EnvironmentAuthorizationIdSchema = schemaFor(
+  ID_PREFIX.environmentAuthorization,
+  "EnvironmentAuthorizationId"
+);
+export const CommandAuthorizationIdSchema = schemaFor(
+  ID_PREFIX.commandAuthorization,
+  "CommandAuthorizationId"
+);
+export const RepositoryCapabilityIdSchema = schemaFor(
+  ID_PREFIX.repositoryCapability,
+  "RepositoryCapabilityId"
+);
 export const ApprovalIdSchema = schemaFor(ID_PREFIX.approval, "ApprovalId");
 export const ArtifactIdSchema = schemaFor(ID_PREFIX.artifact, "ArtifactId");
 export const AutomationIdSchema = schemaFor(ID_PREFIX.automation, "AutomationId");
@@ -49,6 +66,10 @@ export type RunId = z.infer<typeof RunIdSchema>;
 export type StageRunId = z.infer<typeof StageRunIdSchema>;
 export type AgentSessionId = z.infer<typeof AgentSessionIdSchema>;
 export type EnvironmentId = z.infer<typeof EnvironmentIdSchema>;
+export type CommandId = z.infer<typeof CommandIdSchema>;
+export type EnvironmentAuthorizationId = z.infer<typeof EnvironmentAuthorizationIdSchema>;
+export type CommandAuthorizationId = z.infer<typeof CommandAuthorizationIdSchema>;
+export type RepositoryCapabilityId = z.infer<typeof RepositoryCapabilityIdSchema>;
 export type ApprovalId = z.infer<typeof ApprovalIdSchema>;
 export type ArtifactId = z.infer<typeof ArtifactIdSchema>;
 export type AutomationId = z.infer<typeof AutomationIdSchema>;
@@ -64,6 +85,10 @@ export interface IdTypeMap {
   readonly stageRun: StageRunId;
   readonly agentSession: AgentSessionId;
   readonly environment: EnvironmentId;
+  readonly command: CommandId;
+  readonly environmentAuthorization: EnvironmentAuthorizationId;
+  readonly commandAuthorization: CommandAuthorizationId;
+  readonly repositoryCapability: RepositoryCapabilityId;
   readonly approval: ApprovalId;
   readonly artifact: ArtifactId;
   readonly automation: AutomationId;
@@ -82,6 +107,10 @@ const ID_SCHEMAS = {
   stageRun: StageRunIdSchema,
   agentSession: AgentSessionIdSchema,
   environment: EnvironmentIdSchema,
+  command: CommandIdSchema,
+  environmentAuthorization: EnvironmentAuthorizationIdSchema,
+  commandAuthorization: CommandAuthorizationIdSchema,
+  repositoryCapability: RepositoryCapabilityIdSchema,
   approval: ApprovalIdSchema,
   artifact: ArtifactIdSchema,
   automation: AutomationIdSchema,
@@ -105,6 +134,10 @@ export interface IdFactory {
   stageRun(): StageRunId;
   agentSession(): AgentSessionId;
   environment(): EnvironmentId;
+  command(): CommandId;
+  environmentAuthorization(): EnvironmentAuthorizationId;
+  commandAuthorization(): CommandAuthorizationId;
+  repositoryCapability(): RepositoryCapabilityId;
   approval(): ApprovalId;
   artifact(): ArtifactId;
   automation(): AutomationId;
@@ -127,6 +160,10 @@ export function createIdFactory(random: () => string = secureRandomUuid): IdFact
     stageRun: generate("stageRun"),
     agentSession: generate("agentSession"),
     environment: generate("environment"),
+    command: generate("command"),
+    environmentAuthorization: generate("environmentAuthorization"),
+    commandAuthorization: generate("commandAuthorization"),
+    repositoryCapability: generate("repositoryCapability"),
     approval: generate("approval"),
     artifact: generate("artifact"),
     automation: generate("automation"),

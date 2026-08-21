@@ -3,5 +3,8 @@ export * from "./entities.js";
 export * from "./events.js";
 export * from "./ids.js";
 export * from "./persistence.js";
+export * from "./runner.js";
+export * from "./host-api.js";
+export * from "./desktop-api.js";
 export * from "./secret-safety.js";
 export * from "./workflow-failure.js";

@@ -1,0 +1,376 @@
+import { describe, expect, it } from "vitest";
+
+import {
+  CommandAuthorizationSchema,
+  canonicalizeCommandScope,
+  canonicalizeEnvironmentAuthorizationForDigest,
+  canonicalizeExecutionScope,
+  CommandEnvironmentEntrySchema,
+  CommandSpecSchema,
+  CommandScopeSchema,
+  GuardianLaunchDescriptorSchema,
+  InspectRepositoryRequestSchema,
+  ReadArtifactChunkResponseSchema,
+  RunnerCapabilitiesSchema,
+  RunnerStreamEventSchema,
+  StartCommandRequestSchema,
+  PrepareEnvironmentRequestSchema,
+  EnvironmentAuthorizationSchema,
+  ExecutionScopeSchema,
+  NetworkPolicySchema,
+  RelativeWorkspacePathSchema,
+  RunnerSubscriptionItemSchema,
+  validateCommandAuthorizationAgainstEnvironment,
+  createId,
+  createIdFactory
+} from "../src/index.js";
+
+const UUID = "123e4567-e89b-42d3-a456-426614174000";
+const NOW = "2026-08-21T12:00:00.000Z";
+const DIGEST = "a".repeat(64);
+
+const ids = {
+  workspaceId: createId("workspace", UUID),
+  runId: createId("run", UUID),
+  environmentId: createId("environment", UUID),
+  commandId: createId("command", UUID),
+  approvalId: createId("approval", UUID),
+  environmentAuthorizationId: createId("environmentAuthorization", UUID),
+  commandAuthorizationId: createId("commandAuthorization", UUID),
+  credentialRefId: createId("credentialRef", UUID)
+};
+
+const scope = {
+  workspaceId: ids.workspaceId,
+  runId: ids.runId,
+  environmentId: ids.environmentId,
+  repositoryIdentity: "github:autostack/contracts",
+  sourceCommit: "b".repeat(40),
+  branch: "autostack/local-runner",
+  cwdRoot: ".",
+  resourceLimits: { cpu: 2, memoryMb: 2048, durationSeconds: 600 },
+  networkPolicy: "host",
+  filesystemDisclosure: "host_user",
+  allowedCredentialRefIds: [ids.credentialRefId]
+};
+
+describe("local runner contracts", () => {
+  it("creates deterministic command and authorization identifiers and rejects wrong prefixes", () => {
+    const factory = createIdFactory(() => UUID);
+    expect(factory.command()).toBe(`cmd_${UUID}`);
+    expect(factory.environmentAuthorization()).toBe(`envauth_${UUID}`);
+    expect(factory.commandAuthorization()).toBe(`cmdauth_${UUID}`);
+    expect(factory.repositoryCapability()).toBe(`repocap_${UUID}`);
+    expect(() => createId("command", "not-a-uuid")).toThrow();
+  });
+
+  it("accepts argument-array commands and rejects unsafe workspace paths or literal credentials", () => {
+    expect(
+      CommandSpecSchema.parse({
+        executable: "pnpm",
+        args: ["test", "--", "runner.test.ts"],
+        cwd: "packages/contracts",
+        environment: [
+          { kind: "credential_ref", name: "NPM_TOKEN", credentialRefId: ids.credentialRefId }
+        ],
+        timeoutSeconds: 600,
+        terminal: { columns: 120, rows: 40 }
+      })
+    ).toMatchObject({ executable: "pnpm" });
+    for (const path of ["/tmp", "../escape", "a//b", "a/./b", "a\\b", "a\u0000b"]) {
+      expect(() => RelativeWorkspacePathSchema.parse(path)).toThrow();
+    }
+    expect(() =>
+      CommandEnvironmentEntrySchema.parse({
+        kind: "literal",
+        name: "TOKEN",
+        value: "ghp_0123456789abcdefghijklmnop"
+      })
+    ).toThrow();
+  });
+
+  it("keeps execution and command approval digests non-circular and scope-bound", () => {
+    expect(ExecutionScopeSchema.parse(scope)).toEqual(scope);
+    expect(canonicalizeExecutionScope(scope)).not.toContain("approvalId");
+    expect(() => ExecutionScopeSchema.parse({ ...scope, approvalId: ids.approvalId })).toThrow();
+    const environmentAuthorization = {
+      id: ids.environmentAuthorizationId,
+      digest: DIGEST,
+      approvalId: ids.approvalId,
+      approvalEvidenceDigest: DIGEST,
+      scope,
+      createdAt: NOW,
+      expiresAt: "2026-08-21T13:00:00.000Z"
+    };
+    expect(EnvironmentAuthorizationSchema.parse(environmentAuthorization)).toMatchObject({
+      id: ids.environmentAuthorizationId
+    });
+    expect(canonicalizeEnvironmentAuthorizationForDigest(environmentAuthorization)).not.toContain(
+      '"digest"'
+    );
+    const commandScope = {
+      environmentAuthorizationId: ids.environmentAuthorizationId,
+      environmentAuthorizationDigest: DIGEST,
+      workspaceId: ids.workspaceId,
+      runId: ids.runId,
+      environmentId: ids.environmentId,
+      commandId: ids.commandId,
+      action: "implement",
+      commandDigest: DIGEST,
+      repositoryIdentity: scope.repositoryIdentity,
+      sourceCommit: scope.sourceCommit,
+      branch: scope.branch,
+      cwdRoot: scope.cwdRoot,
+      networkPolicy: "host",
+      filesystemDisclosure: "host_user",
+      resourceLimits: scope.resourceLimits,
+      allowedCredentialRefIds: scope.allowedCredentialRefIds
+    };
+    expect(CommandScopeSchema.parse(commandScope)).toMatchObject({ commandId: ids.commandId });
+    expect(canonicalizeCommandScope(commandScope)).not.toContain("approvalEvidenceDigest");
+    expect(
+      CommandAuthorizationSchema.parse({
+        id: ids.commandAuthorizationId,
+        digest: DIGEST,
+        approvalId: ids.approvalId,
+        approvalEvidenceDigest: DIGEST,
+        scope: commandScope,
+        createdAt: NOW,
+        expiresAt: "2026-08-21T13:00:00.000Z"
+      })
+    ).toMatchObject({ id: ids.commandAuthorizationId });
+  });
+
+  it("distinguishes durable stream events from subscriber-local lag and keeps policy versions explicit", () => {
+    expect(NetworkPolicySchema.options).toEqual(["host", "none", "restricted"]);
+    expect(
+      RunnerSubscriptionItemSchema.parse({
+        type: "subscription.lagged",
+        lastDurableSequence: 5,
+        resumeCursor: 5
+      })
+    ).toMatchObject({ type: "subscription.lagged" });
+    expect(() =>
+      RunnerSubscriptionItemSchema.parse({
+        type: "runner.event",
+        event: { type: "subscription.lagged" }
+      })
+    ).toThrow();
+  });
+
+  it("rejects command authorization scope broadening against its recorded environment authorization", () => {
+    const environmentAuthorization = EnvironmentAuthorizationSchema.parse({
+      id: ids.environmentAuthorizationId,
+      digest: DIGEST,
+      approvalId: ids.approvalId,
+      approvalEvidenceDigest: DIGEST,
+      scope,
+      createdAt: NOW,
+      expiresAt: "2026-08-21T13:00:00.000Z"
+    });
+    const authorization = CommandAuthorizationSchema.parse({
+      id: ids.commandAuthorizationId,
+      digest: DIGEST,
+      approvalId: ids.approvalId,
+      approvalEvidenceDigest: DIGEST,
+      scope: {
+        environmentAuthorizationId: ids.environmentAuthorizationId,
+        environmentAuthorizationDigest: DIGEST,
+        workspaceId: ids.workspaceId,
+        runId: ids.runId,
+        environmentId: ids.environmentId,
+        commandId: ids.commandId,
+        action: "verify",
+        commandDigest: DIGEST,
+        repositoryIdentity: scope.repositoryIdentity,
+        sourceCommit: scope.sourceCommit,
+        branch: scope.branch,
+        cwdRoot: scope.cwdRoot,
+        networkPolicy: "host",
+        filesystemDisclosure: "host_user",
+        resourceLimits: { cpu: 1, memoryMb: 1024, durationSeconds: 300 },
+        allowedCredentialRefIds: []
+      },
+      createdAt: NOW,
+      expiresAt: "2026-08-21T13:00:00.000Z"
+    });
+    expect(
+      validateCommandAuthorizationAgainstEnvironment(authorization, environmentAuthorization)
+    ).toEqual(authorization);
+    expect(() =>
+      validateCommandAuthorizationAgainstEnvironment(
+        CommandAuthorizationSchema.parse({
+          ...authorization,
+          scope: { ...authorization.scope, resourceLimits: { ...scope.resourceLimits, cpu: 3 } }
+        }),
+        environmentAuthorization
+      )
+    ).toThrow(/broaden/i);
+  });
+
+  it("validates runner capabilities, internal launch paths, and request/artifact coherence", () => {
+    expect(
+      RunnerCapabilitiesSchema.parse({
+        runnerId: "runner-local",
+        version: "1",
+        platform: { os: "darwin", architecture: "arm64" },
+        pty: true,
+        cancellation: true,
+        maximumBytes: { liveOutput: 1, replay: 1, transcript: 1, artifact: 1 },
+        supportedNetworkPolicies: ["host"],
+        enforcement: {
+          cpu: "advisory",
+          memory: "advisory",
+          duration: "hard",
+          autostackPathOperations: "hard",
+          childFilesystem: "unavailable",
+          network: "unavailable"
+        }
+      })
+    ).toMatchObject({ runnerId: "runner-local" });
+    expect(() =>
+      InspectRepositoryRequestSchema.parse({ sourcePath: "relative", baseRef: "main" })
+    ).toThrow();
+    expect(
+      GuardianLaunchDescriptorSchema.parse({
+        electronExecutable: "/app/electron",
+        guardianModule: "/app/guardian.mjs",
+        nativeDirectory: "/app/native",
+        desktopBuildRoot: "/app",
+        runtimeManifestDigest: DIGEST,
+        electronVersion: "43.0.0",
+        nodePtyVersion: "1.1.0"
+      })
+    ).toBeDefined();
+    const environmentAuthorization = {
+      id: ids.environmentAuthorizationId,
+      digest: DIGEST,
+      approvalId: ids.approvalId,
+      approvalEvidenceDigest: DIGEST,
+      scope,
+      createdAt: NOW,
+      expiresAt: "2026-08-21T13:00:00.000Z"
+    };
+    expect(() =>
+      EnvironmentAuthorizationSchema.parse({ ...environmentAuthorization, expiresAt: NOW })
+    ).toThrow();
+    const inspection = {
+      repositoryIdentity: scope.repositoryIdentity,
+      canonicalSourcePath: "/source",
+      repositoryCommonDirectory: "/source/.git",
+      resolvedBaseRef: "main",
+      sourceCommit: scope.sourceCommit,
+      dirty: false,
+      diagnostics: []
+    };
+    expect(
+      PrepareEnvironmentRequestSchema.parse({
+        workspaceId: ids.workspaceId,
+        runId: ids.runId,
+        environmentId: ids.environmentId,
+        inspection,
+        sourceCommit: scope.sourceCommit,
+        branch: scope.branch,
+        authorization: environmentAuthorization,
+        idempotency: { key: "prepare" }
+      })
+    ).toBeDefined();
+    expect(() =>
+      PrepareEnvironmentRequestSchema.parse({
+        workspaceId: ids.workspaceId,
+        runId: ids.runId,
+        environmentId: ids.environmentId,
+        inspection: { ...inspection, repositoryIdentity: "wrong" },
+        sourceCommit: scope.sourceCommit,
+        branch: scope.branch,
+        authorization: environmentAuthorization,
+        idempotency: { key: "prepare" }
+      })
+    ).toThrow();
+    const commandAuthorization = {
+      id: ids.commandAuthorizationId,
+      digest: DIGEST,
+      approvalId: ids.approvalId,
+      approvalEvidenceDigest: DIGEST,
+      scope: {
+        environmentAuthorizationId: ids.environmentAuthorizationId,
+        environmentAuthorizationDigest: DIGEST,
+        workspaceId: ids.workspaceId,
+        runId: ids.runId,
+        environmentId: ids.environmentId,
+        commandId: ids.commandId,
+        action: "implement",
+        commandDigest: DIGEST,
+        repositoryIdentity: scope.repositoryIdentity,
+        sourceCommit: scope.sourceCommit,
+        branch: scope.branch,
+        cwdRoot: scope.cwdRoot,
+        networkPolicy: "host",
+        filesystemDisclosure: "host_user",
+        resourceLimits: scope.resourceLimits,
+        allowedCredentialRefIds: scope.allowedCredentialRefIds
+      },
+      createdAt: NOW,
+      expiresAt: "2026-08-21T13:00:00.000Z"
+    };
+    const command = {
+      executable: "true",
+      args: [],
+      cwd: ".",
+      environment: [],
+      timeoutSeconds: 1,
+      terminal: { columns: 80, rows: 24 }
+    };
+    expect(
+      StartCommandRequestSchema.parse({
+        workspaceId: ids.workspaceId,
+        runId: ids.runId,
+        environmentId: ids.environmentId,
+        commandId: ids.commandId,
+        command,
+        authorization: commandAuthorization,
+        idempotency: { key: "start" }
+      })
+    ).toBeDefined();
+    expect(() =>
+      StartCommandRequestSchema.parse({
+        workspaceId: ids.workspaceId,
+        runId: ids.runId,
+        environmentId: ids.environmentId,
+        commandId: createId("command", "123e4567-e89b-42d3-a456-426614174001"),
+        command,
+        authorization: commandAuthorization,
+        idempotency: { key: "start" }
+      })
+    ).toThrow();
+    const artifact = {
+      artifactId: createId("artifact", UUID),
+      workspaceId: ids.workspaceId,
+      runId: ids.runId,
+      kind: "command_transcript",
+      mediaType: "text/plain",
+      digest: DIGEST,
+      byteSize: 1,
+      createdAt: NOW
+    };
+    expect(() =>
+      ReadArtifactChunkResponseSchema.parse({
+        artifact,
+        offset: 0,
+        bytes: "YQ==",
+        nextOffset: 0,
+        done: true
+      })
+    ).toThrow();
+    expect(
+      RunnerStreamEventSchema.parse({
+        type: "terminal.output",
+        commandId: ids.commandId,
+        sequence: 1,
+        occurredAt: NOW,
+        stream: "pty",
+        text: "safe"
+      })
+    ).toMatchObject({ stream: "pty" });
+  });
+});
