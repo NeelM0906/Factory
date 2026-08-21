@@ -3,6 +3,7 @@ import { createHash } from "node:crypto";
 import {
   ApprovalSchema,
   PendingDomainEventSchema,
+  canonicalizeApprovalEvidence,
   type Actor,
   type Approval,
   type ApprovalId,
@@ -11,15 +12,17 @@ import {
   type WorkspaceId
 } from "@autostack/contracts";
 
-import { canonicalJson } from "./canonical-json.js";
 import {
   ApprovalDecisionConflictError,
   IneligibleApproverError,
   StaleApprovalEvidenceError
 } from "./errors.js";
 
-export const digestApprovalEvidence = (evidence: unknown): string =>
-  createHash("sha256").update(canonicalJson(evidence), "utf8").digest("hex");
+export const digestApprovalEvidence = (
+  evidence: unknown,
+  kind: "plan" | "publish" | "permission" = "plan"
+): string =>
+  createHash("sha256").update(canonicalizeApprovalEvidence(kind, evidence), "utf8").digest("hex");
 
 export interface RequestApprovalCommand {
   readonly workspaceId: WorkspaceId;
@@ -43,7 +46,7 @@ export function requestApproval(
     runId: command.runId,
     kind: command.kind,
     status: "pending",
-    evidenceDigest: digestApprovalEvidence(command.evidence),
+    evidenceDigest: digestApprovalEvidence(command.evidence, command.kind),
     eligibleApproverIds: command.eligibleApproverIds,
     createdAt: occurredAt,
     updatedAt: occurredAt
@@ -74,7 +77,10 @@ export function decideApproval(command: DecideApprovalCommand): {
   readonly approval: Approval;
   readonly events: readonly PendingDomainEvent[];
 } {
-  if (digestApprovalEvidence(command.evidence) !== command.approval.evidenceDigest) {
+  if (
+    digestApprovalEvidence(command.evidence, command.approval.kind) !==
+    command.approval.evidenceDigest
+  ) {
     throw new StaleApprovalEvidenceError();
   }
   if (!command.approval.eligibleApproverIds.includes(command.actor.id)) {

@@ -4,7 +4,9 @@ import {
   EVENT_TYPES,
   PendingDomainEventSchema,
   StoredDomainEventSchema,
+  digestLocalExecutionPhase,
   parseStoredDomainEvent,
+  digestTerminalRunTransition,
   validateRunStreamCoherence
 } from "../src/events.js";
 import {
@@ -21,6 +23,7 @@ const WORK_ITEM_ID = "wi_123e4567-e89b-42d3-a456-426614174000";
 const RUN_ID = "run_123e4567-e89b-42d3-a456-426614174000";
 const JOB_ID = "job_123e4567-e89b-42d3-a456-426614174000";
 const APPROVAL_ID = "apr_123e4567-e89b-42d3-a456-426614174000";
+const PERMISSION_APPROVAL_ID = "apr_123e4567-e89b-42d3-a456-426614174002";
 const EVENT_ID = "evt_123e4567-e89b-42d3-a456-426614174000";
 const CORRELATION_ID = "123e4567-e89b-42d3-a456-426614174001";
 
@@ -169,13 +172,37 @@ const localEventBodies = async () => {
   const commandAuthorization = {
     id: commandAuthorizationId,
     digest: "0".repeat(64),
-    approvalId: APPROVAL_ID,
+    approvalId: PERMISSION_APPROVAL_ID,
     approvalEvidenceDigest: await digestCommandScope(commandScope),
     scope: commandScope,
     createdAt: NOW,
     expiresAt: "2026-08-21T13:00:00.000Z"
   };
   commandAuthorization.digest = await digestCommandAuthorization(commandAuthorization);
+  const planApproval = {
+    schemaVersion: 1,
+    id: APPROVAL_ID,
+    workspaceId: WORKSPACE_ID,
+    runId: RUN_ID,
+    kind: "plan" as const,
+    status: "pending" as const,
+    evidenceDigest: environmentAuthorization.approvalEvidenceDigest,
+    eligibleApproverIds: ["local-user"],
+    createdAt: NOW,
+    updatedAt: NOW
+  };
+  const permissionApproval = {
+    schemaVersion: 1,
+    id: PERMISSION_APPROVAL_ID,
+    workspaceId: WORKSPACE_ID,
+    runId: RUN_ID,
+    kind: "permission" as const,
+    status: "pending" as const,
+    evidenceDigest: commandAuthorization.approvalEvidenceDigest,
+    eligibleApproverIds: ["local-user"],
+    createdAt: NOW,
+    updatedAt: NOW
+  };
   const inspection = {
     repositoryIdentity: scope.repositoryIdentity,
     canonicalSourcePath: "/source",
@@ -217,7 +244,19 @@ const localEventBodies = async () => {
     byteSize: 0,
     createdAt: NOW
   };
-  return [
+  const bodies = [
+    { type: "approval.requested" as const, payload: { approval: planApproval } },
+    {
+      type: "approval.decided" as const,
+      payload: {
+        approvalId: APPROVAL_ID,
+        runId: RUN_ID,
+        decision: "approved" as const,
+        evidenceDigest: planApproval.evidenceDigest,
+        origin: "desktop" as const,
+        decidedAt: NOW
+      }
+    },
     {
       type: "environment.authorization_recorded",
       payload: {
@@ -225,6 +264,18 @@ const localEventBodies = async () => {
         environmentId,
         authorization: environmentAuthorization,
         phaseKey: `environment:${environmentId}:authorization`
+      }
+    },
+    { type: "approval.requested" as const, payload: { approval: permissionApproval } },
+    {
+      type: "approval.decided" as const,
+      payload: {
+        approvalId: PERMISSION_APPROVAL_ID,
+        runId: RUN_ID,
+        decision: "approved" as const,
+        evidenceDigest: permissionApproval.evidenceDigest,
+        origin: "desktop" as const,
+        decidedAt: NOW
       }
     },
     {
@@ -252,6 +303,7 @@ const localEventBodies = async () => {
           sourceCommit: scope.sourceCommit,
           branch: scope.branch,
           authorization: environmentAuthorization,
+          state: "prepared",
           preparedAt: NOW
         },
         phaseKey: `environment:${environmentId}:prepared`
@@ -278,7 +330,7 @@ const localEventBodies = async () => {
         environmentId,
         commandId,
         artifact,
-        phaseKey: `command:${commandId}:artifact`
+        phaseKey: `command:${commandId}:artifact:${artifact.artifactId}`
       }
     },
     {
@@ -311,31 +363,44 @@ const localEventBodies = async () => {
       }
     }
   ];
+  return Promise.all(
+    bodies.map(async (body) => ({
+      ...body,
+      payload: {
+        ...body.payload,
+        phaseDigest: await digestLocalExecutionPhase(body.type, body.payload)
+      }
+    }))
+  );
 };
 
 describe("domain event contracts", () => {
   it("rejects a local command completion that lacks prior durable intent and artifact evidence", async () => {
+    const payload = {
+      runId: RUN_ID,
+      environmentId: "env_123e4567-e89b-42d3-a456-426614174000",
+      commandId: "cmd_123e4567-e89b-42d3-a456-426614174000",
+      terminalSequence: 1,
+      terminalDigest: "a".repeat(64),
+      status: "completed" as const,
+      completedAt: NOW,
+      phaseKey: "command:cmd_123e4567-e89b-42d3-a456-426614174000:completed"
+    };
     await expect(
       validateRunStreamCoherence([
         {
           ...context,
           type: "command.completed",
           payload: {
-            runId: RUN_ID,
-            environmentId: "env_123e4567-e89b-42d3-a456-426614174000",
-            commandId: "cmd_123e4567-e89b-42d3-a456-426614174000",
-            terminalSequence: 1,
-            terminalDigest: "a".repeat(64),
-            status: "completed",
-            completedAt: NOW,
-            phaseKey: "command:cmd_123e4567-e89b-42d3-a456-426614174000:completed"
+            ...payload,
+            phaseDigest: await digestLocalExecutionPhase("command.completed", payload)
           }
         }
       ])
     ).rejects.toThrow(/intent/i);
   });
 
-  it("records only safe canonical local execution evidence on the run stream", () => {
+  it("records only safe canonical local execution evidence on the run stream", async () => {
     const authorization = {
       id: "envauth_123e4567-e89b-42d3-a456-426614174000",
       digest: "a".repeat(64),
@@ -357,17 +422,36 @@ describe("domain event contracts", () => {
       createdAt: NOW,
       expiresAt: "2026-08-21T13:00:00.000Z"
     };
+    const recordedPayload = {
+      runId: RUN_ID,
+      environmentId: authorization.scope.environmentId,
+      authorization,
+      phaseKey: `environment:${authorization.scope.environmentId}:authorization`
+    };
     const recorded = PendingDomainEventSchema.parse({
       ...context,
       type: "environment.authorization_recorded",
       payload: {
-        runId: RUN_ID,
-        environmentId: authorization.scope.environmentId,
-        authorization,
-        phaseKey: `environment:${authorization.scope.environmentId}:authorization`
+        ...recordedPayload,
+        phaseDigest: await digestLocalExecutionPhase(
+          "environment.authorization_recorded",
+          recordedPayload
+        )
       }
     });
     expect(recorded.type).toBe("environment.authorization_recorded");
+    expect(() =>
+      PendingDomainEventSchema.parse({
+        ...context,
+        type: "environment.authorization_recorded",
+        payload: {
+          runId: RUN_ID,
+          environmentId: authorization.scope.environmentId,
+          authorization,
+          phaseKey: `environment:${authorization.scope.environmentId}:authorization`
+        }
+      })
+    ).toThrow(/phaseDigest/i);
     expect(() =>
       PendingDomainEventSchema.parse({
         ...context,
@@ -403,35 +487,84 @@ describe("domain event contracts", () => {
       PendingDomainEventSchema.parse({ ...context, ...body })
     );
 
-    expect(parsedTypes.map(({ type }) => type).sort()).toEqual([...EVENT_TYPES].sort());
+    expect([...new Set(parsedTypes.map(({ type }) => type))].sort()).toEqual(
+      [...EVENT_TYPES].sort()
+    );
   });
 
   it("accepts one ordered local execution evidence stream", async () => {
-    const events = (await localEventBodies()).map((body) => ({ ...context, ...body }));
-    await expect(validateRunStreamCoherence(events)).resolves.toHaveLength(9);
+    const localBodies = await localEventBodies();
+    const disposalIndex = localBodies.findIndex((body) => body.type === "environment.disposed");
+    if (disposalIndex === -1) throw new TypeError("Fixture is missing disposal evidence.");
+    const disposal = localBodies[disposalIndex];
+    if (disposal?.type !== "environment.disposed") {
+      throw new TypeError("Fixture disposal evidence is invalid.");
+    }
+    const terminalTransition = {
+      ...context,
+      type: "run.transitioned" as const,
+      payload: {
+        runId: RUN_ID,
+        from: "implementing" as const,
+        to: "completed" as const,
+        reason: "execution completed"
+      },
+      eventId: EVENT_ID,
+      stream: { kind: "run" as const, id: RUN_ID },
+      streamVersion: 100,
+      globalSequence: 100,
+      schemaVersion: 1 as const
+    };
+    const terminalRunEvidence = {
+      status: "completed" as const,
+      terminalEventSequence: 100,
+      terminalEventDigest: await digestTerminalRunTransition(terminalTransition)
+    };
+    const disposalPayload = { ...disposal.payload, terminalRunEvidence };
+    const disposalEvent = {
+      ...context,
+      ...disposal,
+      payload: {
+        ...disposalPayload,
+        phaseDigest: await digestLocalExecutionPhase(disposal.type, disposalPayload)
+      }
+    };
+    const events = [
+      ...localBodies.slice(0, disposalIndex).map((body) => ({ ...context, ...body })),
+      terminalTransition,
+      disposalEvent
+    ];
+    await expect(validateRunStreamCoherence(events)).resolves.toHaveLength(14);
     await expect(
       validateRunStreamCoherence([{ ...context, ...eventBodies[0] }])
     ).resolves.toHaveLength(1);
-    await expect(validateRunStreamCoherence([...events, events[8]])).rejects.toThrow(/collision/i);
-    await expect(validateRunStreamCoherence(events.slice(1))).rejects.toThrow(
-      /environment authorization/i
-    );
-    await expect(validateRunStreamCoherence([events[3]])).rejects.toThrow(/prepare intent/i);
+    await expect(validateRunStreamCoherence([...events, events[13]])).resolves.toHaveLength(15);
+    await expect(validateRunStreamCoherence(events.slice(1))).rejects.toThrow(/approval/i);
+    await expect(validateRunStreamCoherence(events.slice(2, 3))).rejects.toThrow(/approved plan/i);
+    await expect(validateRunStreamCoherence([events[7]])).rejects.toThrow(/prepare intent/i);
     await expect(
       validateRunStreamCoherence(events.filter((event) => event.type !== "artifact.recorded"))
     ).rejects.toThrow(/artifact evidence/i);
     await expect(
-      validateRunStreamCoherence([
-        ...events.slice(0, 8),
-        {
-          ...events[8],
-          payload: {
-            ...events[8]?.payload,
-            phaseKey: "environment:env_123e4567-e89b-42d3-a456-426614174000:prepared"
+      (async () => {
+        const replay = events[13];
+        if (replay === undefined) throw new TypeError("Fixture is missing disposal evidence.");
+        const payload = {
+          ...replay.payload,
+          phaseKey: "environment:env_123e4567-e89b-42d3-a456-426614174000:prepared"
+        };
+        return validateRunStreamCoherence([
+          ...events.slice(0, 13),
+          {
+            ...replay,
+            payload: {
+              ...payload,
+              phaseDigest: await digestLocalExecutionPhase(replay.type, payload)
+            }
           }
-        }
-      ])
-    ).rejects.toThrow(/phase key/i);
+        ]);
+      })()
+    ).rejects.toThrow(/collision/i);
   });
 
   it("rejects an unknown event type", () => {

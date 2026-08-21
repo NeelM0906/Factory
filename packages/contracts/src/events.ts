@@ -28,12 +28,14 @@ import {
   TerminalRunEvidenceSchema,
   type CommandAuthorization,
   type EnvironmentAuthorization,
+  type TerminalRunEvidence,
+  digestVersionedValue,
   digestCommandAuthorization,
   digestCommandScope,
   digestEnvironmentAuthorization,
   digestExecutionScope
 } from "./runner.js";
-import { normalizeSafeJson } from "./secret-safety.js";
+import { normalizeSafeJson, type SafeJsonValue } from "./secret-safety.js";
 import { WorkflowFailureSchema } from "./workflow-failure.js";
 
 export const EVENT_TYPES = [
@@ -69,8 +71,27 @@ const EventContextSchema = z
 const PhaseKeySchema = z
   .string()
   .regex(
-    /^(?:environment|command):[a-z]+_[0-9a-f-]{36}:(?:authorization|intent|prepared|disposed|started|artifact|completed|cancel)$/
+    /^(?:environment:[a-z]+_[0-9a-f-]{36}:(?:authorization|intent|prepared|disposed)|command:[a-z]+_[0-9a-f-]{36}:(?:authorization|intent|started|completed|cancel)|command:[a-z]+_[0-9a-f-]{36}:artifact:art_[0-9a-f-]{36})$/
   );
+const PhaseDigestSchema = z.string().regex(/^[0-9a-f]{64}$/);
+const isSafeJsonRecord = (
+  value: SafeJsonValue
+): value is Readonly<{ [key: string]: SafeJsonValue }> =>
+  value !== null && typeof value === "object" && !Array.isArray(value);
+
+const phaseDigestInput = (type: string, payload: unknown): Readonly<Record<string, unknown>> => {
+  const normalized = normalizeSafeJson(payload);
+  if (!isSafeJsonRecord(normalized)) {
+    throw new TypeError("A local execution phase payload is required.");
+  }
+  const phasePayload: Readonly<Record<string, unknown>> = normalized;
+  const { phaseDigest: _phaseDigest, ...withoutDigest } = phasePayload;
+  return { type, payload: withoutDigest };
+};
+export const digestLocalExecutionPhase = async (type: string, payload: unknown): Promise<string> =>
+  digestVersionedValue("autostack.local-execution-phase", phaseDigestInput(type, payload));
+export const digestTerminalRunTransition = async (event: unknown): Promise<string> =>
+  digestVersionedValue("autostack.terminal-run-transition", event);
 
 const StageIdentityShape = {
   runId: RunIdSchema,
@@ -169,7 +190,8 @@ const DomainEventBodySchema = z.discriminatedUnion("type", [
           runId: RunIdSchema,
           environmentId: EnvironmentIdSchema,
           authorization: EnvironmentAuthorizationSchema,
-          phaseKey: PhaseKeySchema
+          phaseKey: PhaseKeySchema,
+          phaseDigest: PhaseDigestSchema
         })
         .strict()
     })
@@ -196,7 +218,8 @@ const DomainEventBodySchema = z.discriminatedUnion("type", [
           environmentId: EnvironmentIdSchema,
           commandId: CommandIdSchema,
           authorization: CommandAuthorizationSchema,
-          phaseKey: PhaseKeySchema
+          phaseKey: PhaseKeySchema,
+          phaseDigest: PhaseDigestSchema
         })
         .strict()
     })
@@ -219,7 +242,11 @@ const DomainEventBodySchema = z.discriminatedUnion("type", [
     .object({
       type: z.literal("environment.prepare_requested"),
       payload: z
-        .object({ request: PrepareEnvironmentRequestSchema, phaseKey: PhaseKeySchema })
+        .object({
+          request: PrepareEnvironmentRequestSchema,
+          phaseKey: PhaseKeySchema,
+          phaseDigest: PhaseDigestSchema
+        })
         .strict()
     })
     .strict(),
@@ -227,14 +254,24 @@ const DomainEventBodySchema = z.discriminatedUnion("type", [
     .object({
       type: z.literal("environment.prepared"),
       payload: z
-        .object({ environment: PreparedEnvironmentSchema, phaseKey: PhaseKeySchema })
+        .object({
+          environment: PreparedEnvironmentSchema,
+          phaseKey: PhaseKeySchema,
+          phaseDigest: PhaseDigestSchema
+        })
         .strict()
     })
     .strict(),
   z
     .object({
       type: z.literal("command.intent_recorded"),
-      payload: z.object({ request: StartCommandRequestSchema, phaseKey: PhaseKeySchema }).strict()
+      payload: z
+        .object({
+          request: StartCommandRequestSchema,
+          phaseKey: PhaseKeySchema,
+          phaseDigest: PhaseDigestSchema
+        })
+        .strict()
     })
     .strict(),
   z
@@ -246,7 +283,8 @@ const DomainEventBodySchema = z.discriminatedUnion("type", [
           environmentId: EnvironmentIdSchema,
           commandId: CommandIdSchema,
           startedAt: z.iso.datetime(),
-          phaseKey: PhaseKeySchema
+          phaseKey: PhaseKeySchema,
+          phaseDigest: PhaseDigestSchema
         })
         .strict()
     })
@@ -263,7 +301,8 @@ const DomainEventBodySchema = z.discriminatedUnion("type", [
           terminalDigest: z.string().regex(/^[0-9a-f]{64}$/),
           status: z.enum(["completed", "cancelled", "failed"]),
           completedAt: z.iso.datetime(),
-          phaseKey: PhaseKeySchema
+          phaseKey: PhaseKeySchema,
+          phaseDigest: PhaseDigestSchema
         })
         .strict()
     })
@@ -277,7 +316,8 @@ const DomainEventBodySchema = z.discriminatedUnion("type", [
           environmentId: EnvironmentIdSchema,
           commandId: CommandIdSchema,
           artifact: ArtifactDescriptorSchema,
-          phaseKey: PhaseKeySchema
+          phaseKey: PhaseKeySchema,
+          phaseDigest: PhaseDigestSchema
         })
         .strict()
     })
@@ -305,7 +345,8 @@ const DomainEventBodySchema = z.discriminatedUnion("type", [
           environmentAuthorizationDigest: z.string().regex(/^[0-9a-f]{64}$/),
           terminalRunEvidence: TerminalRunEvidenceSchema,
           disposedAt: z.iso.datetime(),
-          phaseKey: PhaseKeySchema
+          phaseKey: PhaseKeySchema,
+          phaseDigest: PhaseDigestSchema
         })
         .strict()
     })
@@ -362,7 +403,9 @@ export const PendingDomainEventSchema = EventContextSchema.and(DomainEventBodySc
 );
 export type PendingDomainEvent = z.infer<typeof PendingDomainEventSchema>;
 
-const localPhaseKey = (event: PendingDomainEvent): string | undefined => {
+const localPhase = (
+  event: PendingDomainEvent
+): { readonly key: string; readonly digest: string } | undefined => {
   switch (event.type) {
     case "environment.authorization_recorded":
     case "command.authorization_recorded":
@@ -373,7 +416,7 @@ const localPhaseKey = (event: PendingDomainEvent): string | undefined => {
     case "command.completed":
     case "artifact.recorded":
     case "environment.disposed":
-      return event.payload.phaseKey;
+      return { key: event.payload.phaseKey, digest: event.payload.phaseDigest };
     default:
       return undefined;
   }
@@ -384,26 +427,96 @@ const assertPhaseKey = (actual: string, expected: string): void => {
 
 export const validateRunStreamCoherence = async (
   candidates: readonly unknown[]
-): Promise<readonly PendingDomainEvent[]> => {
-  const events = candidates.map((candidate) =>
-    PendingDomainEventSchema.parse(normalizeSafeJson(candidate))
-  );
+): Promise<readonly (PendingDomainEvent | StoredDomainEvent)[]> => {
+  const events = candidates.map((candidate) => {
+    const normalized = normalizeSafeJson(candidate);
+    if (isSafeJsonRecord(normalized) && Object.hasOwn(normalized, "globalSequence")) {
+      return StoredDomainEventSchema.parse(normalized);
+    }
+    return PendingDomainEventSchema.parse(normalized);
+  });
   const environmentAuthorizations = new Map<string, EnvironmentAuthorization>();
   const commandAuthorizations = new Map<string, CommandAuthorization>();
+  const approvals = new Map<
+    string,
+    { readonly approval: z.infer<typeof ApprovalSchema>; readonly approved: boolean }
+  >();
   const prepareIntents = new Set<string>();
   const preparedEnvironments = new Set<string>();
   const commandIntents = new Set<string>();
   const startedCommands = new Set<string>();
   const commandArtifacts = new Set<string>();
   const terminalCommands = new Set<string>();
-  const phaseKeys = new Set<string>();
+  const activeCommands = new Set<string>();
+  const terminalRuns = new Map<string, TerminalRunEvidence>();
+  const phaseDigests = new Map<string, string>();
   for (const event of events) {
-    const phaseKey = localPhaseKey(event);
-    if (phaseKey !== undefined) {
-      if (phaseKeys.has(phaseKey)) throw new TypeError("Local execution phase key collision.");
-      phaseKeys.add(phaseKey);
+    const phase = localPhase(event);
+    if (phase !== undefined) {
+      const actualDigest = await digestLocalExecutionPhase(event.type, event.payload);
+      const providedDigest = phase.digest;
+      if (providedDigest !== actualDigest)
+        throw new TypeError("Local execution phase digest is invalid.");
+      const previousDigest = phaseDigests.get(phase.key);
+      if (previousDigest !== undefined) {
+        if (previousDigest !== providedDigest) {
+          throw new TypeError("Local execution phase key collision.");
+        }
+        continue;
+      }
+      phaseDigests.set(phase.key, providedDigest);
     }
     switch (event.type) {
+      case "run.transitioned": {
+        if (
+          event.payload.to === "completed" ||
+          event.payload.to === "cancelled" ||
+          event.payload.to === "failed"
+        ) {
+          if (!("globalSequence" in event) || !("eventId" in event)) {
+            throw new TypeError("Terminal run transition requires sequenced durable evidence.");
+          }
+          const key = `${event.workspaceId}:${event.payload.runId}`;
+          if (terminalRuns.has(key))
+            throw new TypeError("Run has more than one terminal transition.");
+          const terminalMetadata = StoredEventMetadataSchema.parse(event);
+          terminalRuns.set(key, {
+            status: event.payload.to,
+            terminalEventSequence: terminalMetadata.globalSequence,
+            terminalEventDigest: await digestTerminalRunTransition(event)
+          });
+        }
+        break;
+      }
+      case "approval.requested": {
+        const approval = event.payload.approval;
+        if (
+          approval.workspaceId !== event.workspaceId ||
+          isNaN(Date.parse(approval.createdAt)) ||
+          Date.parse(approval.createdAt) > Date.parse(event.occurredAt) ||
+          approvals.has(approval.id)
+        ) {
+          throw new TypeError("Approval request evidence is invalid.");
+        }
+        approvals.set(approval.id, { approval, approved: false });
+        break;
+      }
+      case "approval.decided": {
+        const recorded = approvals.get(event.payload.approvalId);
+        if (
+          recorded === undefined ||
+          recorded.approval.runId !== event.payload.runId ||
+          recorded.approval.evidenceDigest !== event.payload.evidenceDigest ||
+          Date.parse(event.payload.decidedAt) > Date.parse(event.occurredAt)
+        ) {
+          throw new TypeError("Approval decision lacks matching request evidence.");
+        }
+        approvals.set(event.payload.approvalId, {
+          approval: recorded.approval,
+          approved: event.payload.decision === "approved"
+        });
+        break;
+      }
       case "environment.authorization_recorded": {
         const { authorization, environmentId } = event.payload;
         assertPhaseKey(event.payload.phaseKey, `environment:${environmentId}:authorization`);
@@ -412,6 +525,17 @@ export const validateRunStreamCoherence = async (
           authorization.approvalEvidenceDigest !== (await digestExecutionScope(authorization.scope))
         ) {
           throw new TypeError("Environment authorization digest is invalid.");
+        }
+        const approval = approvals.get(authorization.approvalId);
+        if (
+          approval === undefined ||
+          !approval.approved ||
+          approval.approval.kind !== "plan" ||
+          approval.approval.workspaceId !== authorization.scope.workspaceId ||
+          approval.approval.runId !== authorization.scope.runId ||
+          approval.approval.evidenceDigest !== authorization.approvalEvidenceDigest
+        ) {
+          throw new TypeError("Environment authorization lacks approved plan evidence.");
         }
         environmentAuthorizations.set(environmentId, authorization);
         break;
@@ -430,6 +554,17 @@ export const validateRunStreamCoherence = async (
           authorization.scope.environmentAuthorizationDigest !== environmentAuthorization.digest
         ) {
           throw new TypeError("Command authorization digest is invalid.");
+        }
+        const approval = approvals.get(authorization.approvalId);
+        if (
+          approval === undefined ||
+          !approval.approved ||
+          approval.approval.kind !== "permission" ||
+          approval.approval.workspaceId !== authorization.scope.workspaceId ||
+          approval.approval.runId !== authorization.scope.runId ||
+          approval.approval.evidenceDigest !== authorization.approvalEvidenceDigest
+        ) {
+          throw new TypeError("Command authorization lacks approved permission evidence.");
         }
         commandAuthorizations.set(commandId, authorization);
         break;
@@ -480,9 +615,13 @@ export const validateRunStreamCoherence = async (
           throw new TypeError("Command started before durable intent.");
         }
         startedCommands.add(event.payload.commandId);
+        activeCommands.add(event.payload.commandId);
         break;
       case "artifact.recorded":
-        assertPhaseKey(event.payload.phaseKey, `command:${event.payload.commandId}:artifact`);
+        assertPhaseKey(
+          event.payload.phaseKey,
+          `command:${event.payload.commandId}:artifact:${event.payload.artifact.artifactId}`
+        );
         if (!startedCommands.has(event.payload.commandId)) {
           throw new TypeError("Artifact recorded before command start.");
         }
@@ -500,18 +639,26 @@ export const validateRunStreamCoherence = async (
           throw new TypeError("Command has more than one terminal result.");
         }
         terminalCommands.add(event.payload.commandId);
+        activeCommands.delete(event.payload.commandId);
         break;
       case "environment.disposed":
         assertPhaseKey(
           event.payload.phaseKey,
           `environment:${event.payload.environmentId}:disposed`
         );
+        const evidence = terminalRuns.get(`${event.workspaceId}:${event.payload.runId}`);
+        const hasActiveCommand = Array.from(activeCommands).some(
+          (commandId) =>
+            commandAuthorizations.get(commandId)?.scope.environmentId ===
+            event.payload.environmentId
+        );
         if (
-          !Array.from(terminalCommands).some(
-            (commandId) =>
-              commandAuthorizations.get(commandId)?.scope.environmentId ===
-              event.payload.environmentId
-          ) ||
+          evidence === undefined ||
+          evidence.status !== event.payload.terminalRunEvidence.status ||
+          evidence.terminalEventSequence !==
+            event.payload.terminalRunEvidence.terminalEventSequence ||
+          evidence.terminalEventDigest !== event.payload.terminalRunEvidence.terminalEventDigest ||
+          hasActiveCommand ||
           environmentAuthorizations.get(event.payload.environmentId)?.id !==
             event.payload.environmentAuthorizationId ||
           environmentAuthorizations.get(event.payload.environmentId)?.digest !==
@@ -596,25 +743,21 @@ export type StoredDomainEvent = z.infer<typeof StoredDomainEventSchema>;
 export type DomainEventType = (typeof EVENT_TYPES)[number];
 
 export const parseStoredDomainEvent = (candidate: unknown): StoredDomainEvent => {
-  if (candidate === null || typeof candidate !== "object" || Array.isArray(candidate)) {
-    return StoredDomainEventSchema.parse(candidate);
+  const normalized = normalizeSafeJson(candidate);
+  if (!isSafeJsonRecord(normalized)) {
+    return StoredDomainEventSchema.parse(normalized);
   }
-  const event = candidate as Readonly<Record<string, unknown>>;
+  const event = normalized;
   if (event.schemaVersion !== 1 || event.type !== "stage.failed") {
-    return StoredDomainEventSchema.parse(candidate);
+    return StoredDomainEventSchema.parse(normalized);
   }
   const payload = event.payload;
-  if (payload === null || typeof payload !== "object" || Array.isArray(payload)) {
-    return StoredDomainEventSchema.parse(candidate);
+  if (payload === undefined || !isSafeJsonRecord(payload)) {
+    return StoredDomainEventSchema.parse(normalized);
   }
-  const error = (payload as Readonly<Record<string, unknown>>).error;
-  if (
-    error === null ||
-    typeof error !== "object" ||
-    Array.isArray(error) ||
-    Object.hasOwn(error, "code")
-  ) {
-    return StoredDomainEventSchema.parse(candidate);
+  const error = payload.error;
+  if (error === undefined || !isSafeJsonRecord(error) || Object.hasOwn(error, "code")) {
+    return StoredDomainEventSchema.parse(normalized);
   }
   return StoredDomainEventSchema.parse({
     ...event,

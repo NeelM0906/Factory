@@ -14,21 +14,28 @@ import {
 import {
   CancelCommandResponseSchema,
   CommandAcceptedSchema,
+  CommandSpecSchema,
   DisposeEnvironmentResponseSchema,
   ListEnvironmentsResponseSchema,
+  PreparedEnvironmentSchema,
   ReadArtifactChunkResponseSchema,
-  RunnerStreamEventSchema
+  RunnerStreamEventSchema,
+  TerminalRunEvidenceSchema
 } from "./runner.js";
-import { SafeMetadataStringSchema } from "./secret-safety.js";
+import { containsSensitiveMaterial, SafeMetadataStringSchema } from "./secret-safety.js";
 
 const EmptyRequestSchema = z.object({}).strict();
+const Sha256Schema = z.string().regex(/^[0-9a-f]{64}$/);
 const RepositoryDisplayLabelSchema = z
   .string()
   .trim()
   .min(1)
   .max(240)
   .regex(/^[^/\\\u0000-\u001f]+$/)
-  .refine((value) => value !== "." && value !== "..", "A basename display label is required.");
+  .refine(
+    (value) => value !== "." && value !== ".." && !containsSensitiveMaterial(value),
+    "A secret-free basename display label is required."
+  );
 const RepositoryCapabilitySchema = z
   .object({
     id: RepositoryCapabilityIdSchema,
@@ -70,6 +77,16 @@ export const DesktopLocalPrepareRequestSchema = z
     environmentId: EnvironmentIdSchema,
     approvalId: ApprovalIdSchema,
     environmentAuthorizationId: EnvironmentAuthorizationIdSchema,
+    environmentAuthorizationDigest: Sha256Schema,
+    repositoryCapabilityId: RepositoryCapabilityIdSchema,
+    inspectedSource: z
+      .object({
+        repositoryIdentity: SafeMetadataStringSchema.max(1_024),
+        sourceCommit: z.string().regex(/^[0-9a-f]{40}$/),
+        resolvedBaseRef: SafeMetadataStringSchema.max(512)
+      })
+      .strict(),
+    baseRef: SafeMetadataStringSchema.max(512),
     idempotencyKey: z.string().regex(/^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/)
   })
   .strict();
@@ -80,13 +97,23 @@ export const DesktopLocalStartRequestSchema = z
     environmentId: EnvironmentIdSchema,
     commandId: CommandIdSchema,
     commandAuthorizationId: CommandAuthorizationIdSchema,
+    commandAuthorizationDigest: Sha256Schema,
+    environmentAuthorizationId: EnvironmentAuthorizationIdSchema,
+    environmentAuthorizationDigest: Sha256Schema,
+    command: CommandSpecSchema,
     idempotencyKey: z.string().regex(/^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/)
   })
   .strict();
 export const DesktopCommandStreamRequestSchema = z
   .object({
+    workspaceId: WorkspaceIdSchema,
+    runId: RunIdSchema,
     environmentId: EnvironmentIdSchema,
     commandId: CommandIdSchema,
+    environmentAuthorizationId: EnvironmentAuthorizationIdSchema,
+    environmentAuthorizationDigest: Sha256Schema,
+    commandAuthorizationId: CommandAuthorizationIdSchema,
+    commandAuthorizationDigest: Sha256Schema,
     after: z.number().int().nonnegative().default(0)
   })
   .strict();
@@ -98,7 +125,9 @@ export const DesktopArtifactReadRequestSchema = z
     commandId: CommandIdSchema,
     artifactId: ArtifactIdSchema,
     environmentAuthorizationId: EnvironmentAuthorizationIdSchema,
+    environmentAuthorizationDigest: Sha256Schema,
     commandAuthorizationId: CommandAuthorizationIdSchema,
+    commandAuthorizationDigest: Sha256Schema,
     offset: z.number().int().nonnegative(),
     length: z.number().int().min(1).max(1_048_576)
   })
@@ -108,14 +137,20 @@ export const DesktopLocalCancelRequestSchema = z
     environmentId: EnvironmentIdSchema,
     commandId: CommandIdSchema,
     environmentAuthorizationId: EnvironmentAuthorizationIdSchema,
+    environmentAuthorizationDigest: Sha256Schema,
     commandAuthorizationId: CommandAuthorizationIdSchema,
+    commandAuthorizationDigest: Sha256Schema,
     idempotencyKey: z.string().regex(/^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/)
   })
   .strict();
 export const DesktopLocalDisposeRequestSchema = z
   .object({
+    workspaceId: WorkspaceIdSchema,
+    runId: RunIdSchema,
     environmentId: EnvironmentIdSchema,
     environmentAuthorizationId: EnvironmentAuthorizationIdSchema,
+    environmentAuthorizationDigest: Sha256Schema,
+    terminalRunEvidence: TerminalRunEvidenceSchema,
     idempotencyKey: z.string().regex(/^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/)
   })
   .strict();
@@ -124,74 +159,79 @@ export const DesktopApiOperationMapSchema = z.discriminatedUnion("operation", [
   z
     .object({
       operation: z.literal("runtime.status"),
-      request: EmptyRequestSchema,
-      response: DesktopRuntimeStatusSchema
+      request: EmptyRequestSchema
     })
     .strict(),
   z
     .object({
       operation: z.literal("repository.pick"),
-      request: DesktopRepositoryPickerRequestSchema,
-      response: DesktopRepositoryPickerResponseSchema
+      request: DesktopRepositoryPickerRequestSchema
     })
     .strict(),
   z
     .object({
       operation: z.literal("local.inspect"),
-      request: DesktopLocalInspectRequestSchema,
-      response: DesktopRepositoryInspectionSchema
+      request: DesktopLocalInspectRequestSchema
     })
     .strict(),
   z
     .object({
       operation: z.literal("local.list"),
-      request: DesktopLocalListRequestSchema,
-      response: ListEnvironmentsResponseSchema
+      request: DesktopLocalListRequestSchema
     })
     .strict(),
   z
     .object({
       operation: z.literal("local.prepare"),
-      request: DesktopLocalPrepareRequestSchema,
-      response: z.object({ environmentId: EnvironmentIdSchema }).strict()
+      request: DesktopLocalPrepareRequestSchema
     })
     .strict(),
   z
     .object({
       operation: z.literal("local.start"),
-      request: DesktopLocalStartRequestSchema,
-      response: CommandAcceptedSchema
+      request: DesktopLocalStartRequestSchema
     })
     .strict(),
   z
     .object({
       operation: z.literal("local.events"),
-      request: DesktopCommandStreamRequestSchema,
-      response: RunnerStreamEventSchema
+      request: DesktopCommandStreamRequestSchema
     })
     .strict(),
   z
     .object({
       operation: z.literal("local.artifact.read"),
-      request: DesktopArtifactReadRequestSchema,
-      response: ReadArtifactChunkResponseSchema
+      request: DesktopArtifactReadRequestSchema
     })
     .strict(),
   z
     .object({
       operation: z.literal("local.cancel"),
-      request: DesktopLocalCancelRequestSchema,
-      response: CancelCommandResponseSchema
+      request: DesktopLocalCancelRequestSchema
     })
     .strict(),
   z
     .object({
       operation: z.literal("local.dispose"),
-      request: DesktopLocalDisposeRequestSchema,
-      response: DisposeEnvironmentResponseSchema
+      request: DesktopLocalDisposeRequestSchema
     })
     .strict()
 ]);
+
+export const DesktopApiResponseSchemaByOperation = {
+  "runtime.status": DesktopRuntimeStatusSchema,
+  "repository.pick": DesktopRepositoryPickerResponseSchema,
+  "local.inspect": DesktopRepositoryInspectionSchema,
+  "local.list": ListEnvironmentsResponseSchema,
+  "local.prepare": z
+    .object({ environment: PreparedEnvironmentSchema, replayed: z.boolean() })
+    .strict(),
+  "local.start": CommandAcceptedSchema,
+  "local.events": RunnerStreamEventSchema,
+  "local.artifact.read": ReadArtifactChunkResponseSchema,
+  "local.cancel": CancelCommandResponseSchema,
+  "local.dispose": DisposeEnvironmentResponseSchema
+} as const;
 
 export interface DesktopApiOperationMap {
   readonly "runtime.status": {
@@ -212,7 +252,10 @@ export interface DesktopApiOperationMap {
   };
   readonly "local.prepare": {
     readonly request: z.infer<typeof DesktopLocalPrepareRequestSchema>;
-    readonly response: { readonly environmentId: z.infer<typeof EnvironmentIdSchema> };
+    readonly response: {
+      readonly environment: z.infer<typeof PreparedEnvironmentSchema>;
+      readonly replayed: boolean;
+    };
   };
   readonly "local.start": {
     readonly request: z.infer<typeof DesktopLocalStartRequestSchema>;

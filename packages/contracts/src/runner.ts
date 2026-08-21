@@ -11,6 +11,7 @@ import {
   RunIdSchema,
   WorkspaceIdSchema
 } from "./ids.js";
+import { ApprovalSchema, type Approval } from "./entities.js";
 import {
   containsSensitiveMaterial,
   normalizeSafeJson,
@@ -28,7 +29,14 @@ const AbsolutePathSchema = z
   .min(1)
   .max(8_192)
   .refine(
-    (value) => value.startsWith("/") && !value.includes("\u0000"),
+    (value) =>
+      value.startsWith("/") &&
+      !value.includes("\u0000") &&
+      !value.includes("\\") &&
+      !value.includes("//") &&
+      value
+        .split("/")
+        .every((segment, index) => index === 0 || (segment !== "." && segment !== "..")),
     "An absolute POSIX path without NUL bytes is required."
   );
 
@@ -134,6 +142,7 @@ export const RunnerCapabilitiesSchema = z
     platform: z.object({ os: z.literal("darwin"), architecture: z.literal("arm64") }).strict(),
     pty: z.literal(true),
     cancellation: z.literal(true),
+    filesystemDisclosure: z.literal("host_user"),
     maximumBytes: z
       .object({
         liveOutput: ByteCountSchema.positive(),
@@ -159,10 +168,11 @@ export const RunnerCapabilitiesSchema = z
     const local =
       value.supportedNetworkPolicies.length === 1 &&
       value.supportedNetworkPolicies[0] === "host" &&
-      value.enforcement.cpu !== "hard" &&
-      value.enforcement.memory !== "hard" &&
+      value.filesystemDisclosure === "host_user" &&
+      value.enforcement.cpu === "advisory" &&
+      value.enforcement.memory === "advisory" &&
       value.enforcement.network === "unavailable" &&
-      value.enforcement.childFilesystem === "unavailable" &&
+      value.enforcement.childFilesystem === "advisory" &&
       value.enforcement.duration === "hard" &&
       value.enforcement.autostackPathOperations === "hard";
     if (!local) {
@@ -193,7 +203,23 @@ const GeneratedBranchSchema = z
   .string()
   .max(250)
   .regex(/^autostack\/[A-Za-z0-9][A-Za-z0-9._-]*(?:\/[A-Za-z0-9][A-Za-z0-9._-]*)*$/)
-  .refine((branch) => !branch.includes(".."), "Generated branches cannot contain traversal.");
+  .superRefine((branch, context) => {
+    const segments = branch.split("/");
+    if (
+      branch.includes("..") ||
+      branch.endsWith(".") ||
+      branch.endsWith("/") ||
+      branch.includes("//") ||
+      branch.includes("@{") ||
+      branch.endsWith(".lock") ||
+      segments.some((segment) => segment === "." || segment === ".." || segment.endsWith(".lock"))
+    ) {
+      context.addIssue({
+        code: "custom",
+        message: "Generated branches must be unambiguous AutoStack Git references."
+      });
+    }
+  });
 const CredentialReferenceSetSchema = z
   .array(CredentialRefIdSchema)
   .max(128)
@@ -310,41 +336,95 @@ const sha256Hex = async (input: string): Promise<string> => {
   const digest = await globalThis.crypto.subtle.digest("SHA-256", new TextEncoder().encode(input));
   return Array.from(new Uint8Array(digest), (byte) => byte.toString(16).padStart(2, "0")).join("");
 };
+const normalizeTimestampForDigest = (value: string): string => {
+  const parsed = new Date(value);
+  if (Number.isNaN(parsed.getTime())) throw new TypeError("A valid timestamp is required.");
+  return parsed.toISOString();
+};
 const isAtOrAfter = (now: string, expiry: string): boolean => Date.parse(now) >= Date.parse(expiry);
+const isAfter = (left: string, right: string): boolean => Date.parse(left) > Date.parse(right);
+const sortCodeUnits = <T>(values: readonly T[], key: (value: T) => string): T[] =>
+  [...values].sort((left, right) => {
+    const leftKey = key(left);
+    const rightKey = key(right);
+    return leftKey < rightKey ? -1 : leftKey > rightKey ? 1 : 0;
+  });
+const normalizeExecutionScopeForDigest = (candidate: unknown): ExecutionScope => {
+  const parsed = ExecutionScopeSchema.parse(snapshot(candidate));
+  return {
+    ...parsed,
+    allowedCredentialRefIds: sortCodeUnits(parsed.allowedCredentialRefIds, (value) => value)
+  };
+};
+const normalizeCommandSpecForDigest = (candidate: unknown): CommandSpec => {
+  const parsed = CommandSpecSchema.parse(snapshot(candidate));
+  return {
+    ...parsed,
+    environment: sortCodeUnits(parsed.environment, (entry) => entry.name)
+  };
+};
+const normalizeEnvironmentAuthorizationForDigest = (candidate: unknown) => {
+  const parsed = EnvironmentAuthorizationSchema.parse(snapshot(candidate));
+  const { digest: _digest, ...withoutDigest } = parsed;
+  return {
+    ...withoutDigest,
+    scope: normalizeExecutionScopeForDigest(withoutDigest.scope),
+    createdAt: normalizeTimestampForDigest(withoutDigest.createdAt),
+    expiresAt: normalizeTimestampForDigest(withoutDigest.expiresAt)
+  };
+};
+const normalizeCommandScopeForDigest = (candidate: unknown): CommandScope => {
+  const parsed = CommandScopeSchema.parse(snapshot(candidate));
+  return {
+    ...parsed,
+    allowedCredentialRefIds: sortCodeUnits(parsed.allowedCredentialRefIds, (value) => value)
+  };
+};
+const normalizeCommandAuthorizationForDigest = (candidate: unknown) => {
+  const parsed = CommandAuthorizationSchema.parse(snapshot(candidate));
+  const { digest: _digest, ...withoutDigest } = parsed;
+  return {
+    ...withoutDigest,
+    scope: normalizeCommandScopeForDigest(withoutDigest.scope),
+    createdAt: normalizeTimestampForDigest(withoutDigest.createdAt),
+    expiresAt: normalizeTimestampForDigest(withoutDigest.expiresAt)
+  };
+};
+
+export type ApprovalEvidenceKind = "plan" | "permission" | "publish";
+export const canonicalizeApprovalEvidence = (
+  kind: ApprovalEvidenceKind,
+  evidence: unknown
+): string => canonicalDigestInput(`autostack.approval-evidence.${kind}`, snapshot(evidence));
+export const canonicalizeVersionedDigestValue = (domain: string, value: unknown): string =>
+  canonicalDigestInput(domain, snapshot(value));
 
 export const canonicalizeExecutionScope = (scope: unknown): string =>
-  canonicalDigestInput(
-    "autostack.execution-scope",
-    snapshot(ExecutionScopeSchema.parse(snapshot(scope)))
-  );
+  canonicalizeApprovalEvidence("plan", normalizeExecutionScopeForDigest(scope));
 export const canonicalizeEnvironmentAuthorizationForDigest = (authorization: unknown): string => {
-  const { digest: _digest, ...digestInput } = EnvironmentAuthorizationSchema.parse(
-    snapshot(authorization)
-  );
   return canonicalDigestInput(
     "autostack.environment-authorization",
-    snapshot(EnvironmentAuthorizationDigestInputSchema.parse(snapshot(digestInput)))
+    snapshot(
+      EnvironmentAuthorizationDigestInputSchema.parse(
+        snapshot(normalizeEnvironmentAuthorizationForDigest(authorization))
+      )
+    )
   );
 };
 export const canonicalizeCommandScope = (scope: unknown): string =>
-  canonicalDigestInput(
-    "autostack.command-scope",
-    snapshot(CommandScopeSchema.parse(snapshot(scope)))
-  );
+  canonicalizeApprovalEvidence("permission", normalizeCommandScopeForDigest(scope));
 export const canonicalizeCommandAuthorizationForDigest = (authorization: unknown): string => {
-  const { digest: _digest, ...digestInput } = CommandAuthorizationSchema.parse(
-    snapshot(authorization)
-  );
   return canonicalDigestInput(
     "autostack.command-authorization",
-    snapshot(CommandAuthorizationDigestInputSchema.parse(snapshot(digestInput)))
+    snapshot(
+      CommandAuthorizationDigestInputSchema.parse(
+        snapshot(normalizeCommandAuthorizationForDigest(authorization))
+      )
+    )
   );
 };
 export const canonicalizeCommandSpec = (command: unknown): string =>
-  canonicalDigestInput(
-    "autostack.command-spec",
-    snapshot(CommandSpecSchema.parse(snapshot(command)))
-  );
+  canonicalDigestInput("autostack.command-spec", snapshot(normalizeCommandSpecForDigest(command)));
 export const digestExecutionScope = async (scope: unknown): Promise<string> =>
   sha256Hex(canonicalizeExecutionScope(scope));
 export const digestEnvironmentAuthorization = async (authorization: unknown): Promise<string> =>
@@ -355,6 +435,8 @@ export const digestCommandAuthorization = async (authorization: unknown): Promis
   sha256Hex(canonicalizeCommandAuthorizationForDigest(authorization));
 export const digestCommandSpec = async (command: unknown): Promise<string> =>
   sha256Hex(canonicalizeCommandSpec(command));
+export const digestVersionedValue = async (domain: string, value: unknown): Promise<string> =>
+  sha256Hex(canonicalizeVersionedDigestValue(domain, value));
 
 export function validateCommandAuthorizationAgainstEnvironment(
   authorization: CommandAuthorization,
@@ -544,8 +626,16 @@ export const ReadArtifactChunkResponseSchema = z
     const canonicalBase64 = /^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/.test(
       value.bytes
     );
+    const base64Alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    const finalDataCharacter =
+      padding === 2 ? value.bytes.at(-3) : padding === 1 ? value.bytes.at(-2) : undefined;
+    const canonicalPaddingBits =
+      finalDataCharacter === undefined ||
+      (padding === 2
+        ? (base64Alphabet.indexOf(finalDataCharacter) & 0b1111) === 0
+        : (base64Alphabet.indexOf(finalDataCharacter) & 0b11) === 0);
     const decodedByteLength = canonicalBase64 ? (value.bytes.length / 4) * 3 - padding : 0;
-    if (!canonicalBase64 || decodedByteLength > 1_048_576) {
+    if (!canonicalBase64 || !canonicalPaddingBits || decodedByteLength > 1_048_576) {
       context.addIssue({
         code: "custom",
         path: ["bytes"],
@@ -601,6 +691,7 @@ export const PreparedEnvironmentSchema = z
     sourceCommit: CommitSchema,
     branch: GeneratedBranchSchema,
     authorization: EnvironmentAuthorizationSchema,
+    state: z.literal("prepared"),
     preparedAt: TimestampSchema
   })
   .strict()
@@ -635,16 +726,114 @@ const assertUnexpired = (expiresAt: string, now: string, label: string): void =>
 
 export interface PrepareEnvironmentAdmission {
   readonly request: PrepareEnvironmentRequest;
+  readonly approval: Approval;
+  readonly environmentAuthorization: EnvironmentAuthorization;
 }
+
+export interface TrustedRunnerAdmissionDependencies {
+  readonly resolveApproval: (approvalId: string) => Promise<unknown>;
+  readonly resolveEnvironmentAuthorization: (authorizationId: string) => Promise<unknown>;
+  readonly resolveCommandAuthorization: (authorizationId: string) => Promise<unknown>;
+}
+
+const parseTrustedApproval = async (
+  approvalId: string,
+  kind: ApprovalEvidenceKind,
+  workspaceId: string,
+  runId: string,
+  evidenceDigest: string,
+  now: string,
+  dependencies: TrustedRunnerAdmissionDependencies
+): Promise<Approval> => {
+  const candidate = await dependencies.resolveApproval(approvalId);
+  if (candidate === undefined) throw new TypeError("A trusted approved authorization is required.");
+  const approval = ApprovalSchema.parse(snapshot(candidate));
+  if (
+    approval.id !== approvalId ||
+    approval.kind !== kind ||
+    approval.status !== "approved" ||
+    approval.decision?.decision !== "approved" ||
+    approval.workspaceId !== workspaceId ||
+    approval.runId !== runId ||
+    approval.evidenceDigest !== evidenceDigest ||
+    isAfter(approval.createdAt, now) ||
+    approval.decision === undefined ||
+    isAfter(approval.decision.decidedAt, now) ||
+    isAfter(approval.updatedAt, now)
+  ) {
+    throw new TypeError("Trusted approval evidence is invalid or stale.");
+  }
+  return approval;
+};
+
+const assertTrustedEnvironmentAuthorization = async (
+  authorization: EnvironmentAuthorization,
+  now: string,
+  dependencies: TrustedRunnerAdmissionDependencies
+): Promise<EnvironmentAuthorization> => {
+  const candidate = await dependencies.resolveEnvironmentAuthorization(authorization.id);
+  if (candidate === undefined)
+    throw new TypeError("A trusted environment authorization is required.");
+  const trusted = EnvironmentAuthorizationSchema.parse(snapshot(candidate));
+  const [providedDigest, trustedDigest] = await Promise.all([
+    digestEnvironmentAuthorization(authorization),
+    digestEnvironmentAuthorization(trusted)
+  ]);
+  if (
+    authorization.digest !== providedDigest ||
+    trusted.digest !== trustedDigest ||
+    authorization.id !== trusted.id ||
+    authorization.digest !== trusted.digest ||
+    canonicalizeEnvironmentAuthorizationForDigest(authorization) !==
+      canonicalizeEnvironmentAuthorizationForDigest(trusted) ||
+    isAfter(authorization.createdAt, now) ||
+    isAfter(trusted.createdAt, now)
+  ) {
+    throw new TypeError("Trusted environment authorization is invalid.");
+  }
+  assertUnexpired(trusted.expiresAt, now, "Environment authorization");
+  return trusted;
+};
+
+const assertTrustedCommandAuthorization = async (
+  authorization: CommandAuthorization,
+  now: string,
+  dependencies: TrustedRunnerAdmissionDependencies
+): Promise<CommandAuthorization> => {
+  const candidate = await dependencies.resolveCommandAuthorization(authorization.id);
+  if (candidate === undefined) throw new TypeError("A trusted command authorization is required.");
+  const trusted = CommandAuthorizationSchema.parse(snapshot(candidate));
+  const [providedDigest, trustedDigest] = await Promise.all([
+    digestCommandAuthorization(authorization),
+    digestCommandAuthorization(trusted)
+  ]);
+  if (
+    authorization.digest !== providedDigest ||
+    trusted.digest !== trustedDigest ||
+    authorization.id !== trusted.id ||
+    authorization.digest !== trusted.digest ||
+    canonicalizeCommandAuthorizationForDigest(authorization) !==
+      canonicalizeCommandAuthorizationForDigest(trusted) ||
+    isAfter(authorization.createdAt, now) ||
+    isAfter(trusted.createdAt, now)
+  ) {
+    throw new TypeError("Trusted command authorization is invalid.");
+  }
+  assertUnexpired(trusted.expiresAt, now, "Command authorization");
+  return trusted;
+};
 
 export async function admitPrepareEnvironment(
   candidate: unknown,
-  now: unknown
+  now: unknown,
+  dependencies: TrustedRunnerAdmissionDependencies
 ): Promise<PrepareEnvironmentAdmission> {
   const request = PrepareEnvironmentRequestSchema.parse(snapshot(candidate));
   const parsedNow = TimestampSchema.parse(snapshot(now));
   const authorization = request.authorization;
-  assertUnexpired(authorization.expiresAt, parsedNow, "Environment authorization");
+  if (isAfter(authorization.createdAt, parsedNow)) {
+    throw new TypeError("Environment authorization was created in the future.");
+  }
   assertDigest(
     authorization.approvalEvidenceDigest,
     await digestExecutionScope(authorization.scope),
@@ -655,55 +844,105 @@ export async function admitPrepareEnvironment(
     await digestEnvironmentAuthorization(authorization),
     "Environment authorization"
   );
-  return { request };
+  const trustedAuthorization = await assertTrustedEnvironmentAuthorization(
+    authorization,
+    parsedNow,
+    dependencies
+  );
+  const approval = await parseTrustedApproval(
+    trustedAuthorization.approvalId,
+    "plan",
+    request.workspaceId,
+    request.runId,
+    trustedAuthorization.approvalEvidenceDigest,
+    parsedNow,
+    dependencies
+  );
+  return { request, approval, environmentAuthorization: trustedAuthorization };
 }
 
 export interface StartCommandAdmission {
   readonly request: StartCommandRequest;
   readonly environmentAuthorization: EnvironmentAuthorization;
+  readonly commandAuthorization: CommandAuthorization;
+  readonly approval: Approval;
 }
 
 export async function admitStartCommand(
   candidate: unknown,
-  environmentAuthorizationCandidate: unknown,
-  now: unknown
+  now: unknown,
+  dependencies: TrustedRunnerAdmissionDependencies
 ): Promise<StartCommandAdmission> {
   const request = StartCommandRequestSchema.parse(snapshot(candidate));
-  const environmentAuthorization = EnvironmentAuthorizationSchema.parse(
-    snapshot(environmentAuthorizationCandidate)
-  );
   const parsedNow = TimestampSchema.parse(snapshot(now));
+  const environmentAuthorization = EnvironmentAuthorizationSchema.parse(
+    snapshot(await dependencies.resolveEnvironmentAuthorization(request.environmentAuthorizationId))
+  );
   const authorization = request.authorization;
-  assertUnexpired(environmentAuthorization.expiresAt, parsedNow, "Environment authorization");
-  assertUnexpired(authorization.expiresAt, parsedNow, "Command authorization");
-  validateCommandAuthorizationAgainstEnvironment(authorization, environmentAuthorization);
+  const trustedEnvironmentAuthorization = await assertTrustedEnvironmentAuthorization(
+    environmentAuthorization,
+    parsedNow,
+    dependencies
+  );
+  const trustedAuthorization = await assertTrustedCommandAuthorization(
+    authorization,
+    parsedNow,
+    dependencies
+  );
+  await parseTrustedApproval(
+    trustedEnvironmentAuthorization.approvalId,
+    "plan",
+    request.workspaceId,
+    request.runId,
+    trustedEnvironmentAuthorization.approvalEvidenceDigest,
+    parsedNow,
+    dependencies
+  );
+  validateCommandAuthorizationAgainstEnvironment(
+    trustedAuthorization,
+    trustedEnvironmentAuthorization
+  );
   assertDigest(
-    authorization.approvalEvidenceDigest,
-    await digestCommandScope(authorization.scope),
+    trustedAuthorization.approvalEvidenceDigest,
+    await digestCommandScope(trustedAuthorization.scope),
     "Command approval evidence"
   );
   assertDigest(
-    authorization.digest,
-    await digestCommandAuthorization(authorization),
+    trustedAuthorization.digest,
+    await digestCommandAuthorization(trustedAuthorization),
     "Command authorization"
   );
   assertDigest(
-    authorization.scope.commandDigest,
+    trustedAuthorization.scope.commandDigest,
     await digestCommandSpec(request.command),
     "Command specification"
   );
   if (
-    !cwdIsWithin(authorization.scope.cwdRoot, request.command.cwd) ||
-    request.command.timeoutSeconds > authorization.scope.resourceLimits.durationSeconds ||
+    !cwdIsWithin(trustedAuthorization.scope.cwdRoot, request.command.cwd) ||
+    request.command.timeoutSeconds > trustedAuthorization.scope.resourceLimits.durationSeconds ||
     request.command.environment.some(
       (entry) =>
         entry.kind === "credential_ref" &&
-        !authorization.scope.allowedCredentialRefIds.includes(entry.credentialRefId)
+        !trustedAuthorization.scope.allowedCredentialRefIds.includes(entry.credentialRefId)
     )
   ) {
     throw new TypeError("Command is outside its recorded authorization scope.");
   }
-  return { request, environmentAuthorization };
+  const approval = await parseTrustedApproval(
+    trustedAuthorization.approvalId,
+    "permission",
+    request.workspaceId,
+    request.runId,
+    trustedAuthorization.approvalEvidenceDigest,
+    parsedNow,
+    dependencies
+  );
+  return {
+    request,
+    approval,
+    environmentAuthorization: trustedEnvironmentAuthorization,
+    commandAuthorization: trustedAuthorization
+  };
 }
 
 export const validateArtifactChunkResponse = (
@@ -726,6 +965,8 @@ export const validateArtifactChunkResponse = (
 };
 
 const EventBaseShape = {
+  workspaceId: WorkspaceIdSchema,
+  runId: RunIdSchema,
   commandId: CommandIdSchema,
   sequence: PositiveSequenceSchema,
   occurredAt: TimestampSchema
@@ -756,7 +997,16 @@ export const RunnerStreamEventSchema = z.discriminatedUnion("type", [
       ...EventBaseShape,
       artifact: ArtifactDescriptorSchema
     })
-    .strict(),
+    .strict()
+    .superRefine((value, context) => {
+      if (
+        value.artifact.workspaceId !== value.workspaceId ||
+        value.artifact.runId !== value.runId ||
+        value.artifact.commandId !== value.commandId
+      ) {
+        context.addIssue({ code: "custom", message: "Artifact event identity is invalid." });
+      }
+    }),
   z
     .object({
       type: z.literal("command.completed"),
@@ -768,7 +1018,19 @@ export const RunnerStreamEventSchema = z.discriminatedUnion("type", [
       interrupted: z.boolean(),
       transcript: ArtifactDescriptorSchema
     })
-    .strict(),
+    .strict()
+    .superRefine((value, context) => {
+      if (
+        value.transcript.workspaceId !== value.workspaceId ||
+        value.transcript.runId !== value.runId ||
+        value.transcript.commandId !== value.commandId ||
+        value.transcript.kind !== "command_transcript" ||
+        (value.exitCode === null && value.signal === null) ||
+        (value.exitCode !== null && value.signal !== null)
+      ) {
+        context.addIssue({ code: "custom", message: "Command completion evidence is invalid." });
+      }
+    }),
   z
     .object({
       type: z.literal("stream.error"),
@@ -798,26 +1060,34 @@ export const RunnerSubscriptionItemSchema = z.discriminatedUnion("type", [
 ]);
 
 export const validateRunnerStream = (
-  candidates: readonly unknown[]
+  candidates: readonly unknown[],
+  expected?: {
+    readonly workspaceId: string;
+    readonly runId: string;
+    readonly commandId: string;
+    readonly after: number;
+  }
 ): readonly RunnerStreamEvent[] => {
+  if (candidates.length > 10_000) throw new TypeError("Runner stream exceeds its frame bound.");
   const events = candidates.map((candidate) => RunnerStreamEventSchema.parse(snapshot(candidate)));
   if (events.length === 0) throw new TypeError("A command stream requires terminal evidence.");
-  const commandId = events[0]?.commandId;
+  const first = events[0];
+  if (first === undefined) throw new TypeError("A command stream requires terminal evidence.");
+  const commandId = expected?.commandId ?? first.commandId;
   let terminal = false;
-  let previousSequence = 0;
+  let previousSequence = expected?.after ?? 0;
   for (const event of events) {
-    if (event.commandId !== commandId || event.sequence <= previousSequence || terminal) {
+    if (
+      expected !== undefined &&
+      (event.workspaceId !== expected.workspaceId || event.runId !== expected.runId)
+    ) {
+      throw new TypeError("Runner stream identity is incoherent.");
+    }
+    if (event.commandId !== commandId || event.sequence !== previousSequence + 1 || terminal) {
       throw new TypeError("Runner stream sequence is incoherent.");
     }
-    if (event.type === "artifact.created" && event.artifact.commandId !== event.commandId) {
-      throw new TypeError("Artifact event command identity is invalid.");
-    }
-    if (
-      event.type === "command.completed" &&
-      (event.transcript.commandId !== event.commandId ||
-        event.transcript.kind !== "command_transcript")
-    ) {
-      throw new TypeError("Command transcript identity is invalid.");
+    if (previousSequence === 0 && event.type !== "command.started") {
+      throw new TypeError("Runner stream must start with command.started.");
     }
     previousSequence = event.sequence;
     terminal = event.type === "command.completed" || event.type === "stream.error";
@@ -868,6 +1138,7 @@ export type ReadArtifactChunkRequest = z.infer<typeof ReadArtifactChunkRequestSc
 export type ReadArtifactChunkResponse = z.infer<typeof ReadArtifactChunkResponseSchema>;
 export type DisposeEnvironmentRequest = z.infer<typeof DisposeEnvironmentRequestSchema>;
 export type DisposeEnvironmentResponse = z.infer<typeof DisposeEnvironmentResponseSchema>;
+export type TerminalRunEvidence = z.infer<typeof TerminalRunEvidenceSchema>;
 export type PreparedEnvironment = z.infer<typeof PreparedEnvironmentSchema>;
 export type ListEnvironmentsResponse = z.infer<typeof ListEnvironmentsResponseSchema>;
 export type RunnerStreamEvent = z.infer<typeof RunnerStreamEventSchema>;

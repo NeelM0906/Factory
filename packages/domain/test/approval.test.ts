@@ -1,6 +1,11 @@
 import { describe, expect, it } from "vitest";
 
-import { ApprovalSchema, type Actor } from "@autostack/contracts";
+import {
+  ApprovalSchema,
+  digestCommandScope,
+  digestExecutionScope,
+  type Actor
+} from "@autostack/contracts";
 
 import {
   ApprovalDecisionConflictError,
@@ -23,7 +28,7 @@ const EVIDENCE = { branch: "autostack/run-1", plan: { steps: ["change", "test"] 
 describe("approval evidence", () => {
   it("canonicalizes object keys before hashing", () => {
     expect(digestApprovalEvidence({ b: 2, a: 1 })).toBe(
-      "43258cff783fe7036d8a43033f830adfc60ec037382473548ac742b888292777"
+      "6d7a6a5c154a744a14f69f70bd0fef33c78db0d2fdad1b80274224521df9213e"
     );
     expect(digestApprovalEvidence({ b: 2, a: 1 })).toBe(digestApprovalEvidence({ a: 1, b: 2 }));
   });
@@ -171,5 +176,77 @@ describe("approval decisions", () => {
         correlationId: CORRELATION_ID
       })
     ).toThrow(IneligibleApproverError);
+  });
+
+  it("creates plan and permission evidence that exactly matches runner scope digests", async () => {
+    const planScope = {
+      workspaceId: pendingApproval().workspaceId,
+      runId: pendingApproval().runId,
+      environmentId: "env_123e4567-e89b-42d3-a456-426614174000",
+      repositoryIdentity: "github:autostack/contracts",
+      sourceCommit: "a".repeat(40),
+      branch: "autostack/approval-compatibility",
+      cwdRoot: ".",
+      resourceLimits: { cpu: 1, memoryMb: 1, durationSeconds: 1 },
+      networkPolicy: "host" as const,
+      filesystemDisclosure: "host_user" as const,
+      allowedCredentialRefIds: []
+    };
+    const plan = requestApproval(
+      {
+        workspaceId: pendingApproval().workspaceId,
+        runId: pendingApproval().runId,
+        kind: "plan",
+        evidence: planScope,
+        eligibleApproverIds: [ACTOR.id],
+        actor: ACTOR,
+        correlationId: CORRELATION_ID
+      },
+      { now: () => NOW, approvalId: () => pendingApproval().id }
+    ).approval;
+    expect(plan.evidenceDigest).toBe(await digestExecutionScope(planScope));
+    expect(() =>
+      decideApproval({
+        approval: plan,
+        decision: "approved",
+        evidence: { ...planScope, branch: "autostack/substituted" },
+        actor: ACTOR,
+        origin: "desktop",
+        occurredAt: LATER,
+        correlationId: CORRELATION_ID
+      })
+    ).toThrow(StaleApprovalEvidenceError);
+
+    const commandScope = {
+      environmentAuthorizationId: "envauth_123e4567-e89b-42d3-a456-426614174000",
+      environmentAuthorizationDigest: "a".repeat(64),
+      workspaceId: pendingApproval().workspaceId,
+      runId: pendingApproval().runId,
+      environmentId: "env_123e4567-e89b-42d3-a456-426614174000",
+      commandId: "cmd_123e4567-e89b-42d3-a456-426614174000",
+      action: "implement" as const,
+      commandDigest: "a".repeat(64),
+      repositoryIdentity: planScope.repositoryIdentity,
+      sourceCommit: planScope.sourceCommit,
+      branch: planScope.branch,
+      cwdRoot: ".",
+      networkPolicy: "host" as const,
+      filesystemDisclosure: "host_user" as const,
+      resourceLimits: planScope.resourceLimits,
+      allowedCredentialRefIds: []
+    };
+    const permission = requestApproval(
+      {
+        workspaceId: pendingApproval().workspaceId,
+        runId: pendingApproval().runId,
+        kind: "permission",
+        evidence: commandScope,
+        eligibleApproverIds: [ACTOR.id],
+        actor: ACTOR,
+        correlationId: CORRELATION_ID
+      },
+      { now: () => NOW, approvalId: () => pendingApproval().id }
+    ).approval;
+    expect(permission.evidenceDigest).toBe(await digestCommandScope(commandScope));
   });
 });

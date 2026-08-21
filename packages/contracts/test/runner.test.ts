@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 import {
   CommandAuthorizationSchema,
   DesktopApiOperationMapSchema,
+  admitPrepareEnvironment,
   admitStartCommand,
   canonicalizeCommandScope,
   canonicalizeEnvironmentAuthorizationForDigest,
@@ -31,7 +32,8 @@ import {
   validateArtifactChunkResponse,
   validateRunnerStream,
   createId,
-  createIdFactory
+  createIdFactory,
+  type TrustedRunnerAdmissionDependencies
 } from "../src/index.js";
 
 const UUID = "123e4567-e89b-42d3-a456-426614174000";
@@ -44,6 +46,7 @@ const ids = {
   environmentId: createId("environment", UUID),
   commandId: createId("command", UUID),
   approvalId: createId("approval", UUID),
+  permissionApprovalId: createId("approval", "123e4567-e89b-42d3-a456-426614174001"),
   environmentAuthorizationId: createId("environmentAuthorization", UUID),
   commandAuthorizationId: createId("commandAuthorization", UUID),
   credentialRefId: createId("credentialRef", UUID)
@@ -72,12 +75,15 @@ describe("local runner contracts", () => {
     expect(factory.repositoryCapability()).toBe(`repocap_${UUID}`);
     expect(() => createId("command", "not-a-uuid")).toThrow();
     expect(
+      DesktopApiOperationMapSchema.parse({ operation: "runtime.status", request: {} })
+    ).toMatchObject({ operation: "runtime.status" });
+    expect(() =>
       DesktopApiOperationMapSchema.parse({
         operation: "runtime.status",
         request: {},
         response: { status: "ready" }
       })
-    ).toMatchObject({ operation: "runtime.status" });
+    ).toThrow();
     expect(() =>
       DesktopApiOperationMapSchema.parse({
         operation: "repository.pick",
@@ -278,6 +284,7 @@ describe("local runner contracts", () => {
         platform: { os: "darwin", architecture: "arm64" },
         pty: true,
         cancellation: true,
+        filesystemDisclosure: "host_user",
         maximumBytes: { liveOutput: 1, replay: 1, transcript: 1, artifact: 1 },
         supportedNetworkPolicies: ["host"],
         enforcement: {
@@ -285,7 +292,7 @@ describe("local runner contracts", () => {
           memory: "advisory",
           duration: "hard",
           autostackPathOperations: "hard",
-          childFilesystem: "unavailable",
+          childFilesystem: "advisory",
           network: "unavailable"
         }
       })
@@ -304,6 +311,17 @@ describe("local runner contracts", () => {
         nodePtyVersion: "1.1.0"
       })
     ).toBeDefined();
+    expect(() =>
+      GuardianLaunchDescriptorSchema.parse({
+        electronExecutable: "/app/electron",
+        guardianModule: "/app//guardian.mjs",
+        nativeDirectory: "/app/native",
+        desktopBuildRoot: "/app",
+        runtimeManifestDigest: DIGEST,
+        electronVersion: "43.4.0",
+        nodePtyVersion: "1.1.0"
+      })
+    ).toThrow(/absolute POSIX/i);
     expect(() =>
       GuardianLaunchDescriptorSchema.parse({
         electronExecutable: "/app/electron",
@@ -382,7 +400,7 @@ describe("local runner contracts", () => {
     const commandAuthorization = {
       id: ids.commandAuthorizationId,
       digest: DIGEST,
-      approvalId: ids.approvalId,
+      approvalId: ids.permissionApprovalId,
       approvalEvidenceDigest: DIGEST,
       scope: {
         environmentAuthorizationId: ids.environmentAuthorizationId,
@@ -462,6 +480,8 @@ describe("local runner contracts", () => {
     expect(
       RunnerStreamEventSchema.parse({
         type: "terminal.output",
+        workspaceId: ids.workspaceId,
+        runId: ids.runId,
         commandId: ids.commandId,
         sequence: 1,
         occurredAt: NOW,
@@ -512,7 +532,7 @@ describe("local runner contracts", () => {
     const authorization = {
       id: ids.commandAuthorizationId,
       digest: "0".repeat(64),
-      approvalId: ids.approvalId,
+      approvalId: ids.permissionApprovalId,
       approvalEvidenceDigest: await digestCommandScope(commandScope),
       scope: commandScope,
       createdAt: NOW,
@@ -530,18 +550,67 @@ describe("local runner contracts", () => {
       authorization,
       idempotency: { key: "command-start" }
     };
-    await expect(admitStartCommand(request, environmentAuthorization, NOW)).resolves.toMatchObject({
+    const dependencies: TrustedRunnerAdmissionDependencies = {
+      resolveApproval: async (approvalId) => {
+        if (approvalId === ids.approvalId) {
+          return {
+            schemaVersion: 1,
+            id: ids.approvalId,
+            workspaceId: ids.workspaceId,
+            runId: ids.runId,
+            kind: "plan",
+            status: "approved",
+            evidenceDigest: environmentAuthorization.approvalEvidenceDigest,
+            eligibleApproverIds: ["local-user"],
+            decision: {
+              decision: "approved",
+              actor: { kind: "user", id: "local-user" },
+              origin: "desktop",
+              decidedAt: NOW
+            },
+            createdAt: NOW,
+            updatedAt: NOW
+          };
+        }
+        if (approvalId === ids.permissionApprovalId) {
+          return {
+            schemaVersion: 1,
+            id: ids.permissionApprovalId,
+            workspaceId: ids.workspaceId,
+            runId: ids.runId,
+            kind: "permission",
+            status: "approved",
+            evidenceDigest: authorization.approvalEvidenceDigest,
+            eligibleApproverIds: ["local-user"],
+            decision: {
+              decision: "approved",
+              actor: { kind: "user", id: "local-user" },
+              origin: "desktop",
+              decidedAt: NOW
+            },
+            createdAt: NOW,
+            updatedAt: NOW
+          };
+        }
+        return undefined;
+      },
+      resolveEnvironmentAuthorization: async (authorizationId) =>
+        authorizationId === environmentAuthorization.id ? environmentAuthorization : undefined,
+      resolveCommandAuthorization: async (authorizationId) =>
+        authorizationId === authorization.id ? authorization : undefined
+    };
+    await expect(admitStartCommand(request, NOW, dependencies)).resolves.toMatchObject({
       request: { commandId: ids.commandId }
     });
     await expect(
       admitStartCommand(
         { ...request, command: { ...command, args: ["substituted"] } },
-        environmentAuthorization,
-        NOW
+        NOW,
+        dependencies
       )
     ).rejects.toThrow(/specification/i);
     await expect(
-      admitStartCommand(request, environmentAuthorization, "2026-08-22T12:00:00.000Z")
+      admitStartCommand(request, "2026-08-22T12:00:00.000Z", dependencies)
     ).rejects.toThrow(/expired/i);
     const artifact = {
       artifactId: createId("artifact", UUID),
@@ -580,6 +649,8 @@ describe("local runner contracts", () => {
       validateRunnerStream([
         {
           type: "command.started",
+          workspaceId: ids.workspaceId,
+          runId: ids.runId,
           commandId: ids.commandId,
           sequence: 1,
           occurredAt: NOW,
@@ -587,6 +658,8 @@ describe("local runner contracts", () => {
         },
         {
           type: "artifact.created",
+          workspaceId: ids.workspaceId,
+          runId: ids.runId,
           commandId: ids.commandId,
           sequence: 2,
           occurredAt: NOW,
@@ -594,6 +667,8 @@ describe("local runner contracts", () => {
         },
         {
           type: "command.completed",
+          workspaceId: ids.workspaceId,
+          runId: ids.runId,
           commandId: ids.commandId,
           sequence: 3,
           occurredAt: NOW,
@@ -611,6 +686,8 @@ describe("local runner contracts", () => {
       validateRunnerStream([
         {
           type: "command.started",
+          workspaceId: ids.workspaceId,
+          runId: ids.runId,
           commandId: ids.commandId,
           sequence: 1,
           occurredAt: NOW,
@@ -618,6 +695,37 @@ describe("local runner contracts", () => {
         }
       ])
     ).toThrow(/terminal/i);
+    expect(() =>
+      validateRunnerStream(
+        [
+          {
+            type: "command.started",
+            workspaceId: ids.workspaceId,
+            runId: ids.runId,
+            commandId: ids.commandId,
+            sequence: 1,
+            occurredAt: NOW,
+            pty: true
+          },
+          {
+            type: "stream.error",
+            workspaceId: ids.workspaceId,
+            runId: ids.runId,
+            commandId: ids.commandId,
+            sequence: 2,
+            occurredAt: NOW,
+            code: "protocol_failure",
+            message: "safe failure"
+          }
+        ],
+        {
+          workspaceId: createId("workspace", "123e4567-e89b-42d3-a456-426614174099"),
+          runId: ids.runId,
+          commandId: ids.commandId,
+          after: 0
+        }
+      )
+    ).toThrow(/identity/i);
     expect(() =>
       validateArtifactChunkResponse(artifactRequest, {
         artifact: {
@@ -639,5 +747,53 @@ describe("local runner contracts", () => {
         done: false
       })
     ).toThrow(/progress/i);
+    expect(() =>
+      ReadArtifactChunkResponseSchema.parse({
+        artifact,
+        offset: 0,
+        bytes: "YR==",
+        nextOffset: 1,
+        done: true
+      })
+    ).toThrow(/base64/i);
+  });
+
+  it("rejects a self-consistent prepare authorization that is absent from trusted approval state", async () => {
+    const authorization = {
+      id: ids.environmentAuthorizationId,
+      digest: "0".repeat(64),
+      approvalId: ids.approvalId,
+      approvalEvidenceDigest: await digestExecutionScope(scope),
+      scope,
+      createdAt: NOW,
+      expiresAt: "2026-08-21T13:00:00.000Z"
+    };
+    authorization.digest = await digestEnvironmentAuthorization(authorization);
+    const request = {
+      workspaceId: ids.workspaceId,
+      runId: ids.runId,
+      environmentId: ids.environmentId,
+      inspection: {
+        repositoryIdentity: scope.repositoryIdentity,
+        canonicalSourcePath: "/source",
+        repositoryCommonDirectory: "/source/.git",
+        resolvedBaseRef: "main",
+        sourceCommit: scope.sourceCommit,
+        dirty: false,
+        diagnostics: []
+      },
+      sourceCommit: scope.sourceCommit,
+      branch: scope.branch,
+      authorization,
+      idempotency: { key: "prepare" }
+    };
+
+    await expect(
+      admitPrepareEnvironment(request, NOW, {
+        resolveApproval: async () => undefined,
+        resolveEnvironmentAuthorization: async () => authorization,
+        resolveCommandAuthorization: async () => undefined
+      })
+    ).rejects.toThrow(/trusted approved/i);
   });
 });
