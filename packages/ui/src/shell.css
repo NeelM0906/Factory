@@ -1,0 +1,297 @@
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  background: var(--as-canvas);
+  color: var(--as-text);
+  font-family: var(--as-font-sans);
+}
+
+:where(a, button, input, textarea, select):focus-visible {
+  outline: 2px solid var(--as-focus);
+  outline-offset: 3px;
+}
+
+.as-skip-link {
+  position: fixed;
+  z-index: 100;
+  top: var(--as-space-3);
+  left: var(--as-space-3);
+  padding: var(--as-space-2) var(--as-space-3);
+  border-radius: var(--as-radius-sm);
+  background: var(--as-focus);
+  color: var(--as-graphite-950);
+  transform: translateY(-200%);
+  transition: transform var(--as-duration-fast) ease;
+}
+
+.as-skip-link:focus {
+  transform: translateY(0);
+}
+
+.as-shell {
+  min-height: 100vh;
+  display: grid;
+  grid-template-columns: 10.5rem 17rem minmax(0, 1fr) 19rem;
+  grid-template-areas: "rail sidebar main inspector";
+  background: var(--as-canvas);
+}
+
+.as-rail,
+.as-sidebar,
+.as-inspector {
+  min-width: 0;
+  border-right: 1px solid var(--as-border);
+  background: var(--as-surface);
+}
+
+.as-rail {
+  grid-area: rail;
+  padding: var(--as-space-5) var(--as-space-3);
+}
+
+.as-brand {
+  display: flex;
+  align-items: center;
+  gap: var(--as-space-2);
+  color: var(--as-text);
+  font-weight: 720;
+  text-decoration: none;
+}
+
+.as-brand__mark {
+  display: grid;
+  width: 2rem;
+  height: 2rem;
+  place-items: center;
+  border-radius: var(--as-radius-sm);
+  background: var(--as-signal);
+  color: var(--as-graphite-950);
+  font: 700 var(--as-text-xs) / 1 var(--as-font-mono);
+}
+
+.as-rail__list {
+  display: grid;
+  gap: var(--as-space-1);
+  margin: var(--as-space-7) 0 0;
+  padding: 0;
+  list-style: none;
+}
+
+.as-rail__link {
+  display: flex;
+  align-items: center;
+  gap: var(--as-space-2);
+  padding: var(--as-space-2);
+  border-radius: var(--as-radius-sm);
+  color: var(--as-text-muted);
+  font-size: var(--as-text-sm);
+  text-decoration: none;
+  transition:
+    color var(--as-duration-fast) ease,
+    background var(--as-duration-fast) ease;
+}
+
+.as-rail__link:hover,
+.as-rail__link[aria-current="page"] {
+  background: var(--as-surface-raised);
+  color: var(--as-text);
+}
+
+.as-rail__link[aria-current="page"] .as-rail__glyph {
+  color: var(--as-signal);
+}
+
+.as-rail__glyph {
+  width: 1.5rem;
+  font-family: var(--as-font-mono);
+}
+
+.as-sidebar {
+  grid-area: sidebar;
+  padding: var(--as-space-5);
+}
+
+.as-main {
+  grid-area: main;
+  min-width: 0;
+  padding: var(--as-space-6);
+}
+
+.as-inspector {
+  grid-area: inspector;
+  padding: var(--as-space-5);
+  border-right: 0;
+  border-left: 1px solid var(--as-border);
+}
+
+.as-lifecycle {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(7rem, 1fr));
+  margin: 0;
+  padding: 0;
+  overflow: hidden;
+  border: 1px solid var(--as-border);
+  border-radius: var(--as-radius-md);
+  list-style: none;
+  background: var(--as-surface);
+}
+
+.as-lifecycle__stage {
+  display: flex;
+  min-height: 4.5rem;
+  gap: var(--as-space-2);
+  padding: var(--as-space-3);
+  border-right: 1px solid var(--as-border);
+}
+
+.as-lifecycle__stage:last-child {
+  border-right: 0;
+}
+
+.as-lifecycle__stage[data-state="active"] {
+  box-shadow: inset 0 3px var(--as-signal);
+}
+
+.as-lifecycle__stage[data-state="complete"] {
+  box-shadow: inset 0 3px var(--as-success);
+}
+
+.as-lifecycle__stage[data-state="failed"] {
+  box-shadow: inset 0 3px var(--as-danger);
+}
+
+.as-lifecycle__sequence,
+.as-lifecycle__detail,
+.as-metric__label,
+.as-metric__detail,
+.as-metric__tone {
+  color: var(--as-text-muted);
+  font-family: var(--as-font-mono);
+  font-size: var(--as-text-xs);
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.as-lifecycle__copy {
+  display: grid;
+  align-content: start;
+  gap: var(--as-space-1);
+}
+
+.as-lifecycle__label {
+  font-size: var(--as-text-sm);
+  font-weight: 650;
+}
+
+.as-metric {
+  display: grid;
+  min-height: 9rem;
+  align-content: space-between;
+  padding: var(--as-space-4);
+  border: 1px solid var(--as-border);
+  border-radius: var(--as-radius-md);
+  background: var(--as-surface);
+}
+
+.as-metric__value {
+  font: 500 var(--as-text-xl) / 1 var(--as-font-mono);
+}
+
+.as-metric__tone {
+  display: flex;
+  align-items: center;
+  gap: var(--as-space-2);
+}
+
+.as-metric__signal {
+  width: 0.5rem;
+  height: 0.5rem;
+  border-radius: 50%;
+  background: var(--as-text-muted);
+}
+
+.as-metric[data-tone="good"] .as-metric__signal {
+  background: var(--as-success);
+}
+
+.as-metric[data-tone="attention"] .as-metric__signal {
+  background: var(--as-signal);
+}
+
+.as-status {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--as-space-2);
+  width: max-content;
+  padding: var(--as-space-1) var(--as-space-2);
+  border: 1px solid var(--as-border-strong);
+  border-radius: 999px;
+  color: var(--as-text-muted);
+  font-family: var(--as-font-mono);
+  font-size: var(--as-text-xs);
+}
+
+.as-status__cue {
+  font-weight: 800;
+}
+
+.as-status[data-tone="active"],
+.as-status[data-tone="waiting"] {
+  border-color: var(--as-signal);
+  color: var(--as-signal);
+}
+
+.as-status[data-tone="success"] {
+  border-color: var(--as-success);
+  color: var(--as-success);
+}
+
+.as-status[data-tone="failed"] {
+  border-color: var(--as-danger);
+  color: var(--as-danger);
+}
+
+@media (max-width: 74rem) {
+  .as-shell {
+    grid-template-columns: 10.5rem 17rem minmax(0, 1fr);
+    grid-template-areas:
+      "rail sidebar main"
+      "rail sidebar inspector";
+  }
+
+  .as-inspector {
+    border-top: 1px solid var(--as-border);
+    border-left: 0;
+  }
+}
+
+@media (max-width: 51.25rem) {
+  .as-shell {
+    grid-template-columns: 4.25rem minmax(0, 1fr);
+    grid-template-areas:
+      "rail main"
+      "rail sidebar"
+      "rail inspector";
+  }
+
+  .as-brand > span:last-child,
+  .as-rail__link > span:last-child {
+    position: absolute;
+    overflow: hidden;
+    width: 1px;
+    height: 1px;
+    clip: rect(0 0 0 0);
+    white-space: nowrap;
+  }
+
+  .as-sidebar,
+  .as-inspector {
+    border-top: 1px solid var(--as-border);
+    border-left: 0;
+  }
+}
