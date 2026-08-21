@@ -96,66 +96,28 @@ const normalizedExecutableBasename = (executable: string): string =>
  */
 export const isShellLikeExecutable = (executable: string): boolean => {
   const basename = normalizedExecutableBasename(executable);
-  return basename.endsWith("sh") || ShellLikeExecutableBasenames.has(basename);
-};
-
-const isGenericShellCommandStringFlag = (argument: string): boolean => {
-  const normalized = argument.toLowerCase();
   return (
-    normalized === "-c" ||
-    normalized === "-lc" ||
-    normalized === "-cl" ||
-    normalized.startsWith("-c=") ||
-    normalized.startsWith("-lc=") ||
-    /^-[a-z]*c[a-z]*$/.test(normalized) ||
-    normalized === "--command" ||
-    normalized.startsWith("--command=") ||
-    normalized === "--commands" ||
-    normalized.startsWith("--commands=")
+    basename.endsWith("sh") ||
+    /^(?:pwsh|powershell)(?:[-_.].*)?$/.test(basename) ||
+    ShellLikeExecutableBasenames.has(basename)
   );
 };
-const isOptionWithOptionalAttachedValue = (argument: string, option: string): boolean =>
-  argument === option || argument.startsWith(`${option}=`) || argument.startsWith(`${option}:`);
-const isInterpreterSpecificCommandStringFlag = (executable: string, argument: string): boolean => {
-  const basename = normalizedExecutableBasename(executable);
-  const normalized = argument.toLowerCase();
-  if (basename === "nu" || basename === "nushell") {
-    return (
-      isOptionWithOptionalAttachedValue(normalized, "-e") ||
-      isOptionWithOptionalAttachedValue(normalized, "--execute")
-    );
-  }
-  if (basename === "fish") {
-    return normalized === "--init-command" || normalized.startsWith("--init-command=");
-  }
-  if (basename === "powershell" || basename === "pwsh") {
-    return [
-      "-e",
-      "-ec",
-      "-enc",
-      "-encodedcommand",
-      "--encoded-command",
-      "-cwa",
-      "-commandwithargs",
-      "--command-with-args"
-    ].some((option) => isOptionWithOptionalAttachedValue(normalized, option));
-  }
-  if (basename === "cmd") return normalized === "/c" || normalized === "/k";
-  return false;
-};
-const hasShellCommandStringFlag = (
+
+const hasForbiddenLeadingShellOption = (
   executable: string,
   argumentsToInspect: readonly string[]
 ): boolean => {
-  for (const argument of argumentsToInspect) {
-    if (argument === "--") return false;
-    if (
-      isGenericShellCommandStringFlag(argument) ||
-      isInterpreterSpecificCommandStringFlag(executable, argument)
-    )
-      return true;
+  const basename = normalizedExecutableBasename(executable);
+  const first = argumentsToInspect[0];
+  if (first === undefined || first === "--") return false;
+  if (/^(?:pwsh|powershell)(?:[-_.].*)?$/.test(basename)) {
+    const normalized = first.toLowerCase();
+    if (normalized === "-file" || normalized === "-f") {
+      const scriptPath = argumentsToInspect[1];
+      return scriptPath === undefined || scriptPath.startsWith("-");
+    }
   }
-  return false;
+  return first.startsWith("-") || (basename === "cmd" && first.startsWith("/"));
 };
 const usesEnvSplitString = (executable: string, args: readonly string[]): boolean =>
   normalizedExecutableBasename(executable) === "env" &&
@@ -194,7 +156,7 @@ const isForbiddenShellCommandString = (command: {
     return true;
   return tokens.some(
     (token, index) =>
-      isShellLikeExecutable(token) && hasShellCommandStringFlag(token, tokens.slice(index + 1))
+      isShellLikeExecutable(token) && hasForbiddenLeadingShellOption(token, tokens.slice(index + 1))
   );
 };
 
