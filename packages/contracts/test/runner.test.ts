@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import {
   CommandAuthorizationSchema,
+  type DesktopApiOperationMap,
   DesktopApiOperationMapSchema,
   admitPrepareEnvironment,
   admitStartCommand,
@@ -73,21 +74,54 @@ describe("local runner contracts", () => {
     expect(factory.environmentAuthorization()).toBe(`envauth_${UUID}`);
     expect(factory.commandAuthorization()).toBe(`cmdauth_${UUID}`);
     expect(factory.repositoryCapability()).toBe(`repocap_${UUID}`);
+    expect(factory.inspectedSourceCapability()).toBe(`inspsrc_${UUID}`);
     expect(() => createId("command", "not-a-uuid")).toThrow();
-    expect(
-      DesktopApiOperationMapSchema.parse({ operation: "runtime.status", request: {} })
-    ).toMatchObject({ operation: "runtime.status" });
+    const request = <K extends keyof DesktopApiOperationMap>(
+      input: DesktopApiOperationMap[K]["request"]
+    ): Promise<DesktopApiOperationMap[K]["response"]> => {
+      void input;
+      return new Promise(() => undefined);
+    };
+    const statusRequest: DesktopApiOperationMap["runtime.status"]["request"] = {
+      operation: "runtime.status"
+    };
+    const listRequest: DesktopApiOperationMap["local.list"]["request"] = {
+      operation: "local.list"
+    };
+    const pickerRequest: DesktopApiOperationMap["repository.pick"]["request"] = {
+      operation: "repository.pick"
+    };
+    void request(statusRequest);
+    void request(listRequest);
+    void request(pickerRequest);
+    expect(DesktopApiOperationMapSchema.parse(statusRequest)).toMatchObject({
+      operation: "runtime.status"
+    });
+    expect(DesktopApiOperationMapSchema.parse(listRequest)).toMatchObject({
+      operation: "local.list"
+    });
     expect(() =>
       DesktopApiOperationMapSchema.parse({
         operation: "runtime.status",
-        request: {},
         response: { status: "ready" }
       })
     ).toThrow();
+    expect(
+      DesktopApiOperationMapSchema.parse({
+        operation: "local.prepare",
+        workspaceId: ids.workspaceId,
+        runId: ids.runId,
+        environmentId: ids.environmentId,
+        approvalId: ids.approvalId,
+        environmentAuthorizationId: ids.environmentAuthorizationId,
+        environmentAuthorizationDigest: DIGEST,
+        inspectedSourceCapabilityId: "inspsrc_123e4567-e89b-42d3-a456-426614174000",
+        idempotencyKey: "prepare"
+      })
+    ).toMatchObject({ operation: "local.prepare" });
     expect(() =>
       DesktopApiOperationMapSchema.parse({
         operation: "repository.pick",
-        request: {},
         response: {
           repository: {
             id: `repocap_${UUID}`,
@@ -132,6 +166,33 @@ describe("local runner contracts", () => {
         terminal: { columns: 80, rows: 24 }
       })
     ).toThrow();
+    for (const command of [
+      { executable: "sh", args: ["-c", "echo safe"] },
+      { executable: "bash", args: ["-lc", "echo safe"] },
+      { executable: "dash", args: ["-c=echo safe"] },
+      { executable: "/bin/zsh", args: ["--command=echo safe"] },
+      { executable: "/usr/bin/env", args: ["fish", "-c", "echo safe"] }
+    ]) {
+      expect(() =>
+        CommandSpecSchema.parse({
+          ...command,
+          cwd: ".",
+          environment: [],
+          timeoutSeconds: 1,
+          terminal: { columns: 80, rows: 24 }
+        })
+      ).toThrow(/shell command-string/i);
+    }
+    expect(
+      CommandSpecSchema.parse({
+        executable: "bash",
+        args: ["scripts/verify.sh"],
+        cwd: ".",
+        environment: [],
+        timeoutSeconds: 1,
+        terminal: { columns: 80, rows: 24 }
+      })
+    ).toMatchObject({ executable: "bash" });
     expect(() =>
       CommandSpecSchema.parse({
         executable: "echo",
@@ -274,6 +335,36 @@ describe("local runner contracts", () => {
         environmentAuthorization
       )
     ).toThrow(/broaden/i);
+    const broaderScopes = [
+      { ...authorization.scope, repositoryIdentity: "github:autostack/other" },
+      { ...authorization.scope, sourceCommit: "c".repeat(40) },
+      { ...authorization.scope, branch: "autostack/other" },
+      { ...authorization.scope, cwdRoot: "packages" },
+      { ...authorization.scope, resourceLimits: { ...scope.resourceLimits, cpu: 3 } },
+      { ...authorization.scope, resourceLimits: { ...scope.resourceLimits, memoryMb: 2049 } },
+      { ...authorization.scope, resourceLimits: { ...scope.resourceLimits, durationSeconds: 601 } },
+      {
+        ...authorization.scope,
+        allowedCredentialRefIds: [
+          ...scope.allowedCredentialRefIds,
+          createId("credentialRef", "123e4567-e89b-42d3-a456-426614174001")
+        ]
+      }
+    ];
+    for (const broaderScope of broaderScopes) {
+      expect(() =>
+        validateCommandAuthorizationAgainstEnvironment(
+          CommandAuthorizationSchema.parse({ ...authorization, scope: broaderScope }),
+          environmentAuthorization
+        )
+      ).toThrow(/broaden/i);
+    }
+    for (const incompatibleScope of [
+      { ...authorization.scope, networkPolicy: "none" },
+      { ...authorization.scope, filesystemDisclosure: "sandbox_user" }
+    ]) {
+      expect(() => CommandScopeSchema.parse(incompatibleScope)).toThrow();
+    }
   });
 
   it("validates runner capabilities, internal launch paths, and request/artifact coherence", () => {

@@ -9,6 +9,15 @@ import {
   RunIdSchema,
   WorkspaceIdSchema
 } from "./ids.js";
+import type {
+  ArtifactId,
+  CommandAuthorizationId,
+  CommandId,
+  EnvironmentAuthorizationId,
+  EnvironmentId,
+  RunId,
+  WorkspaceId
+} from "./ids.js";
 import {
   CancelCommandRequestSchema,
   CancelCommandResponseSchema,
@@ -38,6 +47,7 @@ import {
   admitStartCommand,
   digestCommandAuthorization,
   digestEnvironmentAuthorization,
+  validateCommandAuthorizationAgainstEnvironment,
   validateArtifactChunkResponse
 } from "./runner.js";
 import {
@@ -292,18 +302,18 @@ export const HOST_ROUTE_CONTRACTS = {
 
 export interface TrustedHostAdmissionDependencies extends TrustedRunnerAdmissionDependencies {
   readonly now: () => string;
-  readonly resolvePreparedEnvironment: (environmentId: string) => Promise<unknown>;
-  readonly resolveArtifact: (artifactId: string) => Promise<unknown>;
-  readonly resolveTerminalRunEvidence: (workspaceId: string, runId: string) => Promise<unknown>;
-  readonly hasActiveCommand: (environmentId: string) => Promise<boolean>;
+  readonly resolvePreparedEnvironment: (environmentId: EnvironmentId) => Promise<unknown>;
+  readonly resolveArtifact: (artifactId: ArtifactId) => Promise<unknown>;
+  readonly resolveTerminalRunEvidence: (workspaceId: WorkspaceId, runId: RunId) => Promise<unknown>;
+  readonly hasActiveCommand: (environmentId: EnvironmentId) => Promise<boolean>;
 }
 
 const requireTrustedEnvironmentAuthorization = async (
   request: {
-    readonly workspaceId: string;
-    readonly runId: string;
-    readonly environmentId: string;
-    readonly environmentAuthorizationId: string;
+    readonly workspaceId: WorkspaceId;
+    readonly runId: RunId;
+    readonly environmentId: EnvironmentId;
+    readonly environmentAuthorizationId: EnvironmentAuthorizationId;
     readonly environmentAuthorizationDigest: string;
   },
   dependencies: TrustedHostAdmissionDependencies
@@ -329,18 +339,21 @@ const requireTrustedEnvironmentAuthorization = async (
 
 const requireTrustedCommandAuthorization = async (
   request: {
-    readonly workspaceId: string;
-    readonly runId: string;
-    readonly environmentId: string;
-    readonly commandId: string;
-    readonly environmentAuthorizationId: string;
+    readonly workspaceId: WorkspaceId;
+    readonly runId: RunId;
+    readonly environmentId: EnvironmentId;
+    readonly commandId: CommandId;
+    readonly environmentAuthorizationId: EnvironmentAuthorizationId;
     readonly environmentAuthorizationDigest: string;
-    readonly commandAuthorizationId: string;
+    readonly commandAuthorizationId: CommandAuthorizationId;
     readonly commandAuthorizationDigest: string;
   },
   dependencies: TrustedHostAdmissionDependencies
 ): Promise<CommandAuthorization> => {
-  await requireTrustedEnvironmentAuthorization(request, dependencies);
+  const environmentAuthorization = await requireTrustedEnvironmentAuthorization(
+    request,
+    dependencies
+  );
   const candidate = await dependencies.resolveCommandAuthorization(request.commandAuthorizationId);
   if (candidate === undefined) throw new TypeError("Recorded command authorization is required.");
   const authorization = CommandAuthorizationSchema.parse(normalizeSafeJson(candidate));
@@ -357,6 +370,7 @@ const requireTrustedCommandAuthorization = async (
   ) {
     throw new TypeError("Recorded command authorization does not own this request.");
   }
+  validateCommandAuthorizationAgainstEnvironment(authorization, environmentAuthorization);
   return authorization;
 };
 
@@ -423,10 +437,36 @@ export const admitHostOperation = async (
   return request;
 };
 
-export const admitHostResponse = (
+export interface HostResponseBodyByRoute {
+  readonly "GET /v1/health": z.infer<typeof HostHealthResponseSchema>;
+  readonly "GET /v1/environments": z.infer<typeof ListEnvironmentsResponseSchema>;
+  readonly "POST /v1/repositories/inspect": z.infer<typeof RepositoryInspectionSchema>;
+  readonly "POST /v1/environments": z.infer<typeof HostPrepareEnvironmentResponseSchema>;
+  readonly "POST /v1/environments/:environmentId/commands": z.infer<typeof CommandAcceptedSchema>;
+  readonly "GET /v1/environments/:environmentId/commands/:commandId/events": z.infer<
+    typeof HostCommandEventFrameSchema
+  >;
+  readonly "POST /v1/environments/:environmentId/commands/:commandId/cancel": z.infer<
+    typeof CancelCommandResponseSchema
+  >;
+  readonly "GET /v1/artifacts/:artifactId/content": z.infer<typeof ReadArtifactChunkResponseSchema>;
+  readonly "DELETE /v1/environments/:environmentId": z.infer<
+    typeof DisposeEnvironmentResponseSchema
+  >;
+}
+
+export function admitHostResponse<Route extends HostApiRoute>(
+  requestCandidate: Extract<HostRouteRequest, { readonly route: Route }>,
+  responseCandidate: unknown
+): HostResponseBodyByRoute[Route];
+export function admitHostResponse(
   requestCandidate: unknown,
   responseCandidate: unknown
-): unknown => {
+): HostResponseBodyByRoute[HostApiRoute];
+export function admitHostResponse(
+  requestCandidate: unknown,
+  responseCandidate: unknown
+): HostResponseBodyByRoute[HostApiRoute] {
   const request = HostRouteRequestSchema.parse(normalizeSafeJson(requestCandidate));
   const response = z
     .object({ status: z.number().int(), mediaType: z.string(), body: z.unknown() })
@@ -463,8 +503,28 @@ export const admitHostResponse = (
       }
       return body;
     }
-    case "GET /v1/environments/:environmentId/commands/:commandId/events":
-      return HostCommandEventFrameSchema.parse(response.body);
+    case "GET /v1/environments/:environmentId/commands/:commandId/events": {
+      const body = HostCommandEventFrameSchema.parse(response.body);
+      if (body.type === "runner.event") {
+        if (
+          body.event.workspaceId !== request.query.workspaceId ||
+          body.event.runId !== request.query.runId ||
+          body.event.commandId !== request.query.commandId
+        ) {
+          throw new TypeError("Host event response does not match its request identity.");
+        }
+        if (body.event.sequence <= request.query.after) {
+          throw new TypeError("Host event response sequence must advance the request cursor.");
+        }
+      } else if (
+        body.lastDurableSequence < request.query.after ||
+        body.resumeCursor < request.query.after ||
+        body.resumeCursor < body.lastDurableSequence
+      ) {
+        throw new TypeError("Host subscription lag cursor cannot regress.");
+      }
+      return body;
+    }
     case "POST /v1/environments/:environmentId/commands/:commandId/cancel": {
       const body = CancelCommandResponseSchema.parse(response.body);
       if (body.commandId !== request.body.commandId) {
@@ -493,7 +553,7 @@ export const admitHostResponse = (
       return body;
     }
   }
-};
+}
 
 export type HostApiRoute = z.infer<typeof HostApiRouteSchema>;
 export type HostRouteRequest = z.infer<typeof HostRouteRequestSchema>;

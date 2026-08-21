@@ -12,6 +12,7 @@ export const ID_PREFIX = {
   environmentAuthorization: "envauth",
   commandAuthorization: "cmdauth",
   repositoryCapability: "repocap",
+  inspectedSourceCapability: "inspsrc",
   approval: "apr",
   artifact: "art",
   automation: "aut",
@@ -52,6 +53,10 @@ export const RepositoryCapabilityIdSchema = schemaFor(
   ID_PREFIX.repositoryCapability,
   "RepositoryCapabilityId"
 );
+export const InspectedSourceCapabilityIdSchema = schemaFor(
+  ID_PREFIX.inspectedSourceCapability,
+  "InspectedSourceCapabilityId"
+);
 export const ApprovalIdSchema = schemaFor(ID_PREFIX.approval, "ApprovalId");
 export const ArtifactIdSchema = schemaFor(ID_PREFIX.artifact, "ArtifactId");
 export const AutomationIdSchema = schemaFor(ID_PREFIX.automation, "AutomationId");
@@ -70,6 +75,7 @@ export type CommandId = z.infer<typeof CommandIdSchema>;
 export type EnvironmentAuthorizationId = z.infer<typeof EnvironmentAuthorizationIdSchema>;
 export type CommandAuthorizationId = z.infer<typeof CommandAuthorizationIdSchema>;
 export type RepositoryCapabilityId = z.infer<typeof RepositoryCapabilityIdSchema>;
+export type InspectedSourceCapabilityId = z.infer<typeof InspectedSourceCapabilityIdSchema>;
 export type ApprovalId = z.infer<typeof ApprovalIdSchema>;
 export type ArtifactId = z.infer<typeof ArtifactIdSchema>;
 export type AutomationId = z.infer<typeof AutomationIdSchema>;
@@ -89,6 +95,7 @@ export interface IdTypeMap {
   readonly environmentAuthorization: EnvironmentAuthorizationId;
   readonly commandAuthorization: CommandAuthorizationId;
   readonly repositoryCapability: RepositoryCapabilityId;
+  readonly inspectedSourceCapability: InspectedSourceCapabilityId;
   readonly approval: ApprovalId;
   readonly artifact: ArtifactId;
   readonly automation: AutomationId;
@@ -111,6 +118,7 @@ const ID_SCHEMAS = {
   environmentAuthorization: EnvironmentAuthorizationIdSchema,
   commandAuthorization: CommandAuthorizationIdSchema,
   repositoryCapability: RepositoryCapabilityIdSchema,
+  inspectedSourceCapability: InspectedSourceCapabilityIdSchema,
   approval: ApprovalIdSchema,
   artifact: ArtifactIdSchema,
   automation: AutomationIdSchema,
@@ -138,6 +146,7 @@ export interface IdFactory {
   environmentAuthorization(): EnvironmentAuthorizationId;
   commandAuthorization(): CommandAuthorizationId;
   repositoryCapability(): RepositoryCapabilityId;
+  inspectedSourceCapability(): InspectedSourceCapabilityId;
   approval(): ApprovalId;
   artifact(): ArtifactId;
   automation(): AutomationId;
@@ -164,6 +173,7 @@ export function createIdFactory(random: () => string = secureRandomUuid): IdFact
     environmentAuthorization: generate("environmentAuthorization"),
     commandAuthorization: generate("commandAuthorization"),
     repositoryCapability: generate("repositoryCapability"),
+    inspectedSourceCapability: generate("inspectedSourceCapability"),
     approval: generate("approval"),
     artifact: generate("artifact"),
     automation: generate("automation"),

@@ -17,12 +17,19 @@ import {
   IneligibleApproverError,
   StaleApprovalEvidenceError
 } from "./errors.js";
+import { canonicalJson } from "./canonical-json.js";
 
 export const digestApprovalEvidence = (
   evidence: unknown,
   kind: "plan" | "publish" | "permission" = "plan"
 ): string =>
   createHash("sha256").update(canonicalizeApprovalEvidence(kind, evidence), "utf8").digest("hex");
+
+const digestLegacyApprovalEvidence = (evidence: unknown): string =>
+  createHash("sha256").update(canonicalJson(evidence), "utf8").digest("hex");
+const matchesPersistedApprovalEvidence = (approval: Approval, evidence: unknown): boolean =>
+  digestApprovalEvidence(evidence, approval.kind) === approval.evidenceDigest ||
+  digestLegacyApprovalEvidence(evidence) === approval.evidenceDigest;
 
 export interface RequestApprovalCommand {
   readonly workspaceId: WorkspaceId;
@@ -77,10 +84,7 @@ export function decideApproval(command: DecideApprovalCommand): {
   readonly approval: Approval;
   readonly events: readonly PendingDomainEvent[];
 } {
-  if (
-    digestApprovalEvidence(command.evidence, command.approval.kind) !==
-    command.approval.evidenceDigest
-  ) {
+  if (!matchesPersistedApprovalEvidence(command.approval, command.evidence)) {
     throw new StaleApprovalEvidenceError();
   }
   if (!command.approval.eligibleApproverIds.includes(command.actor.id)) {

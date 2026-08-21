@@ -11,6 +11,7 @@ import {
   RunIdSchema,
   WorkspaceIdSchema
 } from "./ids.js";
+import type { ApprovalId, CommandAuthorizationId, EnvironmentAuthorizationId } from "./ids.js";
 import { ApprovalSchema, type Approval } from "./entities.js";
 import {
   containsSensitiveMaterial,
@@ -73,6 +74,38 @@ const SafeCommandStringSchema = z
     (value) => !value.includes("\u0000") && !containsSensitiveMaterial(value),
     "Command strings cannot contain NUL bytes or credential material."
   );
+const ShellInterpreterBasenames = new Set(["sh", "bash", "zsh", "dash", "ksh", "fish"]);
+const shellBasename = (executable: string): string => executable.split("/").at(-1) ?? executable;
+const isCommandStringFlag = (argument: string): boolean =>
+  argument === "-c" ||
+  argument === "-lc" ||
+  argument === "-cl" ||
+  argument.startsWith("-c=") ||
+  argument.startsWith("-lc=") ||
+  /^-[A-Za-z]*c[A-Za-z]*$/.test(argument) ||
+  argument === "--command" ||
+  argument.startsWith("--command=");
+const hasShellCommandStringFlag = (argumentsToInspect: readonly string[]): boolean => {
+  for (const argument of argumentsToInspect) {
+    if (isCommandStringFlag(argument)) return true;
+    if (!argument.startsWith("-")) return false;
+  }
+  return false;
+};
+const isForbiddenShellCommandString = (command: {
+  readonly executable: string;
+  readonly args: readonly string[];
+}): boolean => {
+  const executable = shellBasename(command.executable);
+  if (ShellInterpreterBasenames.has(executable)) {
+    return hasShellCommandStringFlag(command.args);
+  }
+  if (executable !== "env") return false;
+  const shellIndex = command.args.findIndex((argument) =>
+    ShellInterpreterBasenames.has(shellBasename(argument))
+  );
+  return shellIndex >= 0 && hasShellCommandStringFlag(command.args.slice(shellIndex + 1));
+};
 export const CommandEnvironmentEntrySchema = z.discriminatedUnion("kind", [
   z
     .object({
@@ -122,6 +155,13 @@ export const CommandSpecSchema = z
         });
       }
       names.add(entry.name);
+    }
+    if (isForbiddenShellCommandString(value)) {
+      context.addIssue({
+        code: "custom",
+        path: ["executable"],
+        message: "Shell command-string execution is forbidden."
+      });
     }
   });
 
@@ -392,10 +432,29 @@ const normalizeCommandAuthorizationForDigest = (candidate: unknown) => {
 };
 
 export type ApprovalEvidenceKind = "plan" | "permission" | "publish";
+const normalizeApprovalEvidence = (
+  kind: ApprovalEvidenceKind,
+  evidence: unknown
+): SafeJsonValue => {
+  const candidate = snapshot(evidence);
+  if (kind === "plan") {
+    const parsed = ExecutionScopeSchema.safeParse(candidate);
+    return parsed.success ? snapshot(normalizeExecutionScopeForDigest(parsed.data)) : candidate;
+  }
+  if (kind === "permission") {
+    const parsed = CommandScopeSchema.safeParse(candidate);
+    return parsed.success ? snapshot(normalizeCommandScopeForDigest(parsed.data)) : candidate;
+  }
+  return candidate;
+};
 export const canonicalizeApprovalEvidence = (
   kind: ApprovalEvidenceKind,
   evidence: unknown
-): string => canonicalDigestInput(`autostack.approval-evidence.${kind}`, snapshot(evidence));
+): string =>
+  canonicalDigestInput(
+    `autostack.approval-evidence.${kind}`,
+    normalizeApprovalEvidence(kind, evidence)
+  );
 export const canonicalizeVersionedDigestValue = (domain: string, value: unknown): string =>
   canonicalDigestInput(domain, snapshot(value));
 
@@ -731,13 +790,17 @@ export interface PrepareEnvironmentAdmission {
 }
 
 export interface TrustedRunnerAdmissionDependencies {
-  readonly resolveApproval: (approvalId: string) => Promise<unknown>;
-  readonly resolveEnvironmentAuthorization: (authorizationId: string) => Promise<unknown>;
-  readonly resolveCommandAuthorization: (authorizationId: string) => Promise<unknown>;
+  readonly resolveApproval: (approvalId: ApprovalId) => Promise<unknown>;
+  readonly resolveEnvironmentAuthorization: (
+    authorizationId: EnvironmentAuthorizationId
+  ) => Promise<unknown>;
+  readonly resolveCommandAuthorization: (
+    authorizationId: CommandAuthorizationId
+  ) => Promise<unknown>;
 }
 
 const parseTrustedApproval = async (
-  approvalId: string,
+  approvalId: ApprovalId,
   kind: ApprovalEvidenceKind,
   workspaceId: string,
   runId: string,

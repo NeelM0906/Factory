@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { createHash } from "node:crypto";
 
 import {
   ApprovalSchema,
@@ -15,6 +16,7 @@ import {
   digestApprovalEvidence,
   requestApproval
 } from "../src/approval.js";
+import { canonicalJson } from "../src/canonical-json.js";
 
 const NOW = "2026-08-20T12:00:00.000Z";
 const LATER = "2026-08-20T12:01:00.000Z";
@@ -190,7 +192,10 @@ describe("approval decisions", () => {
       resourceLimits: { cpu: 1, memoryMb: 1, durationSeconds: 1 },
       networkPolicy: "host" as const,
       filesystemDisclosure: "host_user" as const,
-      allowedCredentialRefIds: []
+      allowedCredentialRefIds: [
+        "cred_123e4567-e89b-42d3-a456-426614174001",
+        "cred_123e4567-e89b-42d3-a456-426614174000"
+      ]
     };
     const plan = requestApproval(
       {
@@ -205,6 +210,12 @@ describe("approval decisions", () => {
       { now: () => NOW, approvalId: () => pendingApproval().id }
     ).approval;
     expect(plan.evidenceDigest).toBe(await digestExecutionScope(planScope));
+    expect(plan.evidenceDigest).toBe(
+      await digestExecutionScope({
+        ...planScope,
+        allowedCredentialRefIds: [...planScope.allowedCredentialRefIds].reverse()
+      })
+    );
     expect(() =>
       decideApproval({
         approval: plan,
@@ -233,7 +244,7 @@ describe("approval decisions", () => {
       networkPolicy: "host" as const,
       filesystemDisclosure: "host_user" as const,
       resourceLimits: planScope.resourceLimits,
-      allowedCredentialRefIds: []
+      allowedCredentialRefIds: planScope.allowedCredentialRefIds
     };
     const permission = requestApproval(
       {
@@ -248,5 +259,45 @@ describe("approval decisions", () => {
       { now: () => NOW, approvalId: () => pendingApproval().id }
     ).approval;
     expect(permission.evidenceDigest).toBe(await digestCommandScope(commandScope));
+    expect(permission.evidenceDigest).toBe(
+      await digestCommandScope({
+        ...commandScope,
+        allowedCredentialRefIds: [...commandScope.allowedCredentialRefIds].reverse()
+      })
+    );
+  });
+
+  it("decides persisted legacy schema-v1 evidence only when its original evidence still matches", () => {
+    const legacyEvidence = { branch: "autostack/legacy", plan: { steps: ["change", "test"] } };
+    const legacyDigest = createHash("sha256")
+      .update(canonicalJson(legacyEvidence), "utf8")
+      .digest("hex");
+    const legacyApproval = ApprovalSchema.parse({
+      ...pendingApproval(),
+      evidenceDigest: legacyDigest
+    });
+
+    expect(
+      decideApproval({
+        approval: legacyApproval,
+        decision: "approved",
+        evidence: legacyEvidence,
+        actor: ACTOR,
+        origin: "desktop",
+        occurredAt: LATER,
+        correlationId: CORRELATION_ID
+      }).approval
+    ).toMatchObject({ status: "approved" });
+    expect(() =>
+      decideApproval({
+        approval: legacyApproval,
+        decision: "approved",
+        evidence: { ...legacyEvidence, branch: "autostack/substituted" },
+        actor: ACTOR,
+        origin: "desktop",
+        occurredAt: LATER,
+        correlationId: CORRELATION_ID
+      })
+    ).toThrow(StaleApprovalEvidenceError);
   });
 });

@@ -28,12 +28,20 @@ import {
   TerminalRunEvidenceSchema,
   type CommandAuthorization,
   type EnvironmentAuthorization,
+  type PreparedEnvironment,
+  type PrepareEnvironmentRequest,
+  type StartCommandRequest,
   type TerminalRunEvidence,
+  admitPrepareEnvironment,
+  admitStartCommand,
+  canonicalizeCommandAuthorizationForDigest,
+  canonicalizeEnvironmentAuthorizationForDigest,
   digestVersionedValue,
   digestCommandAuthorization,
   digestCommandScope,
   digestEnvironmentAuthorization,
-  digestExecutionScope
+  digestExecutionScope,
+  validateCommandAuthorizationAgainstEnvironment
 } from "./runner.js";
 import { normalizeSafeJson, type SafeJsonValue } from "./secret-safety.js";
 import { WorkflowFailureSchema } from "./workflow-failure.js";
@@ -437,19 +445,70 @@ export const validateRunStreamCoherence = async (
   });
   const environmentAuthorizations = new Map<string, EnvironmentAuthorization>();
   const commandAuthorizations = new Map<string, CommandAuthorization>();
+  const environments = new Map<
+    string,
+    {
+      authorization: EnvironmentAuthorization;
+      prepareRequest?: PrepareEnvironmentRequest;
+      prepared?: PreparedEnvironment;
+      disposed: boolean;
+    }
+  >();
+  const commands = new Map<
+    string,
+    {
+      authorization: CommandAuthorization;
+      intent?: StartCommandRequest;
+      started: boolean;
+      completed: boolean;
+      hasArtifact: boolean;
+    }
+  >();
   const approvals = new Map<
     string,
-    { readonly approval: z.infer<typeof ApprovalSchema>; readonly approved: boolean }
+    {
+      readonly approval: z.infer<typeof ApprovalSchema>;
+      readonly approved: boolean;
+      readonly decided: boolean;
+    }
   >();
-  const prepareIntents = new Set<string>();
-  const preparedEnvironments = new Set<string>();
-  const commandIntents = new Set<string>();
-  const startedCommands = new Set<string>();
-  const commandArtifacts = new Set<string>();
-  const terminalCommands = new Set<string>();
-  const activeCommands = new Set<string>();
   const terminalRuns = new Map<string, TerminalRunEvidence>();
   const phaseDigests = new Map<string, string>();
+  const assertAuthorizationIsActiveAt = (
+    authorization: EnvironmentAuthorization | CommandAuthorization,
+    occurredAt: string,
+    label: string
+  ): void => {
+    const createdAt = Date.parse(authorization.createdAt);
+    const expiresAt = Date.parse(authorization.expiresAt);
+    const at = Date.parse(occurredAt);
+    if (Number.isNaN(createdAt) || Number.isNaN(expiresAt) || Number.isNaN(at)) {
+      throw new TypeError(`${label} timestamps are invalid.`);
+    }
+    if (createdAt > at || at >= expiresAt) {
+      throw new TypeError(`${label} is not active at the event timestamp.`);
+    }
+  };
+  const assertRunCanExecute = (workspaceId: string, runId: string): void => {
+    if (terminalRuns.has(`${workspaceId}:${runId}`)) {
+      throw new TypeError("Execution evidence cannot follow a terminal run transition.");
+    }
+  };
+  const assertEnvironmentIsActive = (environmentId: string): void => {
+    if (environments.get(environmentId)?.disposed) {
+      throw new TypeError("Execution evidence cannot follow environment disposal.");
+    }
+  };
+  const admissionDependencies = {
+    resolveApproval: async (approvalId: z.infer<typeof ApprovalIdSchema>) =>
+      approvals.get(approvalId)?.approval,
+    resolveEnvironmentAuthorization: async (
+      authorizationId: z.infer<typeof EnvironmentAuthorizationIdSchema>
+    ) => environmentAuthorizations.get(authorizationId),
+    resolveCommandAuthorization: async (
+      authorizationId: z.infer<typeof CommandAuthorizationSchema>["id"]
+    ) => commandAuthorizations.get(authorizationId)
+  };
   for (const event of events) {
     const phase = localPhase(event);
     if (phase !== undefined) {
@@ -498,28 +557,44 @@ export const validateRunStreamCoherence = async (
         ) {
           throw new TypeError("Approval request evidence is invalid.");
         }
-        approvals.set(approval.id, { approval, approved: false });
+        approvals.set(approval.id, { approval, approved: false, decided: false });
         break;
       }
       case "approval.decided": {
         const recorded = approvals.get(event.payload.approvalId);
         if (
           recorded === undefined ||
+          recorded.decided ||
           recorded.approval.runId !== event.payload.runId ||
           recorded.approval.evidenceDigest !== event.payload.evidenceDigest ||
           Date.parse(event.payload.decidedAt) > Date.parse(event.occurredAt)
         ) {
           throw new TypeError("Approval decision lacks matching request evidence.");
         }
+        const approval = ApprovalSchema.parse({
+          ...recorded.approval,
+          status: event.payload.decision,
+          decision: {
+            decision: event.payload.decision,
+            actor: event.actor,
+            origin: event.payload.origin,
+            decidedAt: event.payload.decidedAt
+          },
+          updatedAt: event.payload.decidedAt
+        });
         approvals.set(event.payload.approvalId, {
-          approval: recorded.approval,
-          approved: event.payload.decision === "approved"
+          approval,
+          approved: event.payload.decision === "approved",
+          decided: true
         });
         break;
       }
       case "environment.authorization_recorded": {
         const { authorization, environmentId } = event.payload;
         assertPhaseKey(event.payload.phaseKey, `environment:${environmentId}:authorization`);
+        assertRunCanExecute(event.workspaceId, event.payload.runId);
+        assertEnvironmentIsActive(environmentId);
+        assertAuthorizationIsActiveAt(authorization, event.occurredAt, "Environment authorization");
         if (
           authorization.digest !== (await digestEnvironmentAuthorization(authorization)) ||
           authorization.approvalEvidenceDigest !== (await digestExecutionScope(authorization.scope))
@@ -537,13 +612,22 @@ export const validateRunStreamCoherence = async (
         ) {
           throw new TypeError("Environment authorization lacks approved plan evidence.");
         }
-        environmentAuthorizations.set(environmentId, authorization);
+        const existing = environments.get(environmentId);
+        if (existing !== undefined) {
+          throw new TypeError("Environment authorization is already recorded.");
+        }
+        environmentAuthorizations.set(authorization.id, authorization);
+        environments.set(environmentId, { authorization, disposed: false });
         break;
       }
       case "command.authorization_recorded": {
         const { authorization, environmentId, commandId } = event.payload;
         assertPhaseKey(event.payload.phaseKey, `command:${commandId}:authorization`);
-        const environmentAuthorization = environmentAuthorizations.get(environmentId);
+        assertRunCanExecute(event.workspaceId, event.payload.runId);
+        assertEnvironmentIsActive(environmentId);
+        assertAuthorizationIsActiveAt(authorization, event.occurredAt, "Command authorization");
+        const environment = environments.get(environmentId);
+        const environmentAuthorization = environment?.authorization;
         if (environmentAuthorization === undefined)
           throw new TypeError("Command authorization lacks environment authorization.");
         if (
@@ -555,6 +639,7 @@ export const validateRunStreamCoherence = async (
         ) {
           throw new TypeError("Command authorization digest is invalid.");
         }
+        validateCommandAuthorizationAgainstEnvironment(authorization, environmentAuthorization);
         const approval = approvals.get(authorization.approvalId);
         if (
           approval === undefined ||
@@ -566,109 +651,196 @@ export const validateRunStreamCoherence = async (
         ) {
           throw new TypeError("Command authorization lacks approved permission evidence.");
         }
-        commandAuthorizations.set(commandId, authorization);
+        if (commands.has(commandId))
+          throw new TypeError("Command authorization is already recorded.");
+        commandAuthorizations.set(authorization.id, authorization);
+        commands.set(commandId, {
+          authorization,
+          started: false,
+          completed: false,
+          hasArtifact: false
+        });
         break;
       }
       case "environment.prepare_requested": {
         const { request, phaseKey } = event.payload;
         assertPhaseKey(phaseKey, `environment:${request.environmentId}:intent`);
-        const authorization = environmentAuthorizations.get(request.environmentId);
+        assertRunCanExecute(event.workspaceId, request.runId);
+        assertEnvironmentIsActive(request.environmentId);
+        const environment = environments.get(request.environmentId);
+        if (environment === undefined) {
+          throw new TypeError("Environment prepare lacks recorded authorization.");
+        }
+        const authorization = environment.authorization;
         if (
           authorization === undefined ||
           authorization.id !== request.authorization.id ||
-          authorization.digest !== request.authorization.digest
+          authorization.digest !== request.authorization.digest ||
+          canonicalizeEnvironmentAuthorizationForDigest(authorization) !==
+            canonicalizeEnvironmentAuthorizationForDigest(request.authorization)
         ) {
           throw new TypeError("Environment prepare lacks recorded authorization.");
         }
-        prepareIntents.add(request.environmentId);
+        await admitPrepareEnvironment(request, event.occurredAt, admissionDependencies);
+        if (environment.prepareRequest !== undefined) {
+          throw new TypeError("Environment already has a durable prepare intent.");
+        }
+        environments.set(request.environmentId, { ...environment, prepareRequest: request });
         break;
       }
       case "environment.prepared": {
         const { environment, phaseKey } = event.payload;
         assertPhaseKey(phaseKey, `environment:${environment.environmentId}:prepared`);
-        if (!prepareIntents.has(environment.environmentId)) {
+        assertRunCanExecute(event.workspaceId, environment.runId);
+        assertEnvironmentIsActive(environment.environmentId);
+        const recorded = environments.get(environment.environmentId);
+        const request = recorded?.prepareRequest;
+        if (
+          recorded === undefined ||
+          request === undefined ||
+          environment.workspaceId !== request.workspaceId ||
+          environment.runId !== request.runId ||
+          environment.repositoryIdentity !== request.inspection.repositoryIdentity ||
+          environment.sourceCommit !== request.sourceCommit ||
+          environment.branch !== request.branch ||
+          canonicalizeEnvironmentAuthorizationForDigest(environment.authorization) !==
+            canonicalizeEnvironmentAuthorizationForDigest(recorded.authorization) ||
+          canonicalizeEnvironmentAuthorizationForDigest(environment.authorization) !==
+            canonicalizeEnvironmentAuthorizationForDigest(request.authorization)
+        ) {
           throw new TypeError("Prepared environment lacks durable prepare intent.");
         }
-        preparedEnvironments.add(environment.environmentId);
+        environments.set(environment.environmentId, { ...recorded, prepared: environment });
         break;
       }
       case "command.intent_recorded": {
         const { request, phaseKey } = event.payload;
         assertPhaseKey(phaseKey, `command:${request.commandId}:intent`);
-        const authorization = commandAuthorizations.get(request.commandId);
+        assertRunCanExecute(event.workspaceId, request.runId);
+        assertEnvironmentIsActive(request.environmentId);
+        const environment = environments.get(request.environmentId);
+        const command = commands.get(request.commandId);
+        if (environment?.prepared === undefined || command === undefined) {
+          throw new TypeError(
+            "Command intent lacks recorded authorization or environment preparation."
+          );
+        }
+        const authorization = command.authorization;
         if (
           authorization === undefined ||
-          !preparedEnvironments.has(request.environmentId) ||
           authorization.id !== request.authorization.id ||
-          authorization.digest !== request.authorization.digest
+          authorization.digest !== request.authorization.digest ||
+          canonicalizeCommandAuthorizationForDigest(authorization) !==
+            canonicalizeCommandAuthorizationForDigest(request.authorization)
         ) {
           throw new TypeError(
             "Command intent lacks recorded authorization or environment preparation."
           );
         }
-        commandIntents.add(request.commandId);
+        await admitStartCommand(request, event.occurredAt, admissionDependencies);
+        if (command.intent !== undefined)
+          throw new TypeError("Command already has a durable intent.");
+        commands.set(request.commandId, { ...command, intent: request });
         break;
       }
-      case "command.started":
+      case "command.started": {
         assertPhaseKey(event.payload.phaseKey, `command:${event.payload.commandId}:started`);
-        if (!commandIntents.has(event.payload.commandId)) {
+        assertRunCanExecute(event.workspaceId, event.payload.runId);
+        assertEnvironmentIsActive(event.payload.environmentId);
+        const command = commands.get(event.payload.commandId);
+        if (
+          command?.intent === undefined ||
+          command.intent.workspaceId !== event.workspaceId ||
+          command.intent.runId !== event.payload.runId ||
+          command.intent.environmentId !== event.payload.environmentId ||
+          command.started
+        ) {
           throw new TypeError("Command started before durable intent.");
         }
-        startedCommands.add(event.payload.commandId);
-        activeCommands.add(event.payload.commandId);
+        commands.set(event.payload.commandId, { ...command, started: true });
         break;
-      case "artifact.recorded":
+      }
+      case "artifact.recorded": {
         assertPhaseKey(
           event.payload.phaseKey,
           `command:${event.payload.commandId}:artifact:${event.payload.artifact.artifactId}`
         );
-        if (!startedCommands.has(event.payload.commandId)) {
+        assertRunCanExecute(event.workspaceId, event.payload.runId);
+        assertEnvironmentIsActive(event.payload.environmentId);
+        const command = commands.get(event.payload.commandId);
+        if (
+          command?.intent === undefined ||
+          !command.started ||
+          command.completed ||
+          command.intent.workspaceId !== event.workspaceId ||
+          command.intent.runId !== event.payload.runId ||
+          command.intent.environmentId !== event.payload.environmentId ||
+          event.payload.artifact.workspaceId !== event.workspaceId ||
+          event.payload.artifact.runId !== event.payload.runId ||
+          event.payload.artifact.commandId !== event.payload.commandId
+        ) {
           throw new TypeError("Artifact recorded before command start.");
         }
-        commandArtifacts.add(event.payload.commandId);
+        commands.set(event.payload.commandId, { ...command, hasArtifact: true });
         break;
-      case "command.completed":
+      }
+      case "command.completed": {
         assertPhaseKey(event.payload.phaseKey, `command:${event.payload.commandId}:completed`);
-        if (!commandIntents.has(event.payload.commandId)) {
+        assertRunCanExecute(event.workspaceId, event.payload.runId);
+        assertEnvironmentIsActive(event.payload.environmentId);
+        const command = commands.get(event.payload.commandId);
+        if (
+          command?.intent === undefined ||
+          command.intent.workspaceId !== event.workspaceId ||
+          command.intent.runId !== event.payload.runId ||
+          command.intent.environmentId !== event.payload.environmentId
+        ) {
           throw new TypeError("Command completion lacks durable intent.");
         }
-        if (!commandArtifacts.has(event.payload.commandId)) {
+        if (!command.hasArtifact) {
           throw new TypeError("Command completion lacks artifact evidence.");
         }
-        if (terminalCommands.has(event.payload.commandId)) {
+        if (command.completed) {
           throw new TypeError("Command has more than one terminal result.");
         }
-        terminalCommands.add(event.payload.commandId);
-        activeCommands.delete(event.payload.commandId);
+        commands.set(event.payload.commandId, { ...command, completed: true });
         break;
-      case "environment.disposed":
+      }
+      case "environment.disposed": {
         assertPhaseKey(
           event.payload.phaseKey,
           `environment:${event.payload.environmentId}:disposed`
         );
         const evidence = terminalRuns.get(`${event.workspaceId}:${event.payload.runId}`);
-        const hasActiveCommand = Array.from(activeCommands).some(
-          (commandId) =>
-            commandAuthorizations.get(commandId)?.scope.environmentId ===
-            event.payload.environmentId
+        const environment = environments.get(event.payload.environmentId);
+        const hasActiveCommand = Array.from(commands.values()).some(
+          (command) =>
+            command.authorization.scope.environmentId === event.payload.environmentId &&
+            command.started &&
+            !command.completed
         );
         if (
+          environment === undefined ||
+          environment.disposed ||
+          environment.prepared === undefined ||
+          environment.prepared.workspaceId !== event.workspaceId ||
+          environment.prepared.runId !== event.payload.runId ||
           evidence === undefined ||
           evidence.status !== event.payload.terminalRunEvidence.status ||
           evidence.terminalEventSequence !==
             event.payload.terminalRunEvidence.terminalEventSequence ||
           evidence.terminalEventDigest !== event.payload.terminalRunEvidence.terminalEventDigest ||
           hasActiveCommand ||
-          environmentAuthorizations.get(event.payload.environmentId)?.id !==
-            event.payload.environmentAuthorizationId ||
-          environmentAuthorizations.get(event.payload.environmentId)?.digest !==
-            event.payload.environmentAuthorizationDigest
+          environment.authorization.id !== event.payload.environmentAuthorizationId ||
+          environment.authorization.digest !== event.payload.environmentAuthorizationDigest
         ) {
           throw new TypeError(
             "Environment disposal lacks terminal evidence or authorization binding."
           );
         }
+        environments.set(event.payload.environmentId, { ...environment, disposed: true });
         break;
+      }
       default:
         break;
     }

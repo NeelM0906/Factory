@@ -15,6 +15,7 @@ import {
   digestCommandSpec,
   digestEnvironmentAuthorization,
   digestExecutionScope,
+  type HostRouteRequest,
   type TrustedHostAdmissionDependencies
 } from "../src/index.js";
 
@@ -42,31 +43,40 @@ describe("host daemon API contracts", () => {
       "GET /v1/artifacts/:artifactId/content",
       "DELETE /v1/environments/:environmentId"
     ]);
-    expect(
-      HostHealthResponseSchema.parse({
-        service: "autostack-host-daemon",
+    const health = {
+      service: "autostack-host-daemon" as const,
+      version: "1.0.0",
+      status: "ok" as const,
+      capabilities: {
+        runnerId: "runner-local",
         version: "1.0.0",
-        status: "ok",
-        capabilities: {
-          runnerId: "runner-local",
-          version: "1.0.0",
-          platform: { os: "darwin", architecture: "arm64" },
-          pty: true,
-          cancellation: true,
-          filesystemDisclosure: "host_user",
-          maximumBytes: { liveOutput: 1, replay: 1, transcript: 1, artifact: 1 },
-          supportedNetworkPolicies: ["host"],
-          enforcement: {
-            cpu: "advisory",
-            memory: "advisory",
-            duration: "hard",
-            autostackPathOperations: "hard",
-            childFilesystem: "advisory",
-            network: "unavailable"
-          }
+        platform: { os: "darwin" as const, architecture: "arm64" as const },
+        pty: true as const,
+        cancellation: true as const,
+        filesystemDisclosure: "host_user" as const,
+        maximumBytes: { liveOutput: 1, replay: 1, transcript: 1, artifact: 1 },
+        supportedNetworkPolicies: ["host" as const],
+        enforcement: {
+          cpu: "advisory" as const,
+          memory: "advisory" as const,
+          duration: "hard" as const,
+          autostackPathOperations: "hard" as const,
+          childFilesystem: "advisory" as const,
+          network: "unavailable" as const
         }
-      })
-    ).toMatchObject({ status: "ok" });
+      }
+    };
+    expect(HostHealthResponseSchema.parse(health)).toMatchObject({ status: "ok" });
+    const typedRequest: Extract<HostRouteRequest, { readonly route: "GET /v1/health" }> = {
+      route: "GET /v1/health"
+    };
+    const typedResponse = admitHostResponse(typedRequest, {
+      status: 200,
+      mediaType: "application/json",
+      body: health
+    });
+    const typedStatus: "ok" | "degraded" = typedResponse.status;
+    expect(typedStatus).toBe("ok");
   });
 
   it("bounds artifact byte ranges and validates newline event frames", () => {
@@ -411,6 +421,56 @@ describe("host daemon API contracts", () => {
     ).toMatchObject({ disposed: true });
   });
 
+  it("binds durable event frames to the event request identity and forward-only cursor", () => {
+    const request = {
+      route: "GET /v1/environments/:environmentId/commands/:commandId/events" as const,
+      environmentId: "env_123e4567-e89b-42d3-a456-426614174000",
+      commandId: "cmd_123e4567-e89b-42d3-a456-426614174000",
+      query: {
+        workspaceId: "ws_123e4567-e89b-42d3-a456-426614174000",
+        runId: "run_123e4567-e89b-42d3-a456-426614174000",
+        environmentId: "env_123e4567-e89b-42d3-a456-426614174000",
+        commandId: "cmd_123e4567-e89b-42d3-a456-426614174000",
+        environmentAuthorizationId: "envauth_123e4567-e89b-42d3-a456-426614174000",
+        environmentAuthorizationDigest: "a".repeat(64),
+        commandAuthorizationId: "cmdauth_123e4567-e89b-42d3-a456-426614174000",
+        commandAuthorizationDigest: "a".repeat(64),
+        after: 5
+      }
+    };
+    const response = (event: unknown) => ({
+      status: 200,
+      mediaType: "application/x-ndjson",
+      body: { type: "runner.event", event }
+    });
+    const event = {
+      type: "terminal.output",
+      workspaceId: request.query.workspaceId,
+      runId: request.query.runId,
+      commandId: request.query.commandId,
+      sequence: 6,
+      occurredAt: "2026-08-21T12:00:00.000Z",
+      stream: "pty",
+      text: "safe"
+    };
+    expect(() =>
+      admitHostResponse(
+        request,
+        response({ ...event, workspaceId: "ws_123e4567-e89b-42d3-a456-426614174099" })
+      )
+    ).toThrow(/event/i);
+    expect(() => admitHostResponse(request, response({ ...event, sequence: 5 }))).toThrow(
+      /sequence/i
+    );
+    expect(() =>
+      admitHostResponse(request, {
+        status: 200,
+        mediaType: "application/x-ndjson",
+        body: { type: "subscription.lagged", lastDurableSequence: 4, resumeCursor: 4 }
+      })
+    ).toThrow(/cursor/i);
+  });
+
   it("admits trusted prepare, start, lifecycle, artifact, and terminal disposal operations", async () => {
     const workspaceId = "ws_123e4567-e89b-42d3-a456-426614174000";
     const runId = "run_123e4567-e89b-42d3-a456-426614174000";
@@ -652,5 +712,46 @@ describe("host daemon API contracts", () => {
         dependencies
       )
     ).resolves.toMatchObject({ route: "DELETE /v1/environments/:environmentId" });
+
+    const broadenedScope = {
+      ...commandAuthorization.scope,
+      branch: "autostack/broadened-host-read"
+    };
+    const broadenedAuthorization = {
+      ...commandAuthorization,
+      digest: "0".repeat(64),
+      approvalEvidenceDigest: await digestCommandScope(broadenedScope),
+      scope: broadenedScope
+    };
+    broadenedAuthorization.digest = await digestCommandAuthorization(broadenedAuthorization);
+    const broadenedPermissionApproval = {
+      ...permissionApproval,
+      evidenceDigest: broadenedAuthorization.approvalEvidenceDigest
+    };
+    const broadenedDependencies: TrustedHostAdmissionDependencies = {
+      ...dependencies,
+      resolveApproval: async (approvalId) =>
+        approvalId === planApproval.id
+          ? planApproval
+          : approvalId === broadenedPermissionApproval.id
+            ? broadenedPermissionApproval
+            : undefined,
+      resolveCommandAuthorization: async (authorizationId) =>
+        authorizationId === broadenedAuthorization.id ? broadenedAuthorization : undefined
+    };
+    await expect(
+      admitHostOperation(
+        {
+          route: "GET /v1/environments/:environmentId/commands/:commandId/events",
+          environmentId,
+          commandId,
+          query: {
+            ...lifecycle,
+            commandAuthorizationDigest: broadenedAuthorization.digest
+          }
+        },
+        broadenedDependencies
+      )
+    ).rejects.toThrow(/broaden/i);
   });
 });

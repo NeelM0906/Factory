@@ -567,6 +567,213 @@ describe("domain event contracts", () => {
     ).rejects.toThrow(/collision/i);
   });
 
+  it("rejects execution evidence after an environment is disposed", async () => {
+    const localBodies = await localEventBodies();
+    const disposalIndex = localBodies.findIndex((body) => body.type === "environment.disposed");
+    if (disposalIndex === -1) throw new TypeError("Fixture is missing disposal evidence.");
+    const disposal = localBodies[disposalIndex];
+    if (disposal?.type !== "environment.disposed") {
+      throw new TypeError("Fixture disposal evidence is invalid.");
+    }
+    const terminalTransition = {
+      ...context,
+      type: "run.transitioned" as const,
+      payload: {
+        runId: RUN_ID,
+        from: "implementing" as const,
+        to: "completed" as const,
+        reason: "execution completed"
+      },
+      eventId: EVENT_ID,
+      stream: { kind: "run" as const, id: RUN_ID },
+      streamVersion: 100,
+      globalSequence: 100,
+      schemaVersion: 1 as const
+    };
+    const terminalRunEvidence = {
+      status: "completed" as const,
+      terminalEventSequence: 100,
+      terminalEventDigest: await digestTerminalRunTransition(terminalTransition)
+    };
+    const disposalPayload = { ...disposal.payload, terminalRunEvidence };
+    const disposalEvent = {
+      ...context,
+      ...disposal,
+      payload: {
+        ...disposalPayload,
+        phaseDigest: await digestLocalExecutionPhase(disposal.type, disposalPayload)
+      }
+    };
+    const originalArtifact = localBodies.find((body) => body.type === "artifact.recorded");
+    if (originalArtifact?.type !== "artifact.recorded") {
+      throw new TypeError("Fixture is missing artifact evidence.");
+    }
+    const postDisposalPayload = {
+      ...originalArtifact.payload,
+      artifact: {
+        ...originalArtifact.payload.artifact,
+        artifactId: "art_123e4567-e89b-42d3-a456-426614174099"
+      },
+      phaseKey:
+        "command:cmd_123e4567-e89b-42d3-a456-426614174000:artifact:art_123e4567-e89b-42d3-a456-426614174099"
+    };
+    const events = [
+      ...localBodies.slice(0, disposalIndex).map((body) => ({ ...context, ...body })),
+      terminalTransition,
+      disposalEvent,
+      {
+        ...context,
+        type: "artifact.recorded" as const,
+        payload: {
+          ...postDisposalPayload,
+          phaseDigest: await digestLocalExecutionPhase("artifact.recorded", postDisposalPayload)
+        }
+      }
+    ];
+
+    await expect(validateRunStreamCoherence(events)).rejects.toThrow(/disposed|terminal/i);
+  });
+
+  it("applies command authorization narrowing when durable evidence is recorded", async () => {
+    const bodies = await localEventBodies();
+    const permissionRequested = bodies.find(
+      (body) =>
+        body.type === "approval.requested" &&
+        "approval" in body.payload &&
+        body.payload.approval.kind === "permission"
+    );
+    const permissionDecided = bodies.find(
+      (body) =>
+        body.type === "approval.decided" && body.payload.approvalId === PERMISSION_APPROVAL_ID
+    );
+    const commandRecorded = bodies.find((body) => body.type === "command.authorization_recorded");
+    if (
+      permissionRequested?.type !== "approval.requested" ||
+      permissionDecided?.type !== "approval.decided" ||
+      commandRecorded?.type !== "command.authorization_recorded" ||
+      !("approval" in permissionRequested.payload) ||
+      !("authorization" in commandRecorded.payload)
+    ) {
+      throw new TypeError("Fixture is missing permission authorization evidence.");
+    }
+    const scope = {
+      ...commandRecorded.payload.authorization.scope,
+      repositoryIdentity: "github:autostack/broadened"
+    };
+    const authorization = {
+      ...commandRecorded.payload.authorization,
+      digest: "0".repeat(64),
+      approvalEvidenceDigest: await digestCommandScope(scope),
+      scope
+    };
+    authorization.digest = await digestCommandAuthorization(authorization);
+    const commandPayload = { ...commandRecorded.payload, authorization };
+    const commandEvent = {
+      ...context,
+      ...commandRecorded,
+      payload: {
+        ...commandPayload,
+        phaseDigest: await digestLocalExecutionPhase(
+          "command.authorization_recorded",
+          commandPayload
+        )
+      }
+    };
+    const permissionApproval = {
+      ...permissionRequested.payload.approval,
+      evidenceDigest: authorization.approvalEvidenceDigest
+    };
+    const events = [
+      ...bodies.slice(0, 3).map((body) => ({ ...context, ...body })),
+      {
+        ...context,
+        ...permissionRequested,
+        payload: { approval: permissionApproval }
+      },
+      {
+        ...context,
+        ...permissionDecided,
+        payload: {
+          ...permissionDecided.payload,
+          evidenceDigest: permissionApproval.evidenceDigest
+        }
+      },
+      commandEvent
+    ];
+
+    await expect(validateRunStreamCoherence(events)).rejects.toThrow(/broaden/i);
+  });
+
+  it("uses each phase timestamp and exact prepared authorization record", async () => {
+    const bodies = await localEventBodies();
+    const prepare = bodies.find((body) => body.type === "environment.prepare_requested");
+    const prepared = bodies.find((body) => body.type === "environment.prepared");
+    if (
+      prepare?.type !== "environment.prepare_requested" ||
+      prepared?.type !== "environment.prepared" ||
+      !("environment" in prepared.payload)
+    ) {
+      throw new TypeError("Fixture is missing prepare evidence.");
+    }
+    await expect(
+      validateRunStreamCoherence([
+        ...bodies.slice(0, 6).map((body) => ({ ...context, ...body })),
+        { ...context, ...prepare, occurredAt: "2026-08-21T13:00:00.000Z" }
+      ])
+    ).rejects.toThrow(/active|expired/i);
+
+    const alteredAuthorization = {
+      ...prepared.payload.environment.authorization,
+      digest: "0".repeat(64),
+      expiresAt: "2026-08-21T14:00:00.000Z"
+    };
+    alteredAuthorization.digest = await digestEnvironmentAuthorization(alteredAuthorization);
+    const preparedPayload = {
+      ...prepared.payload,
+      environment: { ...prepared.payload.environment, authorization: alteredAuthorization }
+    };
+    await expect(
+      validateRunStreamCoherence([
+        ...bodies.slice(0, 7).map((body) => ({ ...context, ...body })),
+        {
+          ...context,
+          ...prepared,
+          payload: {
+            ...preparedPayload,
+            phaseDigest: await digestLocalExecutionPhase("environment.prepared", preparedPayload)
+          }
+        }
+      ])
+    ).rejects.toThrow(/prepare intent/i);
+  });
+
+  it("binds artifact evidence to the command intent run and environment", async () => {
+    const bodies = await localEventBodies();
+    const artifact = bodies.find((body) => body.type === "artifact.recorded");
+    if (artifact?.type !== "artifact.recorded") {
+      throw new TypeError("Fixture is missing artifact evidence.");
+    }
+    const wrongRunId = "run_123e4567-e89b-42d3-a456-426614174099";
+    const artifactPayload = {
+      ...artifact.payload,
+      runId: wrongRunId,
+      artifact: { ...artifact.payload.artifact, runId: wrongRunId }
+    };
+    await expect(
+      validateRunStreamCoherence([
+        ...bodies.slice(0, 9).map((body) => ({ ...context, ...body })),
+        {
+          ...context,
+          ...artifact,
+          payload: {
+            ...artifactPayload,
+            phaseDigest: await digestLocalExecutionPhase("artifact.recorded", artifactPayload)
+          }
+        }
+      ])
+    ).rejects.toThrow(/artifact/i);
+  });
+
   it("rejects an unknown event type", () => {
     expect(() =>
       PendingDomainEventSchema.parse({
