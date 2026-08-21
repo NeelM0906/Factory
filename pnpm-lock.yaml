@@ -39,6 +39,15 @@ importers:
         specifier: ^4.1.5
         version: 4.4.3
 
+  packages/db:
+    dependencies:
+      '@autostack/contracts':
+        specifier: workspace:*
+        version: link:../contracts
+      '@autostack/domain':
+        specifier: workspace:*
+        version: link:../domain
+
   packages/domain:
     dependencies:
       '@autostack/contracts':
