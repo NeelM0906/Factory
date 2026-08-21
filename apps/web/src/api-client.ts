@@ -1,0 +1,105 @@
+import {
+  CreateRunRequestSchema,
+  CreateRunResponseSchema,
+  HealthResponseSchema,
+  ListRunsResponseSchema,
+  type CreateRunRequest,
+  type CreateRunResponse,
+  type HealthResponse,
+  type ListRunsResponse
+} from "@autostack/contracts";
+
+export class ApiAuthenticationError extends Error {
+  constructor() {
+    super("Authentication is required.");
+    this.name = "ApiAuthenticationError";
+  }
+}
+
+export class ApiResponseError extends Error {
+  constructor() {
+    super("The AutoStack control plane returned an invalid or unavailable response.");
+    this.name = "ApiResponseError";
+  }
+}
+
+export interface AutoStackApiClient {
+  health(signal?: AbortSignal): Promise<HealthResponse>;
+  listRuns(signal?: AbortSignal): Promise<ListRunsResponse>;
+  createRun(input: CreateRunRequest, signal?: AbortSignal): Promise<CreateRunResponse>;
+}
+
+export interface CreateApiClientOptions {
+  readonly baseUrl: string;
+  readonly getToken: () => string | null;
+  readonly fetch?: typeof globalThis.fetch;
+}
+
+const isAbortError = (error: unknown): boolean =>
+  error instanceof DOMException && error.name === "AbortError";
+
+export function createApiClient(options: CreateApiClientOptions): AutoStackApiClient {
+  const baseUrl = options.baseUrl.replace(/\/$/, "");
+  const fetchImplementation = options.fetch ?? globalThis.fetch;
+
+  const request = async (path: string, init: RequestInit): Promise<Response> => {
+    try {
+      return await fetchImplementation(`${baseUrl}${path}`, init);
+    } catch (error) {
+      if (isAbortError(error)) throw error;
+      throw new ApiResponseError();
+    }
+  };
+
+  const authenticatedHeaders = (): Headers => {
+    const token = options.getToken();
+    if (token === null || token.length === 0) throw new ApiAuthenticationError();
+    return new Headers({ Authorization: `Bearer ${token}` });
+  };
+
+  const decode = async <T>(
+    response: Response,
+    schema: { parse(value: unknown): T }
+  ): Promise<T> => {
+    try {
+      return schema.parse(await response.json());
+    } catch {
+      throw new ApiResponseError();
+    }
+  };
+
+  return {
+    async health(signal) {
+      const response = await request("/v1/health", {
+        ...(signal === undefined ? {} : { signal })
+      });
+      if (response.status !== 200 && response.status !== 503) throw new ApiResponseError();
+      return decode(response, HealthResponseSchema);
+    },
+
+    async listRuns(signal) {
+      const response = await request("/v1/runs", {
+        headers: authenticatedHeaders(),
+        ...(signal === undefined ? {} : { signal })
+      });
+      if (response.status === 401) throw new ApiAuthenticationError();
+      if (!response.ok) throw new ApiResponseError();
+      return decode(response, ListRunsResponseSchema);
+    },
+
+    async createRun(input, signal) {
+      const headers = authenticatedHeaders();
+      headers.set("Content-Type", "application/json");
+      headers.set("Idempotency-Key", globalThis.crypto.randomUUID());
+      const response = await request("/v1/runs", {
+        method: "POST",
+        headers,
+        body: JSON.stringify(CreateRunRequestSchema.parse(input)),
+        ...(signal === undefined ? {} : { signal })
+      });
+      if (response.status === 401) throw new ApiAuthenticationError();
+      if (!response.ok) throw new ApiResponseError();
+      return decode(response, CreateRunResponseSchema);
+    }
+  };
+}
