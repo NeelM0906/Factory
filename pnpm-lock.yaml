@@ -54,6 +54,22 @@ importers:
         specifier: workspace:*
         version: link:../contracts
 
+  packages/workflow:
+    dependencies:
+      '@autostack/contracts':
+        specifier: workspace:*
+        version: link:../contracts
+      '@autostack/domain':
+        specifier: workspace:*
+        version: link:../domain
+      zod:
+        specifier: ^4.1.5
+        version: 4.4.3
+    devDependencies:
+      '@autostack/db':
+        specifier: workspace:*
+        version: link:../db
+
 packages:
 
   '@babel/helper-string-parser@7.29.7':
