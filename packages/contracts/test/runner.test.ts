@@ -180,6 +180,9 @@ describe("local runner contracts", () => {
       { executable: "bash", args: ["+O", "extglob", "-c", "echo safe"] },
       { executable: "bash", args: ["+o", "posix", "-c", "echo safe"] },
       { executable: "nice", args: ["bash", "+O", "extglob", "-c", "echo safe"] },
+      { executable: "/usr/bin/time", args: ["/bin/sh", "-c", "echo safe"] },
+      { executable: "/usr/bin/caffeinate", args: ["/bin/sh", "-c", "echo safe"] },
+      { executable: "wrapper-probe", args: ["bash", "-c", "echo safe"] },
       { executable: "/usr/bin/env", args: ["MODE=safe", "-i", "sh", "-c", "echo safe"] },
       { executable: "/usr/bin/env", args: ["-S", "bash -c 'echo safe'"] },
       { executable: "/usr/bin/env", args: ["-Sbash -c 'echo safe'"] },
@@ -196,6 +199,8 @@ describe("local runner contracts", () => {
       { executable: "busybox", args: ["hush", "-c", "echo safe"] },
       { executable: "/usr/local/bin/mksh", args: ["-c", "echo safe"] },
       { executable: "/usr/bin/YASH", args: ["-c", "echo safe"] },
+      { executable: "ksh93", args: ["-c", "echo safe"] },
+      { executable: "rksh93", args: ["-c", "echo safe"] },
       { executable: "C:\\Program Files\\PowerShell\\pwsh.exe", args: ["-Command", "echo safe"] },
       { executable: "nu", args: ["--commands", "echo safe"] },
       { executable: "nu", args: ["--commands=echo safe"] },
@@ -220,6 +225,7 @@ describe("local runner contracts", () => {
       { executable: "pwsh", args: ["/Command", "echo safe"] },
       { executable: "pwsh-preview", args: ["/EncodedCommand", "ZQBjAGgAbwA="] },
       { executable: "nice", args: ["pwsh", "/C", "echo safe"] },
+      { executable: "pwsh", args: ["–Command", "echo safe"] },
       { executable: "cmd.exe", args: ["/c", "echo safe"] },
       { executable: "nice", args: ["sh", "-c", "echo safe"] },
       { executable: "xargs", args: ["sh", "-c", "echo safe"] },
@@ -287,6 +293,19 @@ describe("local runner contracts", () => {
     ).toThrow(/resolved shell command-string/i);
     expect(() =>
       assertResolvedCommandDoesNotUseShellCommandString("/opt/bin/pwsh", ["/Command", "echo safe"])
+    ).toThrow(/resolved shell command-string/i);
+    expect(() =>
+      assertResolvedCommandDoesNotUseShellCommandString("/usr/bin/time", [
+        "/bin/sh",
+        "-c",
+        "echo safe"
+      ])
+    ).toThrow(/resolved shell command-string/i);
+    expect(() =>
+      assertResolvedCommandDoesNotUseShellCommandString("/opt/bin/ksh93", ["-c", "echo safe"])
+    ).toThrow(/resolved shell command-string/i);
+    expect(() =>
+      assertResolvedCommandDoesNotUseShellCommandString("/opt/bin/pwsh", ["–Command", "echo safe"])
     ).toThrow(/resolved shell command-string/i);
     expect(
       CommandSpecSchema.parse({

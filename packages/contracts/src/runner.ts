@@ -89,7 +89,7 @@ const ShellLikeExecutableBasenames = new Set([
   "tclsh"
 ]);
 const ShellFamilyBasenamePattern =
-  /^(?:sh|bash|zsh|dash|ksh|mksh|yash|ash|hush|csh|tcsh|xonsh|posh|osh|ysh)(?:[-_.].*)?$/;
+  /^(?:sh|bash|zsh|dash|ksh(?:93)?|rksh(?:93)?|mksh|yash|ash|hush|csh|tcsh|xonsh|posh|osh|ysh)(?:[-_.].*)?$/;
 const TransitiveCommandWrapperBasenames = new Set([
   "env",
   "sudo",
@@ -103,8 +103,31 @@ const TransitiveCommandWrapperBasenames = new Set([
   "nohup",
   "chrt",
   "ionice",
-  "taskset"
+  "taskset",
+  "time",
+  "caffeinate",
+  "watch",
+  "parallel",
+  "strace",
+  "ltrace",
+  "valgrind",
+  "gdb",
+  "lldb",
+  "rr",
+  "perf",
+  "systemd-run",
+  "script",
+  "unshare",
+  "nsenter",
+  "prlimit",
+  "cgexec",
+  "runuser",
+  "su",
+  "arch",
+  "xcrun"
 ]);
+const OpaqueArgumentExecutableBasenames = new Set(["echo", "printf"]);
+const PowerShellDashPrefixPattern = /^[-\u2013\u2014\u2015]/u;
 const normalizedExecutableBasename = (executable: string): string =>
   (executable.split(/[\\/]/).at(-1) ?? executable).toLowerCase().replace(/\.(?:exe|cmd|bat)$/, "");
 
@@ -130,6 +153,7 @@ const hasForbiddenLeadingShellOption = (
   const first = argumentsToInspect[0];
   if (first === undefined || first === "--") return false;
   if (/^(?:pwsh|powershell)(?:[-_.].*)?$/.test(basename)) {
+    if (PowerShellDashPrefixPattern.test(first) && !first.startsWith("-")) return true;
     const normalized = first.toLowerCase();
     if (normalized === "-file" || normalized === "-f") {
       const scriptPath = argumentsToInspect[1];
@@ -154,9 +178,14 @@ const isForbiddenShellCommandString = (command: {
   // with CommandSpec's environment, timeout, cwd, and resource fields. Rejecting
   // them keeps executable identity resolvable at one trusted launch boundary.
   if (TransitiveCommandWrapperBasenames.has(executable)) return true;
-  return (
-    isShellLikeExecutable(command.executable) &&
-    hasForbiddenLeadingShellOption(command.executable, command.args)
+  if (isShellLikeExecutable(command.executable)) {
+    return hasForbiddenLeadingShellOption(command.executable, command.args);
+  }
+  if (OpaqueArgumentExecutableBasenames.has(executable)) return false;
+  return command.args.some(
+    (argument, index) =>
+      isShellLikeExecutable(argument) &&
+      hasForbiddenLeadingShellOption(argument, command.args.slice(index + 1))
   );
 };
 
