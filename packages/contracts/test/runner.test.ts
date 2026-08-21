@@ -177,6 +177,9 @@ describe("local runner contracts", () => {
       { executable: "bash", args: ["-O", "extglob", "-c", "echo safe"] },
       { executable: "bash", args: ["--rcfile", "/dev/null", "-c", "echo safe"] },
       { executable: "bash", args: ["-o", "pipefail", "-c", "echo safe"] },
+      { executable: "bash", args: ["+O", "extglob", "-c", "echo safe"] },
+      { executable: "bash", args: ["+o", "posix", "-c", "echo safe"] },
+      { executable: "nice", args: ["bash", "+O", "extglob", "-c", "echo safe"] },
       { executable: "/usr/bin/env", args: ["MODE=safe", "-i", "sh", "-c", "echo safe"] },
       { executable: "/usr/bin/env", args: ["-S", "bash -c 'echo safe'"] },
       { executable: "/usr/bin/env", args: ["-Sbash -c 'echo safe'"] },
@@ -214,10 +217,12 @@ describe("local runner contracts", () => {
       { executable: "nice", args: ["pwsh", "-e", "ZQBjAGgAbwA="] },
       { executable: "pwsh-preview", args: ["-e", "ZQBjAGgAbwA="] },
       { executable: "nice", args: ["pwsh-preview", "-e", "ZQBjAGgAbwA="] },
+      { executable: "pwsh", args: ["/Command", "echo safe"] },
+      { executable: "pwsh-preview", args: ["/EncodedCommand", "ZQBjAGgAbwA="] },
+      { executable: "nice", args: ["pwsh", "/C", "echo safe"] },
       { executable: "cmd.exe", args: ["/c", "echo safe"] },
       { executable: "nice", args: ["sh", "-c", "echo safe"] },
       { executable: "xargs", args: ["sh", "-c", "echo safe"] },
-      { executable: "echo", args: ["bash", "-O", "extglob", "-c", "echo safe"] },
       { executable: "csh", args: ["-c", "echo safe"] },
       { executable: "tcsh", args: ["-c", "echo safe"] },
       { executable: "/bin/BASH", args: ["-c", "echo safe"] }
@@ -272,6 +277,17 @@ describe("local runner contracts", () => {
     expect(() =>
       assertResolvedCommandDoesNotUseShellCommandString("/private/tool-alias/fish", ["-Cecho safe"])
     ).toThrow(/resolved shell command-string/i);
+    expect(() =>
+      assertResolvedCommandDoesNotUseShellCommandString("/private/tool-alias/bash", [
+        "+O",
+        "extglob",
+        "-c",
+        "echo safe"
+      ])
+    ).toThrow(/resolved shell command-string/i);
+    expect(() =>
+      assertResolvedCommandDoesNotUseShellCommandString("/opt/bin/pwsh", ["/Command", "echo safe"])
+    ).toThrow(/resolved shell command-string/i);
     expect(
       CommandSpecSchema.parse({
         executable: "bash",
@@ -285,7 +301,13 @@ describe("local runner contracts", () => {
     for (const command of [
       { executable: "nu", args: ["script.nu"] },
       { executable: "fish", args: ["script.fish"] },
-      { executable: "powershell.exe", args: ["-File", "script.ps1"] }
+      { executable: "powershell.exe", args: ["-File", "script.ps1"] },
+      { executable: "bash", args: ["script.sh", "--mode", "verify"] },
+      { executable: "fish", args: ["script.fish", "--mode", "verify"] },
+      { executable: "./scripts/verify.sh", args: ["--mode", "verify"] },
+      { executable: "ssh", args: ["-p", "2222", "host"] },
+      { executable: "mosh", args: ["--ssh=ssh -p 2222", "host"] },
+      { executable: "echo", args: ["bash", "-c", "display only"] }
     ]) {
       expect(
         CommandSpecSchema.parse({

@@ -84,7 +84,26 @@ const ShellLikeExecutableBasenames = new Set([
   "cmd",
   "ion",
   "rc",
-  "es"
+  "es",
+  "wish",
+  "tclsh"
+]);
+const ShellFamilyBasenamePattern =
+  /^(?:sh|bash|zsh|dash|ksh|mksh|yash|ash|hush|csh|tcsh|xonsh|posh|osh|ysh)(?:[-_.].*)?$/;
+const TransitiveCommandWrapperBasenames = new Set([
+  "env",
+  "sudo",
+  "doas",
+  "busybox",
+  "nice",
+  "xargs",
+  "stdbuf",
+  "timeout",
+  "setsid",
+  "nohup",
+  "chrt",
+  "ionice",
+  "taskset"
 ]);
 const normalizedExecutableBasename = (executable: string): string =>
   (executable.split(/[\\/]/).at(-1) ?? executable).toLowerCase().replace(/\.(?:exe|cmd|bat)$/, "");
@@ -97,7 +116,7 @@ const normalizedExecutableBasename = (executable: string): string =>
 export const isShellLikeExecutable = (executable: string): boolean => {
   const basename = normalizedExecutableBasename(executable);
   return (
-    basename.endsWith("sh") ||
+    ShellFamilyBasenamePattern.test(basename) ||
     /^(?:pwsh|powershell)(?:[-_.].*)?$/.test(basename) ||
     ShellLikeExecutableBasenames.has(basename)
   );
@@ -116,47 +135,28 @@ const hasForbiddenLeadingShellOption = (
       const scriptPath = argumentsToInspect[1];
       return scriptPath === undefined || scriptPath.startsWith("-");
     }
+    if (first.startsWith("/")) {
+      const switchName = first.slice(1);
+      if (!switchName.includes("/") && !switchName.includes("\\") && !switchName.includes("."))
+        return true;
+    }
   }
-  return first.startsWith("-") || (basename === "cmd" && first.startsWith("/"));
-};
-const usesEnvSplitString = (executable: string, args: readonly string[]): boolean =>
-  normalizedExecutableBasename(executable) === "env" &&
-  args.some(
-    (argument) =>
-      /^-[^-]*S/.test(argument) ||
-      argument === "--split-string" ||
-      argument.startsWith("--split-string=")
-  );
-const hasImplicitWrapperShellCommandString = (
-  executable: string,
-  args: readonly string[]
-): boolean => {
-  if (executable !== "sudo" && executable !== "doas") return false;
-  return args.some(
-    (argument) => /^-[^-]*[si]/.test(argument) || argument === "--shell" || argument === "--login"
+  return (
+    first.startsWith("-") || first.startsWith("+") || (basename === "cmd" && first.startsWith("/"))
   );
 };
 const isForbiddenShellCommandString = (command: {
   readonly executable: string;
   readonly args: readonly string[];
 }): boolean => {
-  const tokens = [command.executable, ...command.args];
-  // env -S parses a command string itself, so it cannot be safely admitted as
-  // an argument-vector command even when nested behind another wrapper.
-  if (tokens.some((token, index) => usesEnvSplitString(token, tokens.slice(index + 1))))
-    return true;
-  if (
-    tokens.some((token, index) =>
-      hasImplicitWrapperShellCommandString(
-        normalizedExecutableBasename(token),
-        tokens.slice(index + 1)
-      )
-    )
-  )
-    return true;
-  return tokens.some(
-    (token, index) =>
-      isShellLikeExecutable(token) && hasForbiddenLeadingShellOption(token, tokens.slice(index + 1))
+  const executable = normalizedExecutableBasename(command.executable);
+  // Wrappers that parse or transitively execute another command are redundant
+  // with CommandSpec's environment, timeout, cwd, and resource fields. Rejecting
+  // them keeps executable identity resolvable at one trusted launch boundary.
+  if (TransitiveCommandWrapperBasenames.has(executable)) return true;
+  return (
+    isShellLikeExecutable(command.executable) &&
+    hasForbiddenLeadingShellOption(command.executable, command.args)
   );
 };
 
