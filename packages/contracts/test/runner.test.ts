@@ -197,12 +197,15 @@ describe("local runner contracts", () => {
       { executable: "nu", args: ["--commands", "echo safe"] },
       { executable: "nu", args: ["--commands=echo safe"] },
       { executable: "nu", args: ["-e", "print 1"] },
+      { executable: "nu", args: ["-e=print 1"] },
       { executable: "nu", args: ["--execute", "print 1"] },
       { executable: "nu", args: ["--execute=print 1"] },
       { executable: "fish", args: ["-C", "echo safe"] },
       { executable: "fish", args: ["--init-command", "echo safe"] },
       { executable: "fish", args: ["--init-command=echo safe"] },
       { executable: "powershell.exe", args: ["-EncodedCommand", "ZQBjAGgAbwA="] },
+      { executable: "pwsh", args: ["-e", "ZQBjAGgAbwA="] },
+      { executable: "nice", args: ["pwsh", "-e", "ZQBjAGgAbwA="] },
       { executable: "cmd.exe", args: ["/c", "echo safe"] },
       { executable: "nice", args: ["sh", "-c", "echo safe"] },
       { executable: "xargs", args: ["sh", "-c", "echo safe"] },
@@ -244,6 +247,12 @@ describe("local runner contracts", () => {
       assertResolvedCommandDoesNotUseShellCommandString("/usr/bin/nice", [
         "/usr/bin/env",
         "-Sbash -c 'echo safe'"
+      ])
+    ).toThrow(/resolved shell command-string/i);
+    expect(() =>
+      assertResolvedCommandDoesNotUseShellCommandString("/private/tool-alias/pwsh", [
+        "-e",
+        "ZQBjAGgAbwA="
       ])
     ).toThrow(/resolved shell command-string/i);
     expect(

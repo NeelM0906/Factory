@@ -114,22 +114,31 @@ const isGenericShellCommandStringFlag = (argument: string): boolean => {
     normalized.startsWith("--commands=")
   );
 };
+const isOptionWithOptionalAttachedValue = (argument: string, option: string): boolean =>
+  argument === option || argument.startsWith(`${option}=`) || argument.startsWith(`${option}:`);
 const isInterpreterSpecificCommandStringFlag = (executable: string, argument: string): boolean => {
   const basename = normalizedExecutableBasename(executable);
   const normalized = argument.toLowerCase();
   if (basename === "nu" || basename === "nushell") {
-    return normalized === "-e" || normalized === "--execute" || normalized.startsWith("--execute=");
+    return (
+      isOptionWithOptionalAttachedValue(normalized, "-e") ||
+      isOptionWithOptionalAttachedValue(normalized, "--execute")
+    );
   }
   if (basename === "fish") {
     return normalized === "--init-command" || normalized.startsWith("--init-command=");
   }
   if (basename === "powershell" || basename === "pwsh") {
-    return (
-      normalized === "--encoded-command" ||
-      normalized.startsWith("--encoded-command=") ||
-      normalized === "--command-with-args" ||
-      normalized.startsWith("--command-with-args=")
-    );
+    return [
+      "-e",
+      "-ec",
+      "-enc",
+      "-encodedcommand",
+      "--encoded-command",
+      "-cwa",
+      "-commandwithargs",
+      "--command-with-args"
+    ].some((option) => isOptionWithOptionalAttachedValue(normalized, option));
   }
   if (basename === "cmd") return normalized === "/c" || normalized === "/k";
   return false;
