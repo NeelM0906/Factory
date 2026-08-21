@@ -74,6 +74,31 @@ export const MIGRATIONS: readonly Migration[] = [
       `ALTER TABLE idempotency_records ADD COLUMN completion_lease_digest TEXT`,
       `ALTER TABLE idempotency_records ADD COLUMN completion_request_digest TEXT`
     ]
+  },
+  {
+    version: 3,
+    name: "bind_generic_commit_idempotency",
+    statements: [`ALTER TABLE idempotency_records ADD COLUMN commit_request_digest TEXT`]
+  },
+  {
+    version: 4,
+    name: "run_summary_projection",
+    statements: [
+      `CREATE TABLE run_summaries (
+        run_id TEXT PRIMARY KEY,
+        workspace_id TEXT NOT NULL,
+        work_item_id TEXT NOT NULL,
+        title TEXT NOT NULL,
+        source TEXT NOT NULL,
+        status TEXT NOT NULL,
+        current_stage TEXT,
+        last_global_sequence INTEGER NOT NULL,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+      )`,
+      `CREATE INDEX run_summaries_workspace_page_idx
+        ON run_summaries (workspace_id, last_global_sequence DESC)`
+    ]
   }
 ] as const;
 

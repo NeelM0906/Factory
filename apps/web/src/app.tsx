@@ -68,7 +68,10 @@ export interface AppProps {
 const defaultClientFactory = (getToken: () => string | null): AutoStackApiClient =>
   createApiClient({ baseUrl: "", getToken });
 
-const lifecycleView = (runs: readonly RunSummary[]): readonly LifecycleStageView[] => {
+const lifecycleView = (
+  runs: readonly RunSummary[],
+  hasMoreRuns: boolean
+): readonly LifecycleStageView[] => {
   const firstActive = runs.find(
     (run) => ACTIVE_STATUSES.has(run.status) && run.currentStage !== undefined
   );
@@ -83,7 +86,9 @@ const lifecycleView = (runs: readonly RunSummary[]): readonly LifecycleStageView
   return LIFECYCLE.map((lane, index) => ({
     ...lane,
     state: index < activeIndex ? "complete" : index === activeIndex ? "active" : "waiting",
-    ...(index === activeIndex ? { detail: `${runs.length} total` } : {})
+    ...(index === activeIndex
+      ? { detail: `${runs.length} ${hasMoreRuns ? "loaded" : "total"}` }
+      : {})
   }));
 };
 
@@ -192,6 +197,7 @@ export function App({
   const waiting = runs.filter((run) => WAITING_STATUSES.has(run.status)).length;
   const failed = runs.filter((run) => run.status === "failed").length;
   const completed = runs.filter((run) => run.status === "completed").length;
+  const partialMetrics = factory.state.nextCursor !== undefined;
 
   return (
     <AppShell
@@ -214,24 +220,29 @@ export function App({
         </span>
       </header>
 
-      <LifecycleStrip stages={lifecycleView(runs)} />
+      <LifecycleStrip stages={lifecycleView(runs, factory.state.nextCursor !== undefined)} />
 
       <section className="factory-metrics" aria-label="Factory metrics">
-        <MetricCard label="Active runs" value={String(active)} detail="In flight" tone="neutral" />
         <MetricCard
-          label="Waiting runs"
+          label={partialMetrics ? "Loaded active runs" : "Active runs"}
+          value={String(active)}
+          detail="In flight"
+          tone="neutral"
+        />
+        <MetricCard
+          label={partialMetrics ? "Loaded waiting runs" : "Waiting runs"}
           value={String(waiting)}
           detail="Needs input"
           tone={waiting > 0 ? "attention" : "neutral"}
         />
         <MetricCard
-          label="Failed runs"
+          label={partialMetrics ? "Loaded failed runs" : "Failed runs"}
           value={String(failed)}
           detail="Needs attention"
           tone={failed > 0 ? "attention" : "neutral"}
         />
         <MetricCard
-          label="Completed runs"
+          label={partialMetrics ? "Loaded completed runs" : "Completed runs"}
           value={String(completed)}
           detail="Delivered"
           tone={completed > 0 ? "good" : "neutral"}
@@ -271,20 +282,37 @@ export function App({
               <p>Start a manual run to create the first durable factory record.</p>
             </div>
           ) : (
-            <div className="run-list">
-              {runs.map((run) => (
-                <article id={`run-${run.runId}`} className="run-row" key={run.runId}>
-                  <div>
-                    <h3>{run.title}</h3>
-                    <p className="run-meta">
-                      <span>{run.source}</span>
-                      <span>Last update {new Date(run.updatedAt).toLocaleString()}</span>
-                    </p>
-                  </div>
-                  <RunStatusBadge status={run.status} />
-                </article>
-              ))}
-            </div>
+            <>
+              <div className="run-list">
+                {runs.map((run) => (
+                  <article id={`run-${run.runId}`} className="run-row" key={run.runId}>
+                    <div>
+                      <h3>{run.title}</h3>
+                      <p className="run-meta">
+                        <span>{run.source}</span>
+                        <span>Last update {new Date(run.updatedAt).toLocaleString()}</span>
+                      </p>
+                    </div>
+                    <RunStatusBadge status={run.status} />
+                  </article>
+                ))}
+              </div>
+              {factory.state.paginationMessage === undefined ? null : (
+                <p className="error-state" role="alert">
+                  {factory.state.paginationMessage}
+                </p>
+              )}
+              {factory.state.nextCursor === undefined ? null : (
+                <button
+                  type="button"
+                  className="secondary-button"
+                  disabled={factory.state.loadingMore}
+                  onClick={() => void factory.loadMore()}
+                >
+                  {factory.state.loadingMore ? "Loading older runs…" : "Load older runs"}
+                </button>
+              )}
+            </>
           )}
         </section>
 

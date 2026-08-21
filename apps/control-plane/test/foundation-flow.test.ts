@@ -9,8 +9,7 @@ import {
   EventIdSchema,
   ListEventsResponseSchema,
   ListRunsResponseSchema,
-  WorkspaceIdSchema,
-  createIdFactory
+  WorkspaceIdSchema
 } from "@autostack/contracts";
 import { SqliteDurableStore, openDatabase } from "@autostack/db";
 
@@ -49,9 +48,7 @@ describe("foundation restart durability", () => {
         executor: { getStatus: () => "idle" },
         token: TOKEN,
         workspaceId: WORKSPACE_ID,
-        ids: createIdFactory(uuid),
-        now: () => NOW,
-        correlationId: uuid
+        now: () => NOW
       });
       const request = (path: string, init: RequestInit = {}) =>
         app.request(path, {

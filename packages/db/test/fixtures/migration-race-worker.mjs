@@ -4,7 +4,7 @@ import { parentPort, workerData } from "node:worker_threads";
 import { applyMigrations } from "../../src/migrations.ts";
 
 const migration = {
-  version: 3,
+  version: 5,
   name: "concurrent_test_migration",
   statements: ["CREATE TABLE concurrent_migration_probe (id TEXT PRIMARY KEY)"]
 };

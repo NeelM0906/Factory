@@ -25,7 +25,7 @@ export class ApiResponseError extends Error {
 
 export interface AutoStackApiClient {
   health(signal?: AbortSignal): Promise<HealthResponse>;
-  listRuns(signal?: AbortSignal): Promise<ListRunsResponse>;
+  listRuns(cursor?: number, signal?: AbortSignal): Promise<ListRunsResponse>;
   createRun(input: CreateRunRequest, signal?: AbortSignal): Promise<CreateRunResponse>;
 }
 
@@ -77,11 +77,14 @@ export function createApiClient(options: CreateApiClientOptions): AutoStackApiCl
       return decode(response, HealthResponseSchema);
     },
 
-    async listRuns(signal) {
-      const response = await request("/v1/runs", {
-        headers: authenticatedHeaders(),
-        ...(signal === undefined ? {} : { signal })
-      });
+    async listRuns(cursor, signal) {
+      const response = await request(
+        cursor === undefined ? "/v1/runs" : `/v1/runs?cursor=${encodeURIComponent(String(cursor))}`,
+        {
+          headers: authenticatedHeaders(),
+          ...(signal === undefined ? {} : { signal })
+        }
+      );
       if (response.status === 401) throw new ApiAuthenticationError();
       if (!response.ok) throw new ApiResponseError();
       return decode(response, ListRunsResponseSchema);

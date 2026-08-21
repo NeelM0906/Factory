@@ -1,4 +1,3 @@
-import { createHash } from "node:crypto";
 import type { DatabaseSync } from "node:sqlite";
 
 import {
@@ -6,12 +5,14 @@ import {
   EventIdSchema,
   JobIdSchema,
   PendingDomainEventSchema,
+  RunSummarySchema,
   StreamRefSchema,
   StoredDomainEventSchema,
   WorkflowFailureSchema,
   WorkspaceIdSchema,
-  assertSafeJson,
+  normalizeSafeJson,
   type EventId,
+  type PendingDomainEvent,
   type StoredDomainEvent
 } from "@autostack/contracts";
 import {
@@ -27,29 +28,19 @@ import {
   type LeasedWorkflowJob,
   type NewWorkflowJob,
   type ReadAllRequest,
+  type ReadCommitResultRequest,
+  type ListRunSummariesRequest,
   type ReadStreamRequest,
   type StoreHealth,
   type StreamAppend
 } from "@autostack/domain";
 
 import { type AutoStackDatabase } from "./database.js";
-import { decodeCommitResult, decodeEventRow, decodeJobRow, encodeCommitResult } from "./codecs.js";
+import { decodeEventRow, decodeJobRow } from "./codecs.js";
+import { digestCommitRequest, digestText, IdempotencyStore } from "./idempotency-store.js";
+import { updateRunSummary } from "./run-summary-store.js";
 
 type Row = Readonly<Record<string, unknown>>;
-
-type IdempotencyBinding =
-  | { readonly kind: "commit" }
-  | {
-      readonly kind: "job_completion";
-      readonly jobId: string;
-      readonly leaseDigest: string;
-      readonly requestDigest: string;
-    };
-
-interface IdempotencyRecord {
-  readonly result: CommitResult;
-  readonly binding: IdempotencyBinding;
-}
 
 export interface SqliteDurableStoreDependencies {
   readonly eventId: () => EventId;
@@ -78,31 +69,53 @@ export class SqliteDurableStore implements DurableStore {
   readonly #database: AutoStackDatabase;
   readonly #connection: DatabaseSync;
   readonly #dependencies: SqliteDurableStoreDependencies;
+  readonly #idempotency: IdempotencyStore;
 
   constructor(database: AutoStackDatabase, dependencies: SqliteDurableStoreDependencies) {
     this.#database = database;
     this.#connection = database.connection;
     this.#dependencies = dependencies;
+    this.#idempotency = new IdempotencyStore(this.#connection, dependencies.now);
   }
 
   async commit(request: CommitRequest): Promise<CommitResult> {
-    assertSafeJson(request, this.#dependencies.sensitiveValues ?? []);
-    const validated = CommitRequestSchema.parse(request);
+    const snapshot = normalizeSafeJson(request, this.#dependencies.sensitiveValues ?? []);
+    const validated = CommitRequestSchema.parse(snapshot);
+    const requestDigest = digestCommitRequest(validated);
     return this.#transaction(() => {
-      const replay = this.#findIdempotency(validated.idempotency.scope, validated.idempotency.key);
+      const replay = this.#idempotency.find(validated.idempotency.scope, validated.idempotency.key);
       if (replay !== null) {
         if (replay.binding.kind !== "commit") {
           throw new TypeError("The idempotency key is bound to another operation.");
+        }
+        if (replay.binding.requestDigest === undefined) {
+          this.#idempotency.bindLegacyCommit(
+            validated.idempotency.scope,
+            validated.idempotency.key,
+            requestDigest
+          );
+        } else if (replay.binding.requestDigest !== requestDigest) {
+          throw new TypeError("The idempotency key is bound to another commit request.");
         }
         return replay.result;
       }
 
       const result = this.#applyCommit(validated.appends, validated.jobs);
-      this.#saveIdempotency(validated.idempotency.scope, validated.idempotency.key, result, {
-        kind: "commit"
+      this.#idempotency.save(validated.idempotency.scope, validated.idempotency.key, result, {
+        kind: "commit",
+        requestDigest
       });
       return result;
     });
+  }
+
+  async readCommitResult(request: ReadCommitResultRequest): Promise<CommitResult | null> {
+    const replay = this.#idempotency.find(request.scope, request.key);
+    if (replay === null) return null;
+    if (replay.binding.kind !== "commit") {
+      throw new TypeError("The idempotency key is bound to another operation.");
+    }
+    return { ...replay.result, replayed: true };
   }
 
   async readStream(request: ReadStreamRequest): Promise<readonly StoredDomainEvent[]> {
@@ -132,8 +145,14 @@ export class SqliteDurableStore implements DurableStore {
       throw new TypeError("afterGlobalSequence must be a non-negative safe integer.");
     }
     if (request.workspaceId !== undefined) WorkspaceIdSchema.parse(request.workspaceId);
+    if (
+      request.limit !== undefined &&
+      (!Number.isSafeInteger(request.limit) || request.limit <= 0)
+    ) {
+      throw new TypeError("limit must be a positive safe integer.");
+    }
     const afterGlobalSequence = Math.max(0, request.afterGlobalSequence ?? 0);
-    const limit = Math.min(500, Math.max(1, request.limit ?? 100));
+    const limit = Math.min(500, request.limit ?? 100);
     const rows =
       request.workspaceId === undefined
         ? (this.#connection
@@ -153,6 +172,56 @@ export class SqliteDurableStore implements DurableStore {
             )
             .all(afterGlobalSequence, request.workspaceId, limit) as Row[]);
     return rows.map(decodeEventRow);
+  }
+
+  async listRunSummaries(request: ListRunSummariesRequest) {
+    WorkspaceIdSchema.parse(request.workspaceId);
+    if (
+      request.beforeGlobalSequence !== undefined &&
+      (!Number.isSafeInteger(request.beforeGlobalSequence) || request.beforeGlobalSequence <= 0)
+    ) {
+      throw new TypeError("beforeGlobalSequence must be a positive safe integer.");
+    }
+    if (
+      request.limit !== undefined &&
+      (!Number.isSafeInteger(request.limit) || request.limit <= 0)
+    ) {
+      throw new TypeError("limit must be a positive safe integer.");
+    }
+    const limit = Math.min(100, request.limit ?? 100);
+    const rows = (
+      request.beforeGlobalSequence === undefined
+        ? this.#connection
+            .prepare(
+              `SELECT * FROM run_summaries WHERE workspace_id = ?
+             ORDER BY last_global_sequence DESC LIMIT ?`
+            )
+            .all(request.workspaceId, limit + 1)
+        : this.#connection
+            .prepare(
+              `SELECT * FROM run_summaries
+             WHERE workspace_id = ? AND last_global_sequence < ?
+             ORDER BY last_global_sequence DESC LIMIT ?`
+            )
+            .all(request.workspaceId, request.beforeGlobalSequence, limit + 1)
+    ) as Row[];
+    const items = rows.slice(0, limit).map((row) =>
+      RunSummarySchema.parse({
+        runId: this.#text(row.run_id, "run_id"),
+        workItemId: this.#text(row.work_item_id, "work_item_id"),
+        title: this.#text(row.title, "title"),
+        source: this.#text(row.source, "source"),
+        status: this.#text(row.status, "status"),
+        ...(row.current_stage === null
+          ? {}
+          : { currentStage: this.#text(row.current_stage, "current_stage") }),
+        lastGlobalSequence: this.#integer(row.last_global_sequence, "last_global_sequence"),
+        createdAt: this.#text(row.created_at, "created_at"),
+        updatedAt: this.#text(row.updated_at, "updated_at")
+      })
+    );
+    const nextCursor = rows.length > limit ? items.at(-1)?.lastGlobalSequence : undefined;
+    return nextCursor === undefined ? { items } : { items, nextCursor };
   }
 
   async leaseNext(request: LeaseNextRequest): Promise<LeasedWorkflowJob | null> {
@@ -247,29 +316,30 @@ export class SqliteDurableStore implements DurableStore {
   }
 
   async completeJob(request: CompleteJobRequest): Promise<CommitResult> {
-    assertSafeJson(request, this.#dependencies.sensitiveValues ?? []);
-    JobIdSchema.parse(request.jobId);
-    if (request.leaseToken.trim() === "") throw new TypeError("leaseToken must be non-empty.");
+    const snapshot = normalizeSafeJson(
+      request,
+      this.#dependencies.sensitiveValues ?? []
+    ) as unknown as CompleteJobRequest;
+    JobIdSchema.parse(snapshot.jobId);
+    if (snapshot.leaseToken.trim() === "") throw new TypeError("leaseToken must be non-empty.");
     const output = CommitRequestSchema.parse({
-      idempotency: request.idempotency,
-      appends: request.appends,
-      jobs: request.jobs
+      idempotency: snapshot.idempotency,
+      appends: snapshot.appends,
+      jobs: snapshot.jobs
     });
-    const leaseDigest = this.#digest(request.leaseToken);
-    const requestDigest = this.#digest(
-      JSON.stringify({ appends: output.appends, jobs: output.jobs })
-    );
+    const leaseDigest = digestText(snapshot.leaseToken);
+    const requestDigest = digestCommitRequest({ ...output, idempotency: output.idempotency });
     return this.#transaction(() => {
-      parseCanonicalTimestamp(request.now);
-      const replay = this.#findIdempotency(output.idempotency.scope, output.idempotency.key);
+      parseCanonicalTimestamp(snapshot.now);
+      const replay = this.#idempotency.find(output.idempotency.scope, output.idempotency.key);
       if (replay !== null) {
         if (
           replay.binding.kind !== "job_completion" ||
-          replay.binding.jobId !== request.jobId ||
+          replay.binding.jobId !== snapshot.jobId ||
           replay.binding.leaseDigest !== leaseDigest
         ) {
           if (replay.binding.kind === "job_completion") {
-            throw new LeaseConflictError(request.jobId);
+            throw new LeaseConflictError(snapshot.jobId);
           }
           throw new TypeError("The idempotency key is bound to another operation.");
         }
@@ -278,7 +348,7 @@ export class SqliteDurableStore implements DurableStore {
         }
         return replay.result;
       }
-      const leased = this.#assertActiveLease(request.jobId, request.leaseToken, request.now);
+      const leased = this.#assertActiveLease(snapshot.jobId, snapshot.leaseToken, snapshot.now);
       const workspaceId = this.#text(leased.workspace_id, "workspace_id");
       const runId = this.#text(leased.run_id, "run_id");
       for (const append of output.appends) {
@@ -287,6 +357,21 @@ export class SqliteDurableStore implements DurableStore {
         }
         if (append.events.some((event) => event.workspaceId !== workspaceId)) {
           throw new TypeError("A completion append must match its leased workspace.");
+        }
+        for (const event of append.events) {
+          if (
+            (event.type === "stage.queued" ||
+              event.type === "stage.leased" ||
+              event.type === "stage.succeeded" ||
+              event.type === "stage.failed") &&
+            (append.stream.kind !== "run" ||
+              append.stream.id !== runId ||
+              event.payload.runId !== runId ||
+              event.payload.jobId !== snapshot.jobId ||
+              event.payload.stage !== this.#text(leased.stage, "stage"))
+          ) {
+            throw new TypeError("Stage evidence must match its leased run, job, and stage.");
+          }
         }
       }
       for (const child of output.jobs) {
@@ -302,11 +387,11 @@ export class SqliteDurableStore implements DurableStore {
                lease_expires_at = NULL, heartbeat_at = NULL
            WHERE job_id = ? AND status = 'leased' AND lease_token = ?`
         )
-        .run(request.now, request.jobId, request.leaseToken);
-      if (update.changes !== 1) throw new LeaseConflictError(request.jobId);
-      this.#saveIdempotency(output.idempotency.scope, output.idempotency.key, result, {
+        .run(snapshot.now, snapshot.jobId, snapshot.leaseToken);
+      if (update.changes !== 1) throw new LeaseConflictError(snapshot.jobId);
+      this.#idempotency.save(output.idempotency.scope, output.idempotency.key, result, {
         kind: "job_completion",
-        jobId: request.jobId,
+        jobId: snapshot.jobId,
         leaseDigest,
         requestDigest
       });
@@ -315,20 +400,23 @@ export class SqliteDurableStore implements DurableStore {
   }
 
   async failJob(request: FailJobRequest): Promise<void> {
-    assertSafeJson(request, this.#dependencies.sensitiveValues ?? []);
-    JobIdSchema.parse(request.jobId);
-    if (request.leaseToken.trim() === "") throw new TypeError("leaseToken must be non-empty.");
-    const failure = WorkflowFailureSchema.parse(request.error);
+    const snapshot = normalizeSafeJson(
+      request,
+      this.#dependencies.sensitiveValues ?? []
+    ) as unknown as FailJobRequest;
+    JobIdSchema.parse(snapshot.jobId);
+    if (snapshot.leaseToken.trim() === "") throw new TypeError("leaseToken must be non-empty.");
+    const failure = WorkflowFailureSchema.parse(snapshot.error);
     this.#transaction(() => {
-      parseCanonicalTimestamp(request.now);
-      if (request.nextAvailableAt !== undefined) {
-        parseCanonicalTimestamp(request.nextAvailableAt);
+      parseCanonicalTimestamp(snapshot.now);
+      if (snapshot.nextAvailableAt !== undefined) {
+        parseCanonicalTimestamp(snapshot.nextAvailableAt);
       }
-      const row = this.#assertActiveLease(request.jobId, request.leaseToken, request.now);
+      const row = this.#assertActiveLease(snapshot.jobId, snapshot.leaseToken, snapshot.now);
       const attempt = this.#integer(row.attempt, "attempt");
       const maxAttempts = this.#integer(row.max_attempts, "max_attempts");
       const retry =
-        failure.retryable && request.nextAvailableAt !== undefined && attempt < maxAttempts;
+        failure.retryable && snapshot.nextAvailableAt !== undefined && attempt < maxAttempts;
 
       const update = this.#connection
         .prepare(
@@ -339,13 +427,13 @@ export class SqliteDurableStore implements DurableStore {
         )
         .run(
           retry ? "queued" : "failed",
-          retry ? request.nextAvailableAt : this.#text(row.available_at, "available_at"),
-          request.now,
+          retry ? snapshot.nextAvailableAt : this.#text(row.available_at, "available_at"),
+          snapshot.now,
           JSON.stringify(failure),
-          request.jobId,
-          request.leaseToken
+          snapshot.jobId,
+          snapshot.leaseToken
         );
-      if (update.changes !== 1) throw new LeaseConflictError(request.jobId);
+      if (update.changes !== 1) throw new LeaseConflictError(snapshot.jobId);
     });
   }
 
@@ -377,6 +465,25 @@ export class SqliteDurableStore implements DurableStore {
           append.expectedVersion,
           currentVersion
         );
+      }
+
+      const eventWorkspace = append.events[0]?.workspaceId;
+      if (eventWorkspace === undefined) throw new TypeError("A stream append requires an event.");
+      const establishedWorkspace = this.#streamWorkspace(append.stream.kind, append.stream.id);
+      if (establishedWorkspace !== undefined && establishedWorkspace !== eventWorkspace) {
+        throw new TypeError("A stream append must match its immutable workspace owner.");
+      }
+      if (append.events.some((event) => event.workspaceId !== eventWorkspace)) {
+        throw new TypeError("Every event in a stream append must share one workspace owner.");
+      }
+      if (currentVersion === 0) {
+        const creation = append.events[0];
+        const validCreation =
+          (append.stream.kind === "run" && creation?.type === "run.created") ||
+          (append.stream.kind === "work_item" && creation?.type === "work_item.created");
+        if (!validCreation) {
+          throw new TypeError("A new stream must begin with its creation event.");
+        }
       }
 
       append.events.forEach((candidate, index) => {
@@ -421,7 +528,14 @@ export class SqliteDurableStore implements DurableStore {
       });
     }
 
-    for (const workflowJob of jobs) this.#insertJob(workflowJob);
+    for (const event of storedEvents) updateRunSummary(this.#connection, event);
+
+    for (const workflowJob of jobs) {
+      if (!this.#runExists(workflowJob.workspaceId, workflowJob.runId)) {
+        throw new TypeError("A workflow job must reference an existing run in its workspace.");
+      }
+      this.#insertJob(workflowJob);
+    }
     return { events: storedEvents, jobIds: jobs.map(({ jobId }) => jobId), replayed: false };
   }
 
@@ -474,62 +588,28 @@ export class SqliteDurableStore implements DurableStore {
     return this.#integer(row.version, "version");
   }
 
-  #findIdempotency(scope: string, key: string): IdempotencyRecord | null {
-    if (scope.trim() === "" || key.trim() === "") {
-      throw new TypeError("Idempotency scope and key must be non-empty.");
-    }
-    const row = this.#connection
+  #streamWorkspace(streamKind: string, streamId: string): string | undefined {
+    const rows = this.#connection
       .prepare(
-        `SELECT result_json, operation_kind, completion_job_id,
-                completion_lease_digest, completion_request_digest
-         FROM idempotency_records WHERE scope = ? AND key = ?`
+        `SELECT DISTINCT workspace_id AS workspaceId FROM events
+         WHERE stream_kind = ? AND stream_id = ? LIMIT 2`
       )
-      .get(scope, key) as Row | undefined;
-    if (row === undefined) return null;
-    const result = decodeCommitResult(this.#text(row.result_json, "result_json"));
-    const operationKind = this.#text(row.operation_kind, "operation_kind");
-    if (operationKind === "commit") return { result, binding: { kind: "commit" } };
-    if (operationKind !== "job_completion") {
-      throw new TypeError("The stored idempotency operation kind is invalid.");
-    }
-    return {
-      result,
-      binding: {
-        kind: "job_completion",
-        jobId: this.#text(row.completion_job_id, "completion_job_id"),
-        leaseDigest: this.#text(row.completion_lease_digest, "completion_lease_digest"),
-        requestDigest: this.#text(row.completion_request_digest, "completion_request_digest")
-      }
-    };
+      .all(streamKind, streamId) as Row[];
+    if (rows.length > 1) throw new TypeError("A stream has ambiguous workspace ownership.");
+    return rows[0] === undefined ? undefined : this.#text(rows[0].workspaceId, "workspaceId");
   }
 
-  #saveIdempotency(
-    scope: string,
-    key: string,
-    result: CommitResult,
-    binding: IdempotencyBinding
-  ): void {
-    this.#connection
-      .prepare(
-        `INSERT INTO idempotency_records (
-           scope, key, result_json, created_at, operation_kind,
-           completion_job_id, completion_lease_digest, completion_request_digest
-         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
-      )
-      .run(
-        scope,
-        key,
-        encodeCommitResult(result),
-        this.#dependencies.now(),
-        binding.kind,
-        binding.kind === "job_completion" ? binding.jobId : null,
-        binding.kind === "job_completion" ? binding.leaseDigest : null,
-        binding.kind === "job_completion" ? binding.requestDigest : null
-      );
-  }
-
-  #digest(value: string): string {
-    return createHash("sha256").update(value).digest("hex");
+  #runExists(workspaceId: string, runId: string): boolean {
+    return (
+      this.#connection
+        .prepare(
+          `SELECT 1 AS found FROM events
+           WHERE workspace_id = ? AND stream_kind = 'run' AND stream_id = ?
+             AND event_type = 'run.created'
+           LIMIT 1`
+        )
+        .get(workspaceId, runId) !== undefined
+    );
   }
 
   #assertActiveLease(jobId: string, leaseToken: string, now: string): Row {

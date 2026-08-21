@@ -10,6 +10,7 @@ Use Node.js 24 and pnpm 10.27.0. Install dependencies from the committed lockfil
 corepack enable
 corepack install --global pnpm@10.27.0
 pnpm install --frozen-lockfile
+pnpm build
 ```
 
 Generate at least 32 bytes of entropy for the local bearer token:
@@ -44,12 +45,11 @@ Terminal two—web control room:
 pnpm --filter @autostack/web dev
 ```
 
-Do not load `.env` in the web terminal or in a shell that runs repository scripts, coding agents, or unrelated tools. The renderer receives the token only through the explicit connection form and keeps it in session storage. The CLI prefers `AUTOSTACK_LOCAL_API_TOKEN`; its `--token` compatibility flag is deprecated because process arguments may be observable.
+Do not load `.env` in the web terminal or in a shell that runs installs, builds, repository scripts, coding agents, or unrelated tools. The renderer receives the token only through the explicit connection form and keeps it in session storage. The CLI accepts its credential only through `AUTOSTACK_LOCAL_API_TOKEN`.
 
 Terminal three—diagnostics:
 
 ```bash
-pnpm --filter @autostack/cli build
 node apps/cli/dist/main.js doctor
 node apps/cli/dist/main.js doctor --json
 ```
@@ -89,7 +89,7 @@ curl --fail-with-body \
 
 ## Development gates
 
-Run the same sequence used by CI:
+Run the same sequence used by CI from a fresh terminal where `.env` has not been loaded:
 
 ```bash
 pnpm install --frozen-lockfile

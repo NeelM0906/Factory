@@ -31,31 +31,57 @@ export const containsSensitiveMaterial = (
   sensitiveValues: readonly string[] = []
 ): boolean => redactSensitiveText(value, sensitiveValues) !== value;
 
-export function assertSafeJson(value: unknown, sensitiveValues: readonly string[] = []): void {
+export type SafeJsonValue =
+  | null
+  | boolean
+  | number
+  | string
+  | readonly SafeJsonValue[]
+  | Readonly<{ [key: string]: SafeJsonValue }>;
+
+export function normalizeSafeJson(
+  value: unknown,
+  sensitiveValues: readonly string[] = []
+): SafeJsonValue {
   const active = new WeakSet<object>();
-  const visit = (candidate: unknown, path: string): void => {
-    if (candidate === null || typeof candidate === "boolean") return;
+  const visit = (candidate: unknown, path: string): SafeJsonValue => {
+    if (candidate === null || typeof candidate === "boolean") return candidate;
     if (typeof candidate === "string") {
       if (containsSensitiveMaterial(candidate, sensitiveValues)) {
         throw new TypeError(`Sensitive material is not allowed at ${path}.`);
       }
-      return;
+      return candidate;
     }
     if (typeof candidate === "number") {
       if (!Number.isFinite(candidate))
         throw new TypeError(`A finite number is required at ${path}.`);
-      return;
+      return candidate;
     }
     if (typeof candidate !== "object") {
       throw new TypeError(`A JSON-safe value is required at ${path}.`);
     }
     if (active.has(candidate)) throw new TypeError(`Cyclic JSON is not allowed at ${path}.`);
     const prototype = Object.getPrototypeOf(candidate) as object | null;
-    if (!Array.isArray(candidate) && prototype !== Object.prototype && prototype !== null) {
+    const isArray = Array.isArray(candidate);
+    if (isArray && prototype !== Array.prototype) {
+      throw new TypeError(`A plain JSON array prototype is required at ${path}.`);
+    }
+    if (!isArray && prototype !== Object.prototype && prototype !== null) {
       throw new TypeError(`A plain JSON object is required at ${path}.`);
     }
     active.add(candidate);
-    if (Array.isArray(candidate)) {
+    let snapshot: SafeJsonValue;
+    if (isArray) {
+      const lengthDescriptor = Object.getOwnPropertyDescriptor(candidate, "length");
+      if (
+        lengthDescriptor === undefined ||
+        !("value" in lengthDescriptor) ||
+        !Number.isSafeInteger(lengthDescriptor.value) ||
+        lengthDescriptor.value < 0
+      ) {
+        throw new TypeError(`A safe array length is required at ${path}.`);
+      }
+      const length = lengthDescriptor.value;
       for (const key of Reflect.ownKeys(candidate)) {
         if (typeof key === "symbol") {
           throw new TypeError(`Symbol-keyed values are not allowed at ${path}.`);
@@ -64,13 +90,26 @@ export function assertSafeJson(value: unknown, sensitiveValues: readonly string[
           throw new TypeError(`Non-JSON array properties are not allowed at ${path}.${key}.`);
         }
       }
-      for (let index = 0; index < candidate.length; index += 1) {
-        if (!Object.hasOwn(candidate, index)) {
+      const result: SafeJsonValue[] = [];
+      for (let index = 0; index < length; index += 1) {
+        const descriptor = Object.getOwnPropertyDescriptor(candidate, String(index));
+        if (descriptor === undefined) {
           throw new TypeError(`Sparse arrays are not allowed at ${path}[${index}].`);
         }
-        visit(candidate[index], `${path}[${index}]`);
+        if (!("value" in descriptor)) {
+          throw new TypeError(`JSON accessors are not allowed at ${path}[${index}].`);
+        }
+        if (descriptor.enumerable !== true) {
+          throw new TypeError(`Every JSON array item must be enumerable at ${path}[${index}].`);
+        }
+        result.push(visit(descriptor.value, `${path}[${index}]`));
       }
+      snapshot = Object.freeze(result);
     } else {
+      const result: Record<string, SafeJsonValue> = Object.create(null) as Record<
+        string,
+        SafeJsonValue
+      >;
       for (const key of Reflect.ownKeys(candidate)) {
         if (typeof key === "symbol") {
           throw new TypeError(`Symbol-keyed values are not allowed at ${path}.`);
@@ -85,12 +124,18 @@ export function assertSafeJson(value: unknown, sensitiveValues: readonly string[
         if (containsSensitiveMaterial(key, sensitiveValues)) {
           throw new TypeError(`Sensitive material is not allowed in an object key at ${path}.`);
         }
-        visit(descriptor.value, `${path}.${key}`);
+        result[key] = visit(descriptor.value, `${path}.${key}`);
       }
+      snapshot = Object.freeze(result);
     }
     active.delete(candidate);
+    return snapshot;
   };
-  visit(value, "$");
+  return visit(value, "$");
+}
+
+export function assertSafeJson(value: unknown, sensitiveValues: readonly string[] = []): void {
+  normalizeSafeJson(value, sensitiveValues);
 }
 
 export const SafeMetadataStringSchema = z

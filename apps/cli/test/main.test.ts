@@ -36,6 +36,7 @@ describe("AutoStack CLI", () => {
 
     expect(await runCli(["--help"], help.dependencies)).toBe(0);
     expect(help.values().stdout).toContain("autostack doctor");
+    expect(help.values().stdout).not.toContain("--token");
     expect(await runCli(["--version"], version.dependencies)).toBe(0);
     expect(version.values().stdout).toBe("0.1.0\n");
   });
@@ -51,7 +52,7 @@ describe("AutoStack CLI", () => {
     expect(harness.values().stdout).toContain("API: healthy");
   });
 
-  it("prefers the environment token and safely warns when --token is used", async () => {
+  it("rejects the removed --token option even when an environment token exists", async () => {
     const harness = makeDependencies();
     harness.dependencies.environment = {
       AUTOSTACK_URL: "http://127.0.0.1:4318",
@@ -60,31 +61,22 @@ describe("AutoStack CLI", () => {
 
     expect(
       await runCli(["doctor", "--token", "flag-token-that-must-not-win"], harness.dependencies)
-    ).toBe(0);
-    const authenticatedCall = harness.dependencies.fetch.mock.calls.find(([input]) =>
-      String(input).endsWith("/v1/runs")
-    );
-    expect(new Headers(authenticatedCall?.[1]?.headers).get("Authorization")).toBe(
-      `Bearer ${TOKEN}`
-    );
-    expect(harness.values().stderr).toContain("deprecated");
+    ).toBe(1);
+    expect(harness.dependencies.fetch).not.toHaveBeenCalled();
+    expect(harness.values().stderr).toContain("Usage error");
     expect(JSON.stringify(harness.values())).not.toContain(TOKEN);
     expect(JSON.stringify(harness.values())).not.toContain("flag-token-that-must-not-win");
   });
 
   it("rejects plaintext HTTP for non-loopback hosts", async () => {
     const harness = makeDependencies();
+    harness.dependencies.environment = { AUTOSTACK_LOCAL_API_TOKEN: TOKEN };
 
-    expect(
-      await runCli(
-        ["doctor", "--url", "http://example.com", "--token", TOKEN],
-        harness.dependencies
-      )
-    ).toBe(1);
+    expect(await runCli(["doctor", "--url", "http://example.com"], harness.dependencies)).toBe(1);
     expect(harness.dependencies.fetch).not.toHaveBeenCalled();
   });
 
-  it.each([["unknown"], ["doctor", "extra"], ["doctor", "--token", ""]])(
+  it.each([["unknown"], ["doctor", "extra"]])(
     "returns a stable usage error for invalid arguments",
     async (...arguments_) => {
       const harness = makeDependencies();

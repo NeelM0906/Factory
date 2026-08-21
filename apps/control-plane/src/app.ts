@@ -5,7 +5,6 @@ import {
   ApiErrorSchema,
   CreateRunRequestSchema,
   HealthResponseSchema,
-  type IdFactory,
   type WorkspaceId
 } from "@autostack/contracts";
 import { OptimisticConcurrencyError, type DurableStore } from "@autostack/domain";
@@ -19,9 +18,7 @@ export interface CreateAppDependencies {
   readonly executor: { getStatus(): ExecutorStatus };
   readonly token: string;
   readonly workspaceId: WorkspaceId;
-  readonly ids: Pick<IdFactory, "workItem" | "run">;
   readonly now: () => string;
-  readonly correlationId: () => string;
 }
 
 class HttpProblem extends Error {
@@ -44,7 +41,7 @@ class HttpProblem extends Error {
 }
 
 const MAX_REQUEST_BYTES = 128 * 1_024;
-const CURRENT_STORAGE_SCHEMA_VERSION = 2;
+const CURRENT_STORAGE_SCHEMA_VERSION = 4;
 
 const readJsonBody = async (request: Request): Promise<unknown> => {
   const declaredLength = request.headers.get("content-length");
@@ -129,7 +126,14 @@ export function createApp(dependencies: CreateAppDependencies): Hono {
     return context.json(response, response.replayed ? 200 : 201);
   });
 
-  app.get("/v1/runs", async (context) => context.json(await service.list()));
+  app.get("/v1/runs", async (context) => {
+    const rawCursor = context.req.query("cursor");
+    const cursor = rawCursor === undefined ? undefined : Number(rawCursor);
+    if (cursor !== undefined && (!Number.isSafeInteger(cursor) || cursor <= 0)) {
+      throw new HttpProblem(400, "invalid_request", "cursor must be a positive integer.");
+    }
+    return context.json(await service.list(cursor));
+  });
 
   app.get("/v1/runs/:runId/events", async (context) => {
     const rawAfter = context.req.query("after") ?? "0";

@@ -2,7 +2,7 @@ import {
   JobIdSchema,
   RunIdSchema,
   RunStageSchema,
-  StoredDomainEventSchema,
+  parseStoredDomainEvent,
   WorkspaceIdSchema,
   type StoredDomainEvent
 } from "@autostack/contracts";
@@ -56,7 +56,7 @@ const jsonRecord = (text: string): Readonly<Record<string, unknown>> => {
 export const decodeEventRow = (row: Row): StoredDomainEvent => {
   const recordId = typeof row.event_id === "string" ? row.event_id : "unknown";
   try {
-    return StoredDomainEventSchema.parse({
+    return parseStoredDomainEvent({
       eventId: stringField(row, "event_id"),
       workspaceId: stringField(row, "workspace_id"),
       stream: {
@@ -110,7 +110,7 @@ export const decodeCommitResult = (text: string): CommitResult => {
     const record = value as Readonly<Record<string, unknown>>;
     if (!Array.isArray(record.events) || !Array.isArray(record.jobIds)) throw new TypeError();
     return {
-      events: record.events.map((event) => StoredDomainEventSchema.parse(event)),
+      events: record.events.map(parseStoredDomainEvent),
       jobIds: record.jobIds.map((jobId) => JobIdSchema.parse(jobId)),
       replayed: true
     };

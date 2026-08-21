@@ -1,10 +1,23 @@
-import { existsSync, mkdtempSync, readFileSync, rmSync, statSync } from "node:fs";
+import {
+  existsSync,
+  mkdtempSync,
+  readFileSync,
+  readdirSync,
+  rmSync,
+  statSync,
+  writeFileSync
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import { type ServerType, serve } from "@hono/node-server";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
+import { EventIdSchema, WorkspaceIdSchema, createIdFactory } from "@autostack/contracts";
+import { SqliteDurableStore, openDatabase } from "@autostack/db";
+import { createManualRun } from "@autostack/domain";
+
+import { loadOrCreateLocalWorkspaceId } from "../src/config.js";
 import { startControlPlane } from "../src/server.js";
 
 const TOKEN = "0123456789abcdef0123456789abcdef";
@@ -18,6 +31,122 @@ afterEach(() => {
 });
 
 describe("control-plane server composition", () => {
+  it("creates an atomic private identity for an empty installation", () => {
+    const dataDirectory = mkdtempSync(join(tmpdir(), "autostack-control-plane-"));
+    temporaryDirectories.push(dataDirectory);
+    const expected = WorkspaceIdSchema.parse("ws_123e4567-e89b-42d3-a456-426614174001");
+
+    expect(
+      loadOrCreateLocalWorkspaceId(
+        dataDirectory,
+        () => expected,
+        () => "2026-08-20T12:00:00.000Z",
+        []
+      )
+    ).toBe(expected);
+    expect(statSync(join(dataDirectory, "installation.json")).mode & 0o777).toBe(0o600);
+    expect(readdirSync(dataDirectory)).toEqual(["installation.json"]);
+  });
+
+  it("recovers one legacy workspace, fails closed on ambiguity, and leaves no partial identity", () => {
+    const recoveredDirectory = mkdtempSync(join(tmpdir(), "autostack-control-plane-"));
+    const ambiguousDirectory = mkdtempSync(join(tmpdir(), "autostack-control-plane-"));
+    temporaryDirectories.push(recoveredDirectory, ambiguousDirectory);
+    const recovered = WorkspaceIdSchema.parse("ws_123e4567-e89b-42d3-a456-426614174001");
+    const foreign = WorkspaceIdSchema.parse("ws_123e4567-e89b-42d3-a456-426614174002");
+    const generator = vi.fn(() => foreign);
+
+    expect(
+      loadOrCreateLocalWorkspaceId(
+        recoveredDirectory,
+        generator,
+        () => "2026-08-20T12:00:00.000Z",
+        [recovered]
+      )
+    ).toBe(recovered);
+    expect(generator).not.toHaveBeenCalled();
+    expect(() =>
+      loadOrCreateLocalWorkspaceId(
+        ambiguousDirectory,
+        generator,
+        () => "2026-08-20T12:00:00.000Z",
+        [recovered, foreign]
+      )
+    ).toThrow(/multiple|ambiguous/i);
+    expect(readdirSync(ambiguousDirectory)).toEqual([]);
+  });
+
+  it("fails closed when an existing installation identity disagrees with durable ownership", () => {
+    const dataDirectory = mkdtempSync(join(tmpdir(), "autostack-control-plane-"));
+    temporaryDirectories.push(dataDirectory);
+    const installed = WorkspaceIdSchema.parse("ws_123e4567-e89b-42d3-a456-426614174001");
+    const durable = WorkspaceIdSchema.parse("ws_123e4567-e89b-42d3-a456-426614174002");
+    loadOrCreateLocalWorkspaceId(
+      dataDirectory,
+      () => installed,
+      () => "2026-08-20T12:00:00.000Z"
+    );
+
+    expect(() =>
+      loadOrCreateLocalWorkspaceId(
+        dataDirectory,
+        () => durable,
+        () => "2026-08-20T12:00:00.000Z",
+        [durable]
+      )
+    ).toThrow(/identity|workspace|ownership|match/i);
+    expect(() =>
+      loadOrCreateLocalWorkspaceId(
+        dataDirectory,
+        () => durable,
+        () => "2026-08-20T12:00:00.000Z",
+        [installed, durable]
+      )
+    ).toThrow(/multiple|ambiguous/i);
+  });
+
+  it("publishes identity crash-safely and accepts the winner of a racing initializer", () => {
+    const crashDirectory = mkdtempSync(join(tmpdir(), "autostack-control-plane-"));
+    const raceDirectory = mkdtempSync(join(tmpdir(), "autostack-control-plane-"));
+    temporaryDirectories.push(crashDirectory, raceDirectory);
+    const generated = WorkspaceIdSchema.parse("ws_123e4567-e89b-42d3-a456-426614174001");
+    const winner = WorkspaceIdSchema.parse("ws_123e4567-e89b-42d3-a456-426614174002");
+
+    expect(() =>
+      loadOrCreateLocalWorkspaceId(
+        crashDirectory,
+        () => generated,
+        () => "2026-08-20T12:00:00.000Z",
+        [],
+        {
+          beforePublish: () => {
+            throw new Error("simulated crash");
+          }
+        }
+      )
+    ).toThrow("simulated crash");
+    expect(readdirSync(crashDirectory)).toEqual([]);
+
+    expect(
+      loadOrCreateLocalWorkspaceId(
+        raceDirectory,
+        () => generated,
+        () => "2026-08-20T12:00:00.000Z",
+        [],
+        {
+          beforePublish: () => {
+            writeFileSync(
+              join(raceDirectory, "installation.json"),
+              `${JSON.stringify({ schemaVersion: 1, workspaceId: winner, createdAt: "2026-08-20T12:00:00.000Z" })}\n`,
+              { mode: 0o600 }
+            );
+          }
+        }
+      )
+    ).toBe(winner);
+    expect(readdirSync(raceDirectory)).toEqual(["installation.json"]);
+  });
+
   it("opens durable storage, serves the composed app, and closes exactly once", async () => {
     const dataDirectory = mkdtempSync(join(tmpdir(), "autostack-control-plane-"));
     temporaryDirectories.push(dataDirectory);
@@ -126,6 +255,104 @@ describe("control-plane server composition", () => {
     await second.close();
   });
 
+  it("recovers a pre-identity database workspace and exposes its existing runs", async () => {
+    const dataDirectory = mkdtempSync(join(tmpdir(), "autostack-control-plane-"));
+    temporaryDirectories.push(dataDirectory);
+    const workspaceId = WorkspaceIdSchema.parse("ws_123e4567-e89b-42d3-a456-426614174077");
+    const decision = createManualRun(
+      { title: "Legacy run" },
+      {
+        workspaceId,
+        actor: { kind: "user", id: "legacy-user" },
+        correlationId: "123e4567-e89b-42d3-a456-426614174077"
+      },
+      {
+        now: () => "2026-08-20T12:00:00.000Z",
+        ids: createIdFactory(() => "123e4567-e89b-42d3-a456-426614174077")
+      }
+    );
+    const database = openDatabase({ filePath: join(dataDirectory, "autostack.sqlite") });
+    let event = 70;
+    const store = new SqliteDurableStore(database, {
+      eventId: () =>
+        EventIdSchema.parse(
+          `evt_123e4567-e89b-42d3-a456-${String(426614174000 + event++).padStart(12, "0")}`
+        ),
+      leaseToken: () => "legacy-lease",
+      now: () => "2026-08-20T12:00:00.000Z"
+    });
+    await store.commit({
+      idempotency: { scope: "legacy", key: "run" },
+      appends: decision.appends,
+      jobs: []
+    });
+    await store.close();
+    const server = {
+      close: (callback?: (error?: Error) => void) => callback?.()
+    } as unknown as ServerType;
+    const runtime = startControlPlane({
+      config: { dataDirectory, token: TOKEN, host: "127.0.0.1", port: 4318 },
+      serve: vi.fn(() => server) as unknown as typeof serve,
+      installSignalHandlers: false,
+      log: vi.fn()
+    });
+
+    const response = await runtime.app.request("/v1/runs", {
+      headers: { Authorization: `Bearer ${TOKEN}` }
+    });
+    expect(await response.json()).toMatchObject({ items: [{ title: "Legacy run" }] });
+    expect(
+      JSON.parse(readFileSync(join(dataDirectory, "installation.json"), "utf8"))
+    ).toMatchObject({
+      workspaceId
+    });
+    await runtime.close();
+  });
+
+  it("closes an opened database when identity initialization fails", () => {
+    const dataDirectory = mkdtempSync(join(tmpdir(), "autostack-control-plane-"));
+    temporaryDirectories.push(dataDirectory);
+    writeFileSync(join(dataDirectory, "installation.json"), "not-json", { mode: 0o600 });
+    const opened = openDatabase({ filePath: join(dataDirectory, "autostack.sqlite") });
+    const close = vi.spyOn(opened, "close");
+
+    expect(() =>
+      startControlPlane({
+        config: { dataDirectory, token: TOKEN, host: "127.0.0.1", port: 4318 },
+        openDatabase: () => opened,
+        installSignalHandlers: false,
+        log: vi.fn()
+      })
+    ).toThrow(/identity/i);
+    expect(close).toHaveBeenCalledTimes(1);
+    expect(() => opened.connection.prepare("SELECT 1").get()).toThrow();
+  });
+
+  it("closes an opened database when legacy workspace recovery is ambiguous", () => {
+    const dataDirectory = mkdtempSync(join(tmpdir(), "autostack-control-plane-"));
+    temporaryDirectories.push(dataDirectory);
+    const opened = openDatabase({ filePath: join(dataDirectory, "autostack.sqlite") });
+    opened.connection.exec(`
+      INSERT INTO events (
+        event_id, workspace_id, stream_kind, stream_id, stream_version, event_type,
+        schema_version, occurred_at, actor_json, correlation_id, payload_json
+      ) VALUES
+        ('evt_123e4567-e89b-42d3-a456-426614174081', 'ws_123e4567-e89b-42d3-a456-426614174081', 'run', 'run_123e4567-e89b-42d3-a456-426614174081', 1, 'run.created', 1, '2026-08-20T12:00:00.000Z', '{}', '123e4567-e89b-42d3-a456-426614174081', '{}'),
+        ('evt_123e4567-e89b-42d3-a456-426614174082', 'ws_123e4567-e89b-42d3-a456-426614174082', 'run', 'run_123e4567-e89b-42d3-a456-426614174082', 1, 'run.created', 1, '2026-08-20T12:00:00.000Z', '{}', '123e4567-e89b-42d3-a456-426614174082', '{}')
+    `);
+    const close = vi.spyOn(opened, "close");
+
+    expect(() =>
+      startControlPlane({
+        config: { dataDirectory, token: TOKEN, host: "127.0.0.1", port: 4318 },
+        openDatabase: () => opened,
+        installSignalHandlers: false,
+        log: vi.fn()
+      })
+    ).toThrow(/multiple|ambiguous/i);
+    expect(close).toHaveBeenCalledTimes(1);
+  });
+
   it("rejects the configured API token before it can enter durable run data", async () => {
     const dataDirectory = mkdtempSync(join(tmpdir(), "autostack-control-plane-"));
     temporaryDirectories.push(dataDirectory);
@@ -172,6 +399,68 @@ describe("control-plane server composition", () => {
         log: vi.fn()
       })
     ).toThrow("listen failed");
+  });
+
+  it("closes the listener and database after a post-listen startup failure", async () => {
+    const dataDirectory = mkdtempSync(join(tmpdir(), "autostack-control-plane-"));
+    temporaryDirectories.push(dataDirectory);
+    const opened = openDatabase({ filePath: join(dataDirectory, "autostack.sqlite") });
+    const databaseClose = vi.spyOn(opened, "close");
+    const serverClose = vi.fn((callback?: (error?: Error) => void) => callback?.());
+    const server = { close: serverClose } as unknown as ServerType;
+
+    expect(() =>
+      startControlPlane({
+        config: { dataDirectory, token: TOKEN, host: "127.0.0.1", port: 4318 },
+        openDatabase: () => opened,
+        serve: vi.fn(() => server) as unknown as typeof serve,
+        installSignalHandlers: false,
+        log: () => {
+          throw new Error("logger failed");
+        }
+      })
+    ).toThrow("logger failed");
+    expect(serverClose).toHaveBeenCalledTimes(1);
+    await vi.waitFor(() => expect(databaseClose).toHaveBeenCalledTimes(1));
+    expect(() => opened.connection.prepare("SELECT 1").get()).toThrow();
+  });
+
+  it("keeps cleanup failures from escaping a post-listen startup failure", async () => {
+    const dataDirectory = mkdtempSync(join(tmpdir(), "autostack-control-plane-"));
+    temporaryDirectories.push(dataDirectory);
+    const opened = openDatabase({ filePath: join(dataDirectory, "autostack.sqlite") });
+    const closeDatabase = opened.close.bind(opened);
+    const databaseClose = vi.spyOn(opened, "close").mockImplementation(() => {
+      closeDatabase();
+      throw new Error("database cleanup failed");
+    });
+    const server = {
+      close: (callback?: (error?: Error) => void) =>
+        callback?.(new Error("listener cleanup failed"))
+    } as unknown as ServerType;
+    const unhandled: unknown[] = [];
+    const captureUnhandled = (error: unknown): void => {
+      unhandled.push(error);
+    };
+    process.on("unhandledRejection", captureUnhandled);
+    try {
+      expect(() =>
+        startControlPlane({
+          config: { dataDirectory, token: TOKEN, host: "127.0.0.1", port: 4318 },
+          openDatabase: () => opened,
+          serve: vi.fn(() => server) as unknown as typeof serve,
+          installSignalHandlers: false,
+          log: () => {
+            throw new Error("original startup failure");
+          }
+        })
+      ).toThrow("original startup failure");
+      await vi.waitFor(() => expect(databaseClose).toHaveBeenCalledTimes(1));
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      expect(unhandled).toEqual([]);
+    } finally {
+      process.removeListener("unhandledRejection", captureUnhandled);
+    }
   });
 
   it("still stops the executor and storage when listener shutdown fails", async () => {

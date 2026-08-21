@@ -50,13 +50,15 @@ describe("AutoStack web API client", () => {
 
   it("authenticates and validates run listing using the current token", async () => {
     const getToken = vi.fn(() => TOKEN);
-    const fetch = vi.fn(async (_input: string | URL | Request, init?: RequestInit) => {
+    const fetch = vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
+      expect(input).toBe("/v1/runs?cursor=42");
       expect(new Headers(init?.headers).get("Authorization")).toBe(`Bearer ${TOKEN}`);
-      return Response.json({ items: [] });
+      return Response.json({ items: [], nextCursor: 21 });
     });
 
-    await expect(createApiClient({ baseUrl: "/", getToken, fetch }).listRuns()).resolves.toEqual({
-      items: []
+    await expect(createApiClient({ baseUrl: "/", getToken, fetch }).listRuns(42)).resolves.toEqual({
+      items: [],
+      nextCursor: 21
     });
     expect(getToken).toHaveBeenCalledTimes(1);
   });

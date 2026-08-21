@@ -50,6 +50,39 @@ describe("central secret safety", () => {
     expect(() => assertSafeJson(sparse)).toThrow(/sparse/i);
   });
 
+  it("rejects array accessors without invoking them and nonstandard array prototypes", () => {
+    let reads = 0;
+    const accessor: unknown[] = [];
+    Object.defineProperty(accessor, "0", {
+      enumerable: true,
+      configurable: true,
+      get: () => {
+        reads += 1;
+        return reads === 1 ? "safe" : CONFIGURED_SECRET;
+      }
+    });
+    accessor.length = 1;
+    const customPrototype: unknown[] = [];
+    Object.setPrototypeOf(customPrototype, Object.create(Array.prototype));
+
+    expect(() => assertSafeJson(accessor, [CONFIGURED_SECRET])).toThrow(/accessor/i);
+    expect(reads).toBe(0);
+    expect(() => assertSafeJson(customPrototype)).toThrow(/plain JSON array|prototype/i);
+  });
+
+  it("captures an array length descriptor without invoking a proxy get trap", () => {
+    let reads = 0;
+    const proxied = new Proxy(["safe"], {
+      get: (target, property, receiver) => {
+        reads += 1;
+        return Reflect.get(target, property, receiver);
+      }
+    });
+
+    expect(() => assertSafeJson(proxied)).not.toThrow();
+    expect(reads).toBe(0);
+  });
+
   it("accepts the complete JSON value vocabulary and repeated non-cyclic references", () => {
     const shared = { ok: true };
     expect(() =>

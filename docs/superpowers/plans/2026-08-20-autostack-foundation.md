@@ -740,12 +740,12 @@ Validate every response through contracts. Convert network and schema failures i
 Use `node:util.parseArgs`; do not add a CLI framework. Support:
 
 ```text
-autostack doctor [--url http://127.0.0.1:4318] [--token <value>] [--json]
+autostack doctor [--url http://127.0.0.1:4318] [--json]
 autostack --help
 autostack --version
 ```
 
-Read `AUTOSTACK_URL` and `AUTOSTACK_LOCAL_API_TOKEN` when flags are absent. Human output must identify API, storage, schema, and executor states. JSON output must be exactly one JSON object on stdout.
+Read `AUTOSTACK_URL` and `AUTOSTACK_LOCAL_API_TOKEN` from the environment. Human output must identify API, storage, schema, and executor states. JSON output must be exactly one JSON object on stdout. Do not accept credentials in process arguments.
 
 - [ ] **Step 4: Configure the executable build**
 

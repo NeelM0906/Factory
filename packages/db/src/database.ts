@@ -6,6 +6,7 @@ import { DatabaseSync } from "node:sqlite";
 import type { StoreHealth } from "@autostack/domain";
 
 import { applyMigrations } from "./migrations.js";
+import { backfillRunSummaries } from "./run-summary-store.js";
 
 export interface OpenDatabaseOptions {
   readonly filePath: string;
@@ -91,6 +92,7 @@ export function openDatabase(options: OpenDatabaseOptions): AutoStackDatabase {
       if (existsSync(sidecar)) chmodSync(sidecar, 0o600);
     }
     applyMigrations(connection);
+    backfillRunSummaries(connection);
     return new AutoStackDatabase(connection);
   } catch (error) {
     connection.close();

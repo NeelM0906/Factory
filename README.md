@@ -42,6 +42,7 @@ Prerequisites are Node.js 24 and pnpm 10.27 through Corepack.
 corepack enable
 corepack install --global pnpm@10.27.0
 pnpm install --frozen-lockfile
+pnpm build
 cp .env.example .env
 ```
 
@@ -68,11 +69,10 @@ pnpm --filter @autostack/web dev
 Open `http://127.0.0.1:5173`, choose **Connect**, and enter the same local token. The browser keeps it in `sessionStorage`, not durable browser storage. Verify the running system from another terminal after loading `.env` there:
 
 ```bash
-pnpm --filter @autostack/cli build
 node apps/cli/dist/main.js doctor
 ```
 
-Do not export the local API token into terminals that run repository scripts, coding agents, or other development tooling. `--token` remains temporarily compatible but is deprecated because command-line arguments can be exposed by process inspection.
+The CLI accepts its credential only from `AUTOSTACK_LOCAL_API_TOKEN`; it has no token command-line flag. Do not export the local API token into terminals that run installs, builds, repository scripts, coding agents, or other development tooling.
 
 See [Foundation development and operation](docs/development/foundation.md) for curl examples, storage details, invariants, test commands, and the next implementation boundary.
 

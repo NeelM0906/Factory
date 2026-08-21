@@ -5,9 +5,15 @@ import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { z } from "zod";
 
-import { EventIdSchema, JobIdSchema, RunIdSchema, WorkspaceIdSchema } from "@autostack/contracts";
+import {
+  EventIdSchema,
+  JobIdSchema,
+  RunIdSchema,
+  WorkspaceIdSchema,
+  createIdFactory
+} from "@autostack/contracts";
 import { SqliteDurableStore, openDatabase } from "@autostack/db";
-import type { NewWorkflowJob } from "@autostack/domain";
+import { createManualRun, type NewWorkflowJob } from "@autostack/domain";
 
 import {
   HandlerRegistry,
@@ -64,6 +70,23 @@ const harness = async (
     ...(options.sensitiveValues === undefined ? {} : { sensitiveValues: options.sensitiveValues })
   });
   const registry = new HandlerRegistry();
+  const seed = createManualRun(
+    { title: "Executor test run" },
+    {
+      workspaceId: workflowJob().workspaceId,
+      actor: { kind: "system", id: "test" },
+      correlationId: "123e4567-e89b-42d3-a456-426614174000"
+    },
+    {
+      now: () => NOW,
+      ids: createIdFactory(() => "123e4567-e89b-42d3-a456-426614174000")
+    }
+  );
+  await store.commit({
+    idempotency: { scope: "test:seed", key: "run" },
+    appends: seed.appends,
+    jobs: []
+  });
   const errors: Array<{ name: string; message: string; retryable: boolean }> = [];
   const executorOptions = {
     store,

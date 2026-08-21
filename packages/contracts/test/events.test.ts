@@ -1,6 +1,11 @@
 import { describe, expect, it } from "vitest";
 
-import { EVENT_TYPES, PendingDomainEventSchema, StoredDomainEventSchema } from "../src/events.js";
+import {
+  EVENT_TYPES,
+  PendingDomainEventSchema,
+  StoredDomainEventSchema,
+  parseStoredDomainEvent
+} from "../src/events.js";
 
 const NOW = "2026-08-20T12:00:00.000Z";
 const WORKSPACE_ID = "ws_123e4567-e89b-42d3-a456-426614174000";
@@ -159,5 +164,40 @@ describe("domain event contracts", () => {
     expect(() =>
       StoredDomainEventSchema.parse({ ...stored, streamVersion: 1, globalSequence: 1.5 })
     ).toThrow();
+  });
+
+  it("decodes legacy v1 stage failures while preserving strict new records", () => {
+    const metadata = {
+      ...context,
+      eventId: EVENT_ID,
+      stream: { kind: "run", id: RUN_ID },
+      streamVersion: 1,
+      globalSequence: 1,
+      schemaVersion: 1
+    } as const;
+    const current = { ...metadata, ...eventBodies[1] };
+    expect(parseStoredDomainEvent(current)).toMatchObject({ type: "run.created" });
+    const stageFailure = {
+      ...metadata,
+      streamVersion: 2,
+      globalSequence: 2,
+      ...eventBodies[6]
+    };
+    const legacy = {
+      ...stageFailure,
+      payload: {
+        ...stageFailure.payload,
+        error: { name: "ProviderError", message: "legacy failure", retryable: false }
+      }
+    };
+    expect(parseStoredDomainEvent(legacy)).toMatchObject({
+      payload: { error: { code: "legacy_workflow_failure" } }
+    });
+    expect(parseStoredDomainEvent(stageFailure)).toMatchObject({
+      payload: { error: { code: "provider_unavailable" } }
+    });
+    for (const malformed of [null, [], { ...legacy, payload: null }, { ...legacy, payload: [] }]) {
+      expect(() => parseStoredDomainEvent(malformed)).toThrow();
+    }
   });
 });

@@ -199,4 +199,76 @@ describe("workflow handler registry", () => {
 
     await expect(registry.execute("test.secret", {}, context)).rejects.toThrow(/sensitive/i);
   });
+
+  it("validates and scans one immutable handler-result snapshot", async () => {
+    const secret = "configured-secret-0123456789abcdef";
+    const payload = new Proxy(
+      { task: "safe" },
+      {
+        getOwnPropertyDescriptor: (_target, property) =>
+          property === "task"
+            ? { configurable: true, enumerable: true, writable: true, value: "safe" }
+            : undefined,
+        get: (_target, property) => (property === "task" ? secret : undefined),
+        ownKeys: () => ["task"]
+      }
+    );
+    const registry = new HandlerRegistry({ sensitiveValues: [secret] });
+    registry.register("test.snapshot", z.object({}).strict(), async () => ({
+      appends: [],
+      jobs: [
+        {
+          jobId: JobIdSchema.parse("job_123e4567-e89b-42d3-a456-426614174099"),
+          workspaceId: context.job.workspaceId,
+          runId: context.job.runId,
+          stage: "plan",
+          handler: "test.plan",
+          payload,
+          maxAttempts: 2,
+          availableAt: context.job.availableAt,
+          createdAt: context.job.createdAt
+        }
+      ]
+    }));
+
+    await expect(registry.execute("test.snapshot", {}, context)).resolves.toMatchObject({
+      jobs: [{ payload: { task: "safe" } }]
+    });
+  });
+
+  it.each([
+    ["foreign job", "job_123e4567-e89b-42d3-a456-426614174099", "triage", context.job.runId],
+    ["foreign stage", context.job.jobId, "plan", context.job.runId],
+    [
+      "foreign run",
+      context.job.jobId,
+      "triage",
+      RunIdSchema.parse("run_123e4567-e89b-42d3-a456-426614174099")
+    ]
+  ])("rejects stage evidence for a %s", async (_label, jobId, stage, runId) => {
+    const registry = new HandlerRegistry();
+    registry.register("test.evidence", z.object({}).strict(), async () => ({
+      appends: [
+        {
+          stream: { kind: "run", id: runId },
+          expectedVersion: 1,
+          events: [
+            PendingDomainEventSchema.parse({
+              workspaceId: context.job.workspaceId,
+              actor: { kind: "system", id: "autostack" },
+              correlationId: "123e4567-e89b-42d3-a456-426614174001",
+              occurredAt: context.job.createdAt,
+              type: "stage.succeeded",
+              payload: { runId, stage, jobId }
+            })
+          ]
+        }
+      ],
+      jobs: []
+    }));
+
+    await expect(registry.execute("test.evidence", {}, context)).rejects.toThrow(
+      /leased run|leased job|stage/i
+    );
+  });
 });

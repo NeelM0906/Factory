@@ -191,3 +191,33 @@ export const StoredDomainEventSchema = PendingDomainEventSchema.and(
 
 export type StoredDomainEvent = z.infer<typeof StoredDomainEventSchema>;
 export type DomainEventType = (typeof EVENT_TYPES)[number];
+
+export const parseStoredDomainEvent = (candidate: unknown): StoredDomainEvent => {
+  if (candidate === null || typeof candidate !== "object" || Array.isArray(candidate)) {
+    return StoredDomainEventSchema.parse(candidate);
+  }
+  const event = candidate as Readonly<Record<string, unknown>>;
+  if (event.schemaVersion !== 1 || event.type !== "stage.failed") {
+    return StoredDomainEventSchema.parse(candidate);
+  }
+  const payload = event.payload;
+  if (payload === null || typeof payload !== "object" || Array.isArray(payload)) {
+    return StoredDomainEventSchema.parse(candidate);
+  }
+  const error = (payload as Readonly<Record<string, unknown>>).error;
+  if (
+    error === null ||
+    typeof error !== "object" ||
+    Array.isArray(error) ||
+    Object.hasOwn(error, "code")
+  ) {
+    return StoredDomainEventSchema.parse(candidate);
+  }
+  return StoredDomainEventSchema.parse({
+    ...event,
+    payload: {
+      ...payload,
+      error: { ...error, code: "legacy_workflow_failure" }
+    }
+  });
+};

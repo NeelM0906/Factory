@@ -6,7 +6,10 @@ import { Worker } from "node:worker_threads";
 
 import { afterEach, describe, expect, it } from "vitest";
 
-import { applyMigrations, openDatabase, type Migration } from "../src/index.js";
+import { WorkspaceIdSchema, createIdFactory, type PendingDomainEvent } from "@autostack/contracts";
+import { createManualRun } from "@autostack/domain";
+
+import { MIGRATIONS, applyMigrations, openDatabase, type Migration } from "../src/index.js";
 
 const temporaryDirectories: string[] = [];
 
@@ -25,13 +28,13 @@ afterEach(async () => {
 });
 
 describe("AutoStack SQLite database", () => {
-  it("opens a file in WAL mode with foreign keys and schema version 2", async () => {
+  it("opens a file in WAL mode with foreign keys and schema version 4", async () => {
     const database = openDatabase({ filePath: await temporaryDatabasePath() });
 
     expect(database.health()).toEqual({
       status: "ok",
       journalMode: "wal",
-      schemaVersion: 2
+      schemaVersion: 4
     });
     expect(database.connection.prepare("PRAGMA foreign_keys").get()).toEqual({ foreign_keys: 1 });
 
@@ -47,6 +50,7 @@ describe("AutoStack SQLite database", () => {
     expect(rows.map(({ name }) => name)).toEqual([
       "events",
       "idempotency_records",
+      "run_summaries",
       "schema_migrations",
       "sqlite_sequence",
       "workflow_jobs"
@@ -63,7 +67,7 @@ describe("AutoStack SQLite database", () => {
       .prepare("SELECT COUNT(*) AS count FROM schema_migrations")
       .get() as { count: number };
 
-    expect(row.count).toBe(2);
+    expect(row.count).toBe(4);
     reopened.close();
   });
 
@@ -93,13 +97,14 @@ describe("AutoStack SQLite database", () => {
     const columns = upgraded.connection
       .prepare("PRAGMA table_info(idempotency_records)")
       .all() as Array<{ name: string }>;
-    expect(upgraded.health().schemaVersion).toBe(2);
+    expect(upgraded.health().schemaVersion).toBe(4);
     expect(columns.map(({ name }) => name)).toEqual(
       expect.arrayContaining([
         "operation_kind",
         "completion_job_id",
         "completion_lease_digest",
-        "completion_request_digest"
+        "completion_request_digest",
+        "commit_request_digest"
       ])
     );
     upgraded.close();
@@ -126,17 +131,84 @@ describe("AutoStack SQLite database", () => {
     database.connection.exec("CREATE TABLE concurrent_migration_probe (id TEXT PRIMARY KEY)");
     database.connection
       .prepare("INSERT INTO schema_migrations (version, name, applied_at) VALUES (?, ?, ?)")
-      .run(3, "concurrent_test_migration", "2026-08-20T12:00:00.000Z");
+      .run(5, "concurrent_test_migration", "2026-08-20T12:00:00.000Z");
     database.connection.exec("COMMIT");
 
     expect(await nextMessage()).toEqual({ status: "completed" });
     expect(
       database.connection
-        .prepare("SELECT COUNT(*) AS count FROM schema_migrations WHERE version = 3")
+        .prepare("SELECT COUNT(*) AS count FROM schema_migrations WHERE version = 5")
         .get()
     ).toEqual({ count: 1 });
     await worker.terminate();
     database.close();
+  });
+
+  it("serializes run-summary backfill across concurrent legacy-database opens", async () => {
+    const filePath = await temporaryDatabasePath();
+    await mkdir(join(filePath, ".."), { recursive: true });
+    const legacy = new DatabaseSync(filePath);
+    applyMigrations(legacy, MIGRATIONS.slice(0, 3));
+    const decision = createManualRun(
+      { title: "Concurrent legacy run" },
+      {
+        workspaceId: WorkspaceIdSchema.parse("ws_123e4567-e89b-42d3-a456-426614174000"),
+        actor: { kind: "user", id: "legacy-user" },
+        correlationId: "123e4567-e89b-42d3-a456-426614174000"
+      },
+      {
+        now: () => "2026-08-20T12:00:00.000Z",
+        ids: createIdFactory(() => "123e4567-e89b-42d3-a456-426614174000")
+      }
+    );
+    const insert = legacy.prepare(
+      `INSERT INTO events (
+         event_id, workspace_id, stream_kind, stream_id, stream_version, event_type,
+         schema_version, occurred_at, actor_json, correlation_id, causation_id, payload_json
+       ) VALUES (?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?, ?)`
+    );
+    let eventNumber = 1;
+    for (const append of decision.appends) {
+      for (const event of append.events as readonly PendingDomainEvent[]) {
+        insert.run(
+          `evt_123e4567-e89b-42d3-a456-${String(426614174000 + eventNumber++).padStart(12, "0")}`,
+          event.workspaceId,
+          append.stream.kind,
+          append.stream.id,
+          1,
+          event.type,
+          event.occurredAt,
+          JSON.stringify(event.actor),
+          event.correlationId,
+          event.causationId ?? null,
+          JSON.stringify(event.payload)
+        );
+      }
+    }
+    legacy.close();
+
+    const workers = Array.from(
+      { length: 2 },
+      () =>
+        new Worker(new URL("./fixtures/projection-backfill-worker.mjs", import.meta.url), {
+          workerData: { filePath },
+          execArgv: ["--import", "tsx"]
+        })
+    );
+    const nextMessage = (worker: Worker) =>
+      new Promise<Record<string, unknown>>((resolveMessage, rejectMessage) => {
+        worker.once("message", resolveMessage);
+        worker.once("error", rejectMessage);
+      });
+    await Promise.all(workers.map((worker) => nextMessage(worker)));
+    const completions = workers.map((worker) => nextMessage(worker));
+    for (const worker of workers) worker.postMessage({ start: true });
+
+    expect(await Promise.all(completions)).toEqual([
+      { status: "completed", count: 1 },
+      { status: "completed", count: 1 }
+    ]);
+    await Promise.all(workers.map((worker) => worker.terminate()));
   });
 
   it("creates private state directories and database files", async () => {
@@ -187,7 +259,7 @@ describe("AutoStack SQLite database", () => {
   it("rolls back every statement from a failed migration", async () => {
     const database = openDatabase({ filePath: await temporaryDatabasePath() });
     const invalidMigration: Migration = {
-      version: 3,
+      version: 5,
       name: "invalid_test_migration",
       statements: ["CREATE TABLE migration_probe (id TEXT PRIMARY KEY)", "THIS IS NOT VALID SQL"]
     };
@@ -203,7 +275,7 @@ describe("AutoStack SQLite database", () => {
       .prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'migration_probe'")
       .get();
 
-    expect(version.version).toBe(2);
+    expect(version.version).toBe(4);
     expect(probe).toBeUndefined();
     database.close();
   });

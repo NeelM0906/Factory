@@ -100,4 +100,41 @@ describe("SQLite row codecs", () => {
     expect(() => decodeCommitResult("not-json")).toThrow(CorruptStoreRecordError);
     expect(() => decodeCommitResult("{}")).toThrow(CorruptStoreRecordError);
   });
+
+  it("upgrades legacy stage failures in event rows and idempotency results", () => {
+    const legacyEvent = {
+      eventId: "evt_123e4567-e89b-42d3-a456-426614174011",
+      workspaceId: WORKSPACE_ID,
+      stream: { kind: "run", id: RUN_ID },
+      streamVersion: 2,
+      globalSequence: 2,
+      schemaVersion: 1,
+      occurredAt: NOW,
+      actor: { kind: "system", id: "autostack" },
+      correlationId: "123e4567-e89b-42d3-a456-426614174001",
+      type: "stage.failed",
+      payload: {
+        runId: RUN_ID,
+        stage: "triage",
+        jobId: "job_123e4567-e89b-42d3-a456-426614174000",
+        error: { name: "ProviderError", message: "legacy failure", retryable: false }
+      }
+    } as const;
+    const row = {
+      ...eventRow,
+      event_id: legacyEvent.eventId,
+      stream_version: 2,
+      global_sequence: 2,
+      event_type: legacyEvent.type,
+      payload_json: JSON.stringify(legacyEvent.payload)
+    };
+
+    expect(decodeEventRow(row)).toMatchObject({
+      payload: { error: { code: "legacy_workflow_failure", message: "legacy failure" } }
+    });
+    expect(
+      decodeCommitResult(JSON.stringify({ events: [legacyEvent], jobIds: [], replayed: false }))
+        .events[0]
+    ).toMatchObject({ payload: { error: { code: "legacy_workflow_failure" } } });
+  });
 });

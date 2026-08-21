@@ -1,4 +1,4 @@
-import { WorkflowHandlerResultSchema, assertSafeJson } from "@autostack/contracts";
+import { WorkflowHandlerResultSchema, normalizeSafeJson } from "@autostack/contracts";
 import type { LeasedWorkflowJob, NewWorkflowJob, StreamAppend } from "@autostack/domain";
 import type { z } from "zod";
 
@@ -46,14 +46,29 @@ export class HandlerRegistry {
     const registered = this.#handlers.get(name);
     if (registered === undefined) throw new UnknownWorkflowHandlerError(name);
     const result = await registered.execute(payload, context);
-    assertSafeJson(result, this.#sensitiveValues);
-    const validated = WorkflowHandlerResultSchema.parse(result);
+    const snapshot = normalizeSafeJson(result, this.#sensitiveValues);
+    const validated = WorkflowHandlerResultSchema.parse(snapshot);
     for (const append of validated.appends) {
       if (append.stream.kind === "run" && append.stream.id !== context.job.runId) {
         throw new TypeError("A handler append must match its leased run.");
       }
       if (append.events.some((event) => event.workspaceId !== context.job.workspaceId)) {
         throw new TypeError("A handler append must match its leased workspace.");
+      }
+      for (const event of append.events) {
+        if (
+          (event.type === "stage.queued" ||
+            event.type === "stage.leased" ||
+            event.type === "stage.succeeded" ||
+            event.type === "stage.failed") &&
+          (append.stream.kind !== "run" ||
+            append.stream.id !== context.job.runId ||
+            event.payload.runId !== context.job.runId ||
+            event.payload.jobId !== context.job.jobId ||
+            event.payload.stage !== context.job.stage)
+        ) {
+          throw new TypeError("Stage evidence must match its leased run, job, and stage.");
+        }
       }
     }
     for (const job of validated.jobs) {

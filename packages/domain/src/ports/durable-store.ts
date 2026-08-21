@@ -5,6 +5,7 @@ import type {
   JobId,
   PendingDomainEvent,
   RunId,
+  RunSummary,
   RunStage,
   StoredDomainEvent,
   WorkflowFailure,
@@ -48,6 +49,11 @@ export interface CommitResult {
   readonly replayed: boolean;
 }
 
+export interface ReadCommitResultRequest {
+  readonly scope: string;
+  readonly key: string;
+}
+
 export interface ReadStreamRequest {
   readonly stream: StreamRef;
   readonly afterVersion?: number;
@@ -57,6 +63,17 @@ export interface ReadAllRequest {
   readonly afterGlobalSequence?: number;
   readonly workspaceId?: WorkspaceId;
   readonly limit?: number;
+}
+
+export interface ListRunSummariesRequest {
+  readonly workspaceId: WorkspaceId;
+  readonly beforeGlobalSequence?: number;
+  readonly limit?: number;
+}
+
+export interface RunSummaryPage {
+  readonly items: readonly RunSummary[];
+  readonly nextCursor?: number;
 }
 
 export interface LeasedWorkflowJob extends NewWorkflowJob {
@@ -104,8 +121,10 @@ export interface StoreHealth {
 
 export interface DurableStore {
   commit(request: CommitRequest): Promise<CommitResult>;
+  readCommitResult(request: ReadCommitResultRequest): Promise<CommitResult | null>;
   readStream(request: ReadStreamRequest): Promise<readonly StoredDomainEvent[]>;
   readAll(request: ReadAllRequest): Promise<readonly StoredDomainEvent[]>;
+  listRunSummaries(request: ListRunSummariesRequest): Promise<RunSummaryPage>;
   leaseNext(request: LeaseNextRequest): Promise<LeasedWorkflowJob | null>;
   heartbeat(request: HeartbeatRequest): Promise<void>;
   completeJob(request: CompleteJobRequest): Promise<CommitResult>;

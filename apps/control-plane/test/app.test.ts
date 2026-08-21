@@ -38,9 +38,6 @@ const makeHarness = async () => {
   temporaryDirectories.push(directory);
   const database = openDatabase({ filePath: join(directory, "autostack.sqlite") });
   let eventNumber = 10;
-  let entityNumber = 20;
-  const nextUuid = () =>
-    `123e4567-e89b-42d3-a456-${String(426614174000 + entityNumber++).padStart(12, "0")}`;
   const store = new SqliteDurableStore(database, {
     eventId: () =>
       EventIdSchema.parse(
@@ -54,9 +51,7 @@ const makeHarness = async () => {
     executor: { getStatus: () => "idle" },
     token: TOKEN,
     workspaceId: WORKSPACE_ID,
-    ids: createIdFactory(nextUuid),
-    now: () => NOW,
-    correlationId: nextUuid
+    now: () => NOW
   });
   const authenticated = (path: string, init: RequestInit = {}) =>
     app.request(path, {
@@ -81,7 +76,7 @@ describe("control-plane health", () => {
       service: "autostack-control-plane",
       version: "0.1.0",
       status: "ok",
-      storage: { status: "ok", journalMode: "wal", schemaVersion: 2 },
+      storage: { status: "ok", journalMode: "wal", schemaVersion: 4 },
       executor: { status: "idle" }
     });
     expect(JSON.stringify(health)).not.toContain("sqlite");
@@ -194,6 +189,13 @@ describe("manual run API", () => {
     const first = CreateRunResponseSchema.parse(await firstResponse.json());
     const replayResponse = await authenticated("/v1/runs", request);
     const replay = CreateRunResponseSchema.parse(await replayResponse.json());
+    const collisionResponse = await authenticated("/v1/runs", {
+      ...request,
+      body: JSON.stringify({
+        title: "A different command",
+        description: "Must not claim the original run."
+      })
+    });
     const listResponse = await authenticated("/v1/runs");
     const list = ListRunsResponseSchema.parse(await listResponse.json());
     const eventsResponse = await authenticated(`/v1/runs/${first.run.id}/events?after=0`);
@@ -202,6 +204,8 @@ describe("manual run API", () => {
     expect(firstResponse.status).toBe(201);
     expect(replayResponse.status).toBe(200);
     expect(replay).toEqual({ ...first, replayed: true });
+    expect(collisionResponse.status).toBe(500);
+    expect(await collisionResponse.json()).toMatchObject({ error: { code: "internal_error" } });
     expect(list.items).toHaveLength(1);
     expect(list.items[0]).toMatchObject({
       runId: first.run.id,
@@ -285,41 +289,42 @@ describe("manual run API", () => {
     await store.close();
   });
 
-  it("requires a current-workspace run creation event for existence", async () => {
+  it("rejects a version-zero run stream without a creation event", async () => {
     const { authenticated, store } = await makeHarness();
     const orphanRunId = RunIdSchema.parse("run_123e4567-e89b-42d3-a456-426614174097");
-    await store.commit({
-      idempotency: { scope: "test:orphan-run", key: "request" },
-      appends: [
-        {
-          stream: { kind: "run", id: orphanRunId },
-          expectedVersion: 0,
-          events: [
-            PendingDomainEventSchema.parse({
-              workspaceId: WORKSPACE_ID,
-              actor: { kind: "system", id: "autostack" },
-              correlationId: "123e4567-e89b-42d3-a456-426614174097",
-              occurredAt: NOW,
-              type: "run.transitioned",
-              payload: {
-                runId: orphanRunId,
-                from: "queued",
-                to: "triaging",
-                reason: "orphan transition"
-              }
-            })
-          ]
-        }
-      ],
-      jobs: []
-    });
-
+    await expect(
+      store.commit({
+        idempotency: { scope: "test:orphan-run", key: "request" },
+        appends: [
+          {
+            stream: { kind: "run", id: orphanRunId },
+            expectedVersion: 0,
+            events: [
+              PendingDomainEventSchema.parse({
+                workspaceId: WORKSPACE_ID,
+                actor: { kind: "system", id: "autostack" },
+                correlationId: "123e4567-e89b-42d3-a456-426614174097",
+                occurredAt: NOW,
+                type: "run.transitioned",
+                payload: {
+                  runId: orphanRunId,
+                  from: "queued",
+                  to: "triaging",
+                  reason: "orphan transition"
+                }
+              })
+            ]
+          }
+        ],
+        jobs: []
+      })
+    ).rejects.toThrow(/creation event/i);
     const response = await authenticated(`/v1/runs/${orphanRunId}/events?after=0`);
     expect(response.status).toBe(404);
     await store.close();
   });
 
-  it("projects every run after the event log exceeds one read page", async () => {
+  it("returns bounded, cursor-addressable run summary pages after 500 events", async () => {
     const { authenticated, store } = await makeHarness();
     for (let index = 0; index < 251; index += 1) {
       const response = await authenticated("/v1/runs", {
@@ -331,8 +336,14 @@ describe("manual run API", () => {
     }
 
     const list = ListRunsResponseSchema.parse(await (await authenticated("/v1/runs")).json());
-    expect(list.items).toHaveLength(251);
+    expect(list.items).toHaveLength(100);
     expect(list.items[0]?.title).toBe("Run 250");
+    expect(list.nextCursor).toBeTypeOf("number");
+    const second = ListRunsResponseSchema.parse(
+      await (await authenticated(`/v1/runs?cursor=${String(list.nextCursor)}`)).json()
+    );
+    expect(second.items).toHaveLength(100);
+    expect(new Set([...list.items, ...second.items].map(({ runId }) => runId)).size).toBe(200);
     await store.close();
   });
 });

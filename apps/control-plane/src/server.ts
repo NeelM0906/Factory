@@ -24,6 +24,7 @@ export interface StartControlPlaneOptions {
   readonly serve?: ServeImplementation;
   readonly installSignalHandlers?: boolean;
   readonly log?: (line: string) => void;
+  readonly openDatabase?: typeof openDatabase;
 }
 
 export interface ControlPlaneRuntime {
@@ -49,107 +50,140 @@ const retryAt = (error: RetryableJobError, attempt: number, now: string): string
 export function startControlPlane(options: StartControlPlaneOptions = {}): ControlPlaneRuntime {
   const config = options.config ?? loadConfig(options.environment);
   const log = options.log ?? ((line: string) => console.log(line));
-  const database = openDatabase({ filePath: join(config.dataDirectory, "autostack.sqlite") });
+  const database = (options.openDatabase ?? openDatabase)({
+    filePath: join(config.dataDirectory, "autostack.sqlite")
+  });
   const ids = createIdFactory();
   const now = () => new Date().toISOString();
-  const workspaceId = loadOrCreateLocalWorkspaceId(config.dataDirectory, ids.workspace, now);
-  const store = new SqliteDurableStore(database, {
-    eventId: ids.event,
-    leaseToken: randomUUID,
-    now,
-    sensitiveValues: [config.token]
-  });
-  const registry = new HandlerRegistry({ sensitiveValues: [config.token] });
-  const executor = new LocalWorkflowExecutor({
-    store,
-    registry,
-    workerId: `local-control-plane-${process.pid}`,
-    now,
-    leaseDurationMs: 30_000,
-    pollIntervalMs: 1_000,
-    sensitiveValues: [config.token],
-    retryAt: (error, job, timestamp) => retryAt(error, job.attempt, timestamp),
-    reportError: (error, job) => {
-      log(
-        JSON.stringify({
-          level: "error",
-          event: "workflow_error",
-          error,
-          ...(job === undefined ? {} : { jobId: job.jobId })
-        })
-      );
-    }
-  });
-  const app = createApp({
-    store,
-    executor,
-    token: config.token,
-    workspaceId,
-    ids,
-    now,
-    correlationId: randomUUID
-  });
-
-  executor.start();
-  let server: Server;
+  let executor: LocalWorkflowExecutor | undefined;
+  let server: Server | undefined;
+  let removeSignalHandlers = (): void => undefined;
   try {
+    const workspaceRows = database.connection
+      .prepare("SELECT DISTINCT workspace_id AS workspaceId FROM events LIMIT 2")
+      .all() as Array<{ workspaceId: unknown }>;
+    const workspaceId = loadOrCreateLocalWorkspaceId(
+      config.dataDirectory,
+      ids.workspace,
+      now,
+      workspaceRows.map(({ workspaceId: existing }) => existing)
+    );
+    const store = new SqliteDurableStore(database, {
+      eventId: ids.event,
+      leaseToken: randomUUID,
+      now,
+      sensitiveValues: [config.token]
+    });
+    const registry = new HandlerRegistry({ sensitiveValues: [config.token] });
+    const runtimeExecutor = new LocalWorkflowExecutor({
+      store,
+      registry,
+      workerId: `local-control-plane-${process.pid}`,
+      now,
+      leaseDurationMs: 30_000,
+      pollIntervalMs: 1_000,
+      sensitiveValues: [config.token],
+      retryAt: (error, job, timestamp) => retryAt(error, job.attempt, timestamp),
+      reportError: (error, job) => {
+        log(
+          JSON.stringify({
+            level: "error",
+            event: "workflow_error",
+            error,
+            ...(job === undefined ? {} : { jobId: job.jobId })
+          })
+        );
+      }
+    });
+    executor = runtimeExecutor;
+    const app = createApp({
+      store,
+      executor: runtimeExecutor,
+      token: config.token,
+      workspaceId,
+      now
+    });
+
     server = (options.serve ?? honoServe)({
       fetch: app.fetch,
       hostname: config.host,
       port: config.port
     });
+    const listeningServer = server;
+    runtimeExecutor.start();
+
+    let closePromise: Promise<void> | undefined;
+    const signals: readonly NodeJS.Signals[] = ["SIGINT", "SIGTERM"];
+    const signalHandler = (): void => {
+      void close().catch((error: unknown) => {
+        log(
+          JSON.stringify({
+            level: "error",
+            event: "shutdown_failed",
+            message: error instanceof Error ? error.message : "Unknown shutdown error."
+          })
+        );
+        process.exitCode = 1;
+      });
+    };
+
+    const close = (): Promise<void> => {
+      if (closePromise !== undefined) return closePromise;
+      closePromise = (async () => {
+        for (const signal of signals) process.removeListener(signal, signalHandler);
+        let serverError: unknown;
+        try {
+          await closeServer(listeningServer);
+        } catch (error) {
+          serverError = error;
+        }
+        await runtimeExecutor.stop();
+        await store.close();
+        if (serverError !== undefined) throw serverError;
+      })();
+      return closePromise;
+    };
+
+    if (options.installSignalHandlers ?? true) {
+      for (const signal of signals) process.once(signal, signalHandler);
+      removeSignalHandlers = () => {
+        for (const signal of signals) process.removeListener(signal, signalHandler);
+      };
+    }
+
+    log(
+      JSON.stringify({
+        level: "info",
+        event: "control_plane_started",
+        host: config.host,
+        port: config.port
+      })
+    );
+
+    return { app, executor: runtimeExecutor, close };
   } catch (error) {
-    void executor.stop();
-    void store.close();
+    removeSignalHandlers();
+    if (server === undefined && executor === undefined) {
+      database.close();
+    } else {
+      const startedServer = server;
+      const startedExecutor = executor;
+      void (async () => {
+        try {
+          if (startedServer !== undefined) await closeServer(startedServer);
+        } finally {
+          try {
+            await startedExecutor?.stop();
+          } finally {
+            database.close();
+          }
+        }
+      })().catch(() => {
+        // The original startup error remains authoritative.
+      });
+    }
     throw error;
   }
-
-  let closePromise: Promise<void> | undefined;
-  const signals: readonly NodeJS.Signals[] = ["SIGINT", "SIGTERM"];
-  const signalHandler = (): void => {
-    void close().catch((error: unknown) => {
-      log(
-        JSON.stringify({
-          level: "error",
-          event: "shutdown_failed",
-          message: error instanceof Error ? error.message : "Unknown shutdown error."
-        })
-      );
-      process.exitCode = 1;
-    });
-  };
-
-  const close = (): Promise<void> => {
-    if (closePromise !== undefined) return closePromise;
-    closePromise = (async () => {
-      for (const signal of signals) process.removeListener(signal, signalHandler);
-      let serverError: unknown;
-      try {
-        await closeServer(server);
-      } catch (error) {
-        serverError = error;
-      }
-      await executor.stop();
-      await store.close();
-      if (serverError !== undefined) throw serverError;
-    })();
-    return closePromise;
-  };
-
-  if (options.installSignalHandlers ?? true) {
-    for (const signal of signals) process.once(signal, signalHandler);
-  }
-
-  log(
-    JSON.stringify({
-      level: "info",
-      event: "control_plane_started",
-      host: config.host,
-      port: config.port
-    })
-  );
-
-  return { app, executor, close };
 }
 
 const isEntrypoint =
