@@ -39,6 +39,12 @@ importers:
         specifier: ^4.1.5
         version: 4.4.3
 
+  packages/domain:
+    dependencies:
+      '@autostack/contracts':
+        specifier: workspace:*
+        version: link:../contracts
+
 packages:
 
   '@babel/helper-string-parser@7.29.7':

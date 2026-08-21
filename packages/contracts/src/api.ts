@@ -85,6 +85,7 @@ export const ApiErrorSchema = z
   .strict();
 
 export type HealthResponse = z.infer<typeof HealthResponseSchema>;
+export type CreateRunRequestInput = z.input<typeof CreateRunRequestSchema>;
 export type CreateRunRequest = z.infer<typeof CreateRunRequestSchema>;
 export type CreateRunResponse = z.infer<typeof CreateRunResponseSchema>;
 export type RunSummary = z.infer<typeof RunSummarySchema>;
