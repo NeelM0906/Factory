@@ -445,6 +445,7 @@ export const validateRunStreamCoherence = async (
   });
   const environmentAuthorizations = new Map<string, EnvironmentAuthorization>();
   const commandAuthorizations = new Map<string, CommandAuthorization>();
+  const artifactDescriptors = new Map<string, string>();
   const environments = new Map<
     string,
     {
@@ -802,6 +803,15 @@ export const validateRunStreamCoherence = async (
         ) {
           throw new TypeError("Artifact recorded before command start.");
         }
+        const descriptorDigest = await digestVersionedValue(
+          "autostack.artifact-descriptor",
+          event.payload.artifact
+        );
+        const priorDescriptorDigest = artifactDescriptors.get(event.payload.artifact.artifactId);
+        if (priorDescriptorDigest !== undefined && priorDescriptorDigest !== descriptorDigest) {
+          throw new TypeError("Artifact ID is immutable to its canonical owner and descriptor.");
+        }
+        artifactDescriptors.set(event.payload.artifact.artifactId, descriptorDigest);
         commands.set(event.payload.commandId, { ...command, hasArtifact: true });
         break;
       }

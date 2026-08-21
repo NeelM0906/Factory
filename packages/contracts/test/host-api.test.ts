@@ -347,7 +347,7 @@ describe("host daemon API contracts", () => {
         {
           status: 200,
           mediaType: "application/x-ndjson",
-          body: { type: "subscription.lagged", lastDurableSequence: 2, resumeCursor: 2 }
+          body: { type: "subscription.lagged", lastDurableSequence: 0, resumeCursor: 0 }
         }
       )
     ).toMatchObject({ type: "subscription.lagged" });
@@ -377,23 +377,25 @@ describe("host daemon API contracts", () => {
       byteSize: 0,
       createdAt: "2026-08-21T12:00:00.000Z"
     };
-    expect(
-      admitHostResponse(
-        {
-          route: "GET /v1/artifacts/:artifactId/content",
-          artifactId: artifact.artifactId,
-          query: { ...shared, range: { start: 0, end: 0 } }
-        },
-        {
-          status: 206,
-          mediaType: "application/json",
-          body: {
-            contentType: "text/plain",
-            chunk: { artifact, offset: 0, bytes: "", nextOffset: 0, done: true }
-          }
-        }
-      )
-    ).toMatchObject({ done: true });
+    const artifactRequest = HostRouteRequestSchema.parse({
+      route: "GET /v1/artifacts/:artifactId/content" as const,
+      artifactId: artifact.artifactId,
+      query: { ...shared, range: { start: 0, end: 0 } }
+    });
+    if (artifactRequest.route !== "GET /v1/artifacts/:artifactId/content") {
+      throw new TypeError("Fixture route is invalid.");
+    }
+    const artifactResponse = admitHostResponse(artifactRequest, {
+      status: 206,
+      mediaType: "application/json",
+      body: {
+        contentType: "text/plain",
+        chunk: { artifact, offset: 0, bytes: "", nextOffset: 0, done: true }
+      }
+    });
+    const artifactContentType: string = artifactResponse.contentType;
+    expect(artifactContentType).toBe("text/plain");
+    expect(artifactResponse).toMatchObject({ contentType: "text/plain", chunk: { done: true } });
     expect(
       admitHostResponse(
         {
@@ -508,6 +510,56 @@ describe("host daemon API contracts", () => {
         body: { type: "subscription.lagged", lastDurableSequence: 6, resumeCursor: 5 }
       })
     ).toThrow(/cursor/i);
+
+    const jumpingLagAdmission = createHostCommandEventResponseAdmission(request);
+    expect(() =>
+      jumpingLagAdmission.admit({
+        status: 200,
+        mediaType: "application/x-ndjson",
+        body: { type: "subscription.lagged", lastDurableSequence: 6, resumeCursor: 6 }
+      })
+    ).toThrow(/cursor/i);
+
+    const freshAdmission = createHostCommandEventResponseAdmission({
+      ...request,
+      query: { ...request.query, after: 0 }
+    });
+    expect(() => freshAdmission.admit(response({ ...event, sequence: 1 }))).toThrow(/start/i);
+    expect(
+      createHostCommandEventResponseAdmission({
+        ...request,
+        query: { ...request.query, after: 1 }
+      }).admit(response({ ...event, sequence: 2 }))
+    ).toMatchObject({ type: "runner.event" });
+
+    const freshStartedAdmission = createHostCommandEventResponseAdmission({
+      ...request,
+      query: { ...request.query, after: 0 }
+    });
+    freshStartedAdmission.admit(
+      response({
+        type: "command.started",
+        workspaceId: request.query.workspaceId,
+        runId: request.query.runId,
+        commandId: request.query.commandId,
+        sequence: 1,
+        occurredAt: "2026-08-21T12:00:00.000Z",
+        pty: true
+      })
+    );
+    expect(() =>
+      freshStartedAdmission.admit(
+        response({
+          type: "command.started",
+          workspaceId: request.query.workspaceId,
+          runId: request.query.runId,
+          commandId: request.query.commandId,
+          sequence: 2,
+          occurredAt: "2026-08-21T12:00:00.000Z",
+          pty: true
+        })
+      )
+    ).toThrow(/start/i);
 
     const terminalAdmission = createHostCommandEventResponseAdmission(request);
     terminalAdmission.admit(
@@ -685,19 +737,47 @@ describe("host daemon API contracts", () => {
       authorization: commandAuthorization,
       idempotency: { key: "start" }
     };
+    const startRoute = {
+      route: "POST /v1/environments/:environmentId/commands" as const,
+      environmentId,
+      body: start
+    };
+    await expect(
+      admitHostOperation(startRoute, {
+        ...dependencies,
+        resolvePreparedEnvironment: async () => undefined
+      })
+    ).rejects.toThrow(/prepared/i);
+    const mismatchedPreparedAuthorization = {
+      ...environmentAuthorization,
+      digest: "0".repeat(64),
+      scope: { ...scope, branch: "autostack/mismatched-prepared" }
+    };
+    mismatchedPreparedAuthorization.digest = await digestEnvironmentAuthorization(
+      mismatchedPreparedAuthorization
+    );
+    await expect(
+      admitHostOperation(startRoute, {
+        ...dependencies,
+        resolvePreparedEnvironment: async () => ({
+          environmentId,
+          workspaceId,
+          runId,
+          repositoryIdentity: scope.repositoryIdentity,
+          sourceCommit: scope.sourceCommit,
+          branch: mismatchedPreparedAuthorization.scope.branch,
+          authorization: mismatchedPreparedAuthorization,
+          state: "prepared",
+          preparedAt: "2026-08-21T12:00:00.000Z"
+        })
+      })
+    ).rejects.toThrow(/prepared/i);
     await expect(
       admitHostOperation({ route: "POST /v1/environments", body: prepare }, dependencies)
     ).resolves.toMatchObject({ route: "POST /v1/environments" });
-    await expect(
-      admitHostOperation(
-        {
-          route: "POST /v1/environments/:environmentId/commands",
-          environmentId,
-          body: start
-        },
-        dependencies
-      )
-    ).resolves.toMatchObject({ route: "POST /v1/environments/:environmentId/commands" });
+    await expect(admitHostOperation(startRoute, dependencies)).resolves.toMatchObject({
+      route: "POST /v1/environments/:environmentId/commands"
+    });
     const lifecycle = {
       workspaceId,
       runId,

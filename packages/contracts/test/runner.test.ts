@@ -179,7 +179,15 @@ describe("local runner contracts", () => {
       { executable: "/usr/bin/env", args: ["-S", "bash -c 'echo safe'"] },
       { executable: "sudo", args: ["-n", "zsh", "-c", "echo safe"] },
       { executable: "sudo", args: ["-s", "-c", "echo safe"] },
-      { executable: "busybox", args: ["sh", "-c", "echo safe"] }
+      { executable: "sudo", args: ["--shell"] },
+      { executable: "busybox", args: ["sh", "-c", "echo safe"] },
+      { executable: "busybox", args: ["ash", "-c", "echo safe"] },
+      { executable: "nice", args: ["sh", "-c", "echo safe"] },
+      { executable: "xargs", args: ["sh", "-c", "echo safe"] },
+      { executable: "echo", args: ["bash", "-O", "extglob", "-c", "echo safe"] },
+      { executable: "csh", args: ["-c", "echo safe"] },
+      { executable: "tcsh", args: ["-c", "echo safe"] },
+      { executable: "/bin/BASH", args: ["-c", "echo safe"] }
     ]) {
       expect(() =>
         CommandSpecSchema.parse({
@@ -788,6 +796,70 @@ describe("local runner contracts", () => {
       ])
     ).toHaveLength(3);
     expect(() => validateRunnerStream([])).toThrow(/terminal/i);
+    expect(() =>
+      validateRunnerStream([
+        {
+          type: "command.started",
+          workspaceId: ids.workspaceId,
+          runId: ids.runId,
+          commandId: ids.commandId,
+          sequence: 1,
+          occurredAt: NOW,
+          pty: true
+        },
+        {
+          type: "command.started",
+          workspaceId: ids.workspaceId,
+          runId: ids.runId,
+          commandId: ids.commandId,
+          sequence: 2,
+          occurredAt: NOW,
+          pty: true
+        },
+        {
+          type: "stream.error",
+          workspaceId: ids.workspaceId,
+          runId: ids.runId,
+          commandId: ids.commandId,
+          sequence: 3,
+          occurredAt: NOW,
+          code: "protocol_failure",
+          message: "safe failure"
+        }
+      ])
+    ).toThrow(/start/i);
+    expect(
+      validateRunnerStream(
+        [
+          {
+            type: "terminal.output",
+            workspaceId: ids.workspaceId,
+            runId: ids.runId,
+            commandId: ids.commandId,
+            sequence: 2,
+            occurredAt: NOW,
+            stream: "pty",
+            text: "resumed"
+          },
+          {
+            type: "stream.error",
+            workspaceId: ids.workspaceId,
+            runId: ids.runId,
+            commandId: ids.commandId,
+            sequence: 3,
+            occurredAt: NOW,
+            code: "protocol_failure",
+            message: "safe failure"
+          }
+        ],
+        {
+          workspaceId: ids.workspaceId,
+          runId: ids.runId,
+          commandId: ids.commandId,
+          after: 1
+        }
+      )
+    ).toHaveLength(2);
     expect(() =>
       validateRunnerStream([
         {

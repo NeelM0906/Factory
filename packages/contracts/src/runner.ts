@@ -74,8 +74,19 @@ const SafeCommandStringSchema = z
     (value) => !value.includes("\u0000") && !containsSensitiveMaterial(value),
     "Command strings cannot contain NUL bytes or credential material."
   );
-const ShellInterpreterBasenames = new Set(["sh", "bash", "zsh", "dash", "ksh", "fish"]);
-const shellBasename = (executable: string): string => executable.split("/").at(-1) ?? executable;
+const ShellInterpreterBasenames = new Set([
+  "sh",
+  "bash",
+  "zsh",
+  "dash",
+  "ksh",
+  "fish",
+  "csh",
+  "tcsh",
+  "ash"
+]);
+const shellBasename = (executable: string): string =>
+  (executable.split("/").at(-1) ?? executable).toLowerCase();
 const isCommandStringFlag = (argument: string): boolean =>
   argument === "-c" ||
   argument === "-lc" ||
@@ -92,7 +103,6 @@ const hasShellCommandStringFlag = (argumentsToInspect: readonly string[]): boole
   }
   return false;
 };
-const ShellWrapperBasenames = new Set(["env", "sudo", "doas", "busybox"]);
 const usesEnvSplitString = (executable: string, args: readonly string[]): boolean =>
   executable === "env" &&
   args.some(
@@ -104,29 +114,26 @@ const hasImplicitWrapperShellCommandString = (
   args: readonly string[]
 ): boolean => {
   if (executable !== "sudo" && executable !== "doas") return false;
-  const shellOptionIndex = args.findIndex(
+  return args.some(
     (argument) =>
       argument === "-s" || argument === "--shell" || argument === "-i" || argument === "--login"
   );
-  return shellOptionIndex >= 0 && hasShellCommandStringFlag(args.slice(shellOptionIndex + 1));
 };
 const isForbiddenShellCommandString = (command: {
   readonly executable: string;
   readonly args: readonly string[];
 }): boolean => {
   const executable = shellBasename(command.executable);
-  if (ShellInterpreterBasenames.has(executable)) {
-    return hasShellCommandStringFlag(command.args);
-  }
-  if (!ShellWrapperBasenames.has(executable)) return false;
   // env -S parses a command string itself, so it cannot be safely admitted as
   // an argument-vector command even when the embedded shell is not tokenized yet.
   if (usesEnvSplitString(executable, command.args)) return true;
   if (hasImplicitWrapperShellCommandString(executable, command.args)) return true;
-  const shellIndex = command.args.findIndex((argument) =>
-    ShellInterpreterBasenames.has(shellBasename(argument))
+  const tokens = [command.executable, ...command.args];
+  return tokens.some(
+    (token, index) =>
+      ShellInterpreterBasenames.has(shellBasename(token)) &&
+      hasShellCommandStringFlag(tokens.slice(index + 1))
   );
-  return shellIndex >= 0 && hasShellCommandStringFlag(command.args.slice(shellIndex + 1));
 };
 export const CommandEnvironmentEntrySchema = z.discriminatedUnion("kind", [
   z
@@ -1161,6 +1168,7 @@ export const validateRunnerStream = (
   const commandId = expected?.commandId ?? first.commandId;
   let terminal = false;
   let previousSequence = expected?.after ?? 0;
+  let started = false;
   for (const event of events) {
     if (
       expected !== undefined &&
@@ -1171,7 +1179,12 @@ export const validateRunnerStream = (
     if (event.commandId !== commandId || event.sequence !== previousSequence + 1 || terminal) {
       throw new TypeError("Runner stream sequence is incoherent.");
     }
-    if (previousSequence === 0 && event.type !== "command.started") {
+    if (event.type === "command.started") {
+      if (previousSequence !== 0 || started) {
+        throw new TypeError("Runner stream has an invalid command.started event.");
+      }
+      started = true;
+    } else if (previousSequence === 0) {
       throw new TypeError("Runner stream must start with command.started.");
     }
     previousSequence = event.sequence;

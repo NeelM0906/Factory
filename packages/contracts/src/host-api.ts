@@ -374,6 +374,32 @@ const requireTrustedCommandAuthorization = async (
   return authorization;
 };
 
+const requireTrustedPreparedEnvironmentForStart = async (
+  request: z.infer<typeof StartCommandRequestSchema>,
+  environmentAuthorization: EnvironmentAuthorization,
+  commandAuthorization: CommandAuthorization,
+  dependencies: TrustedHostAdmissionDependencies
+): Promise<void> => {
+  const candidate = await dependencies.resolvePreparedEnvironment(request.environmentId);
+  if (candidate === undefined) {
+    throw new TypeError("A trusted prepared environment is required before command start.");
+  }
+  const prepared = PreparedEnvironmentSchema.parse(normalizeSafeJson(candidate));
+  const scope = commandAuthorization.scope;
+  if (
+    prepared.environmentId !== request.environmentId ||
+    prepared.workspaceId !== request.workspaceId ||
+    prepared.runId !== request.runId ||
+    prepared.repositoryIdentity !== scope.repositoryIdentity ||
+    prepared.sourceCommit !== scope.sourceCommit ||
+    prepared.branch !== scope.branch ||
+    prepared.authorization.id !== environmentAuthorization.id ||
+    prepared.authorization.digest !== environmentAuthorization.digest
+  ) {
+    throw new TypeError("Trusted prepared environment does not match command start admission.");
+  }
+};
+
 export const admitHostOperation = async (
   candidate: unknown,
   dependencies: TrustedHostAdmissionDependencies
@@ -383,7 +409,13 @@ export const admitHostOperation = async (
     await admitPrepareEnvironment(request.body, dependencies.now(), dependencies);
   }
   if (request.route === "POST /v1/environments/:environmentId/commands") {
-    await admitStartCommand(request.body, dependencies.now(), dependencies);
+    const admission = await admitStartCommand(request.body, dependencies.now(), dependencies);
+    await requireTrustedPreparedEnvironmentForStart(
+      request.body,
+      admission.environmentAuthorization,
+      admission.commandAuthorization,
+      dependencies
+    );
   }
   if (
     request.route === "GET /v1/environments/:environmentId/commands/:commandId/events" ||
@@ -449,7 +481,9 @@ export interface HostResponseBodyByRoute {
   readonly "POST /v1/environments/:environmentId/commands/:commandId/cancel": z.infer<
     typeof CancelCommandResponseSchema
   >;
-  readonly "GET /v1/artifacts/:artifactId/content": z.infer<typeof ReadArtifactChunkResponseSchema>;
+  readonly "GET /v1/artifacts/:artifactId/content": z.infer<
+    typeof HostArtifactContentResponseSchema
+  >;
   readonly "DELETE /v1/environments/:environmentId": z.infer<
     typeof DisposeEnvironmentResponseSchema
   >;
@@ -520,15 +554,20 @@ export const createHostCommandEventResponseAdmission = (
         if (body.event.sequence !== cursor + 1) {
           throw new TypeError("Host event response sequence must equal the next request cursor.");
         }
+        if (body.event.type === "command.started" && cursor !== 0) {
+          throw new TypeError("A host event stream cannot repeat command.started.");
+        }
+        if (cursor === 0 && body.event.type !== "command.started") {
+          throw new TypeError("A fresh host event stream must begin with command.started.");
+        }
         cursor = body.event.sequence;
         terminal = body.event.type === "command.completed" || body.event.type === "stream.error";
       } else {
-        if (body.lastDurableSequence < cursor || body.resumeCursor !== body.lastDurableSequence) {
+        if (body.lastDurableSequence !== cursor || body.resumeCursor !== cursor) {
           throw new TypeError(
             "Host subscription lag cursor cannot regress or contradict durable state."
           );
         }
-        cursor = body.resumeCursor;
         // Lag is a transport terminal: reconnect using the safe durable cursor.
         terminal = true;
       }
@@ -591,7 +630,7 @@ export function admitHostResponse(
     case "GET /v1/artifacts/:artifactId/content": {
       const body = HostArtifactContentResponseSchema.parse(response.body);
       const { range, ...authorization } = request.query;
-      return validateArtifactChunkResponse(
+      validateArtifactChunkResponse(
         {
           ...authorization,
           artifactId: request.artifactId,
@@ -600,6 +639,7 @@ export function admitHostResponse(
         },
         body.chunk
       );
+      return body;
     }
     case "DELETE /v1/environments/:environmentId": {
       const body = DisposeEnvironmentResponseSchema.parse(response.body);
