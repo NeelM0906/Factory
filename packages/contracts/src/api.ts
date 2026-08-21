@@ -72,7 +72,7 @@ export const ListRunsResponseSchema = z
 
 export const ListEventsResponseSchema = z
   .object({
-    events: z.array(StoredDomainEventSchema),
+    events: z.array(StoredDomainEventSchema).max(100),
     nextSequence: z.number().int().nonnegative().default(0)
   })
   .strict();
@@ -87,6 +87,7 @@ export const ApiErrorSchema = z
           "request_too_large",
           "missing_idempotency_key",
           "run_not_found",
+          "idempotency_conflict",
           "version_conflict",
           "internal_error"
         ]),

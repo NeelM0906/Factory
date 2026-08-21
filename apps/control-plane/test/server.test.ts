@@ -1,14 +1,18 @@
 import {
   existsSync,
+  mkdirSync,
   mkdtempSync,
   readFileSync,
   readdirSync,
   rmSync,
   statSync,
+  symlinkSync,
   writeFileSync
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { EventEmitter } from "node:events";
+import { createServer as createNetServer } from "node:net";
 
 import { type ServerType, serve } from "@hono/node-server";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -16,6 +20,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { EventIdSchema, WorkspaceIdSchema, createIdFactory } from "@autostack/contracts";
 import { SqliteDurableStore, openDatabase } from "@autostack/db";
 import { createManualRun } from "@autostack/domain";
+import { LocalWorkflowExecutor } from "@autostack/workflow";
 
 import { loadOrCreateLocalWorkspaceId } from "../src/config.js";
 import { startControlPlane } from "../src/server.js";
@@ -105,6 +110,42 @@ describe("control-plane server composition", () => {
     ).toThrow(/multiple|ambiguous/i);
   });
 
+  it("rejects a symlinked installation identity without following it", () => {
+    const dataDirectory = mkdtempSync(join(tmpdir(), "autostack-control-plane-"));
+    temporaryDirectories.push(dataDirectory);
+    const workspaceId = WorkspaceIdSchema.parse("ws_123e4567-e89b-42d3-a456-426614174001");
+    const target = join(dataDirectory, "identity-target.json");
+    writeFileSync(
+      target,
+      `${JSON.stringify({ schemaVersion: 1, workspaceId, createdAt: "2026-08-20T12:00:00.000Z" })}\n`,
+      { mode: 0o600 }
+    );
+    symlinkSync(target, join(dataDirectory, "installation.json"));
+
+    expect(() =>
+      loadOrCreateLocalWorkspaceId(
+        dataDirectory,
+        () => workspaceId,
+        () => "2026-08-20T12:00:00.000Z"
+      )
+    ).toThrow(/symbolic link|regular file|identity/i);
+  });
+
+  it("rejects a non-regular installation identity", () => {
+    const dataDirectory = mkdtempSync(join(tmpdir(), "autostack-control-plane-"));
+    temporaryDirectories.push(dataDirectory);
+    const workspaceId = WorkspaceIdSchema.parse("ws_123e4567-e89b-42d3-a456-426614174001");
+    mkdirSync(join(dataDirectory, "installation.json"));
+
+    expect(() =>
+      loadOrCreateLocalWorkspaceId(
+        dataDirectory,
+        () => workspaceId,
+        () => "2026-08-20T12:00:00.000Z"
+      )
+    ).toThrow(/regular file|identity/i);
+  });
+
   it("publishes identity crash-safely and accepts the winner of a racing initializer", () => {
     const crashDirectory = mkdtempSync(join(tmpdir(), "autostack-control-plane-"));
     const raceDirectory = mkdtempSync(join(tmpdir(), "autostack-control-plane-"));
@@ -154,7 +195,7 @@ describe("control-plane server composition", () => {
     const server = { close } as unknown as ServerType;
     const serveImplementation = vi.fn(() => server) as unknown as typeof serve;
 
-    const runtime = startControlPlane({
+    const runtime = await startControlPlane({
       config: { dataDirectory, token: TOKEN, host: "127.0.0.1", port: 4318 },
       serve: serveImplementation,
       installSignalHandlers: false,
@@ -186,7 +227,7 @@ describe("control-plane server composition", () => {
     const serveImplementation = vi.fn(() => server) as unknown as typeof serve;
     const log = vi.spyOn(console, "log").mockImplementation(() => undefined);
 
-    const runtime = startControlPlane({
+    const runtime = await startControlPlane({
       environment: {
         AUTOSTACK_DATA_DIR: dataDirectory,
         AUTOSTACK_LOCAL_API_TOKEN: TOKEN,
@@ -210,7 +251,7 @@ describe("control-plane server composition", () => {
     const serveImplementation = vi.fn(() => server) as unknown as typeof serve;
     const firstToken = TOKEN;
     const secondToken = "fedcba9876543210fedcba9876543210";
-    const first = startControlPlane({
+    const first = await startControlPlane({
       config: { dataDirectory, token: firstToken, host: "127.0.0.1", port: 4318 },
       serve: serveImplementation,
       installSignalHandlers: false,
@@ -229,7 +270,7 @@ describe("control-plane server composition", () => {
     expect(created.status).toBe(201);
     await first.close();
 
-    const second = startControlPlane({
+    const second = await startControlPlane({
       config: { dataDirectory, token: secondToken, host: "127.0.0.1", port: 4318 },
       serve: serveImplementation,
       installSignalHandlers: false,
@@ -290,7 +331,7 @@ describe("control-plane server composition", () => {
     const server = {
       close: (callback?: (error?: Error) => void) => callback?.()
     } as unknown as ServerType;
-    const runtime = startControlPlane({
+    const runtime = await startControlPlane({
       config: { dataDirectory, token: TOKEN, host: "127.0.0.1", port: 4318 },
       serve: vi.fn(() => server) as unknown as typeof serve,
       installSignalHandlers: false,
@@ -309,26 +350,26 @@ describe("control-plane server composition", () => {
     await runtime.close();
   });
 
-  it("closes an opened database when identity initialization fails", () => {
+  it("closes an opened database when identity initialization fails", async () => {
     const dataDirectory = mkdtempSync(join(tmpdir(), "autostack-control-plane-"));
     temporaryDirectories.push(dataDirectory);
     writeFileSync(join(dataDirectory, "installation.json"), "not-json", { mode: 0o600 });
     const opened = openDatabase({ filePath: join(dataDirectory, "autostack.sqlite") });
     const close = vi.spyOn(opened, "close");
 
-    expect(() =>
+    await expect(
       startControlPlane({
         config: { dataDirectory, token: TOKEN, host: "127.0.0.1", port: 4318 },
         openDatabase: () => opened,
         installSignalHandlers: false,
         log: vi.fn()
       })
-    ).toThrow(/identity/i);
+    ).rejects.toThrow(/identity/i);
     expect(close).toHaveBeenCalledTimes(1);
     expect(() => opened.connection.prepare("SELECT 1").get()).toThrow();
   });
 
-  it("closes an opened database when legacy workspace recovery is ambiguous", () => {
+  it("closes an opened database when legacy workspace recovery is ambiguous", async () => {
     const dataDirectory = mkdtempSync(join(tmpdir(), "autostack-control-plane-"));
     temporaryDirectories.push(dataDirectory);
     const opened = openDatabase({ filePath: join(dataDirectory, "autostack.sqlite") });
@@ -342,14 +383,14 @@ describe("control-plane server composition", () => {
     `);
     const close = vi.spyOn(opened, "close");
 
-    expect(() =>
+    await expect(
       startControlPlane({
         config: { dataDirectory, token: TOKEN, host: "127.0.0.1", port: 4318 },
         openDatabase: () => opened,
         installSignalHandlers: false,
         log: vi.fn()
       })
-    ).toThrow(/multiple|ambiguous/i);
+    ).rejects.toThrow(/multiple|ambiguous/i);
     expect(close).toHaveBeenCalledTimes(1);
   });
 
@@ -359,7 +400,7 @@ describe("control-plane server composition", () => {
     const server = {
       close: (callback?: (error?: Error) => void) => callback?.()
     } as unknown as ServerType;
-    const runtime = startControlPlane({
+    const runtime = await startControlPlane({
       config: { dataDirectory, token: TOKEN, host: "127.0.0.1", port: 4318 },
       serve: vi.fn(() => server) as unknown as typeof serve,
       installSignalHandlers: false,
@@ -384,21 +425,21 @@ describe("control-plane server composition", () => {
     await runtime.close();
   });
 
-  it("closes storage and the executor when server startup fails", () => {
+  it("closes storage and the executor when server startup fails", async () => {
     const dataDirectory = mkdtempSync(join(tmpdir(), "autostack-control-plane-"));
     temporaryDirectories.push(dataDirectory);
     const serveImplementation = vi.fn(() => {
       throw new Error("listen failed");
     }) as unknown as typeof serve;
 
-    expect(() =>
+    await expect(
       startControlPlane({
         config: { dataDirectory, token: TOKEN, host: "127.0.0.1", port: 4318 },
         serve: serveImplementation,
         installSignalHandlers: false,
         log: vi.fn()
       })
-    ).toThrow("listen failed");
+    ).rejects.toThrow("listen failed");
   });
 
   it("closes the listener and database after a post-listen startup failure", async () => {
@@ -409,7 +450,7 @@ describe("control-plane server composition", () => {
     const serverClose = vi.fn((callback?: (error?: Error) => void) => callback?.());
     const server = { close: serverClose } as unknown as ServerType;
 
-    expect(() =>
+    await expect(
       startControlPlane({
         config: { dataDirectory, token: TOKEN, host: "127.0.0.1", port: 4318 },
         openDatabase: () => opened,
@@ -419,7 +460,7 @@ describe("control-plane server composition", () => {
           throw new Error("logger failed");
         }
       })
-    ).toThrow("logger failed");
+    ).rejects.toThrow("logger failed");
     expect(serverClose).toHaveBeenCalledTimes(1);
     await vi.waitFor(() => expect(databaseClose).toHaveBeenCalledTimes(1));
     expect(() => opened.connection.prepare("SELECT 1").get()).toThrow();
@@ -444,7 +485,7 @@ describe("control-plane server composition", () => {
     };
     process.on("unhandledRejection", captureUnhandled);
     try {
-      expect(() =>
+      await expect(
         startControlPlane({
           config: { dataDirectory, token: TOKEN, host: "127.0.0.1", port: 4318 },
           openDatabase: () => opened,
@@ -454,7 +495,7 @@ describe("control-plane server composition", () => {
             throw new Error("original startup failure");
           }
         })
-      ).toThrow("original startup failure");
+      ).rejects.toThrow("original startup failure");
       await vi.waitFor(() => expect(databaseClose).toHaveBeenCalledTimes(1));
       await new Promise((resolve) => setTimeout(resolve, 0));
       expect(unhandled).toEqual([]);
@@ -469,7 +510,7 @@ describe("control-plane server composition", () => {
     const server = {
       close: (callback?: (error?: Error) => void) => callback?.(new Error("close failed"))
     } as unknown as ServerType;
-    const runtime = startControlPlane({
+    const runtime = await startControlPlane({
       config: { dataDirectory, token: TOKEN, host: "127.0.0.1", port: 4318 },
       serve: vi.fn(() => server) as unknown as typeof serve,
       installSignalHandlers: false,
@@ -478,5 +519,91 @@ describe("control-plane server composition", () => {
 
     await expect(runtime.close()).rejects.toThrow("close failed");
     expect(runtime.executor.getStatus()).toBe("stopped");
+  });
+
+  it("closes storage even when executor shutdown rejects", async () => {
+    const dataDirectory = mkdtempSync(join(tmpdir(), "autostack-control-plane-"));
+    temporaryDirectories.push(dataDirectory);
+    const opened = openDatabase({ filePath: join(dataDirectory, "autostack.sqlite") });
+    const databaseClose = vi.spyOn(opened, "close");
+    const server = {
+      close: (callback?: (error?: Error) => void) => callback?.()
+    } as unknown as ServerType;
+    const runtime = await startControlPlane({
+      config: { dataDirectory, token: TOKEN, host: "127.0.0.1", port: 4318 },
+      openDatabase: () => opened,
+      serve: vi.fn(() => server) as unknown as typeof serve,
+      installSignalHandlers: false,
+      log: vi.fn()
+    });
+    vi.spyOn(runtime.executor, "stop").mockRejectedValue(new Error("executor stop failed"));
+
+    await expect(runtime.close()).rejects.toThrow("executor stop failed");
+    expect(databaseClose).toHaveBeenCalledTimes(1);
+    expect(() => opened.connection.prepare("SELECT 1").get()).toThrow();
+  });
+
+  it("rejects an asynchronous listener error before starting successfully", async () => {
+    const dataDirectory = mkdtempSync(join(tmpdir(), "autostack-control-plane-"));
+    temporaryDirectories.push(dataDirectory);
+    const emitter = new EventEmitter() as EventEmitter & {
+      close(callback?: (error?: Error) => void): void;
+    };
+    emitter.close = (callback) => callback?.();
+    const log = vi.fn();
+    const startExecutor = vi.spyOn(LocalWorkflowExecutor.prototype, "start");
+    const starting = startControlPlane({
+      config: { dataDirectory, token: TOKEN, host: "127.0.0.1", port: 4318 },
+      serve: vi.fn(() => {
+        queueMicrotask(() => emitter.emit("error", new Error("EADDRINUSE")));
+        return emitter as unknown as ServerType;
+      }) as unknown as typeof serve,
+      installSignalHandlers: false,
+      log
+    });
+
+    await expect(starting).rejects.toThrow("EADDRINUSE");
+    expect(startExecutor).not.toHaveBeenCalled();
+    expect(log).not.toHaveBeenCalledWith(expect.stringContaining("control_plane_started"));
+  });
+
+  it("rejects a real address collision and releases the opened database", async () => {
+    const dataDirectory = mkdtempSync(join(tmpdir(), "autostack-control-plane-"));
+    temporaryDirectories.push(dataDirectory);
+    const occupied = createNetServer();
+    await new Promise<void>((resolveListening, rejectListening) => {
+      occupied.once("error", rejectListening);
+      occupied.listen(0, "127.0.0.1", resolveListening);
+    });
+    const address = occupied.address();
+    if (address === null || typeof address === "string") {
+      throw new Error("Expected an assigned TCP port.");
+    }
+    const log = vi.fn();
+    try {
+      await expect(
+        startControlPlane({
+          config: {
+            dataDirectory,
+            token: TOKEN,
+            host: "127.0.0.1",
+            port: address.port
+          },
+          installSignalHandlers: false,
+          log
+        })
+      ).rejects.toMatchObject({ code: "EADDRINUSE" });
+      expect(log).not.toHaveBeenCalledWith(expect.stringContaining("control_plane_started"));
+
+      const reopened = openDatabase({ filePath: join(dataDirectory, "autostack.sqlite") });
+      reopened.close();
+    } finally {
+      await new Promise<void>((resolveClose, rejectClose) => {
+        occupied.close((error) => {
+          if (error === undefined) resolveClose();
+          else rejectClose(error);
+        });
+      });
+    }
   });
 });

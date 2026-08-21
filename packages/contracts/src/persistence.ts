@@ -11,6 +11,7 @@ import {
   WorkspaceIdSchema
 } from "./ids.js";
 import { assertSafeJson } from "./secret-safety.js";
+import { WorkflowFailureSchema } from "./workflow-failure.js";
 export { WorkflowFailureSchema, type WorkflowFailure } from "./workflow-failure.js";
 
 const TimestampSchema = z.iso.datetime();
@@ -86,6 +87,27 @@ export const CommitRequestSchema = z
     idempotency: IdempotencySchema,
     appends: z.array(StreamAppendSchema),
     jobs: z.array(NewWorkflowJobSchema)
+  })
+  .strict();
+
+export const CompleteJobRequestSchema = z
+  .object({
+    jobId: JobIdSchema,
+    leaseToken: z.string().trim().min(1).max(500),
+    now: TimestampSchema,
+    idempotency: IdempotencySchema,
+    appends: z.array(StreamAppendSchema),
+    jobs: z.array(NewWorkflowJobSchema)
+  })
+  .strict();
+
+export const FailJobRequestSchema = z
+  .object({
+    jobId: JobIdSchema,
+    leaseToken: z.string().trim().min(1).max(500),
+    now: TimestampSchema,
+    error: WorkflowFailureSchema,
+    nextAvailableAt: TimestampSchema.optional()
   })
   .strict();
 

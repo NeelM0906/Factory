@@ -65,6 +65,16 @@ export interface ReadAllRequest {
   readonly limit?: number;
 }
 
+export interface RunExistsRequest {
+  readonly workspaceId: WorkspaceId;
+  readonly runId: RunId;
+}
+
+export interface ReadRunEventsRequest extends RunExistsRequest {
+  readonly afterGlobalSequence?: number;
+  readonly limit?: number;
+}
+
 export interface ListRunSummariesRequest {
   readonly workspaceId: WorkspaceId;
   readonly beforeGlobalSequence?: number;
@@ -124,6 +134,8 @@ export interface DurableStore {
   readCommitResult(request: ReadCommitResultRequest): Promise<CommitResult | null>;
   readStream(request: ReadStreamRequest): Promise<readonly StoredDomainEvent[]>;
   readAll(request: ReadAllRequest): Promise<readonly StoredDomainEvent[]>;
+  runExists(request: RunExistsRequest): Promise<boolean>;
+  readRunEvents(request: ReadRunEventsRequest): Promise<readonly StoredDomainEvent[]>;
   listRunSummaries(request: ListRunSummariesRequest): Promise<RunSummaryPage>;
   leaseNext(request: LeaseNextRequest): Promise<LeasedWorkflowJob | null>;
   heartbeat(request: HeartbeatRequest): Promise<void>;

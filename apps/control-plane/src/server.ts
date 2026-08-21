@@ -41,13 +41,33 @@ const closeServer = (server: Server): Promise<void> =>
     });
   });
 
+const waitForListening = (server: Server): Promise<void> => {
+  if (typeof server.once !== "function") return Promise.resolve();
+  if (server.listening) return Promise.resolve();
+
+  return new Promise((resolveListening, rejectListening) => {
+    const onListening = (): void => {
+      server.removeListener("error", onError);
+      resolveListening();
+    };
+    const onError = (error: Error): void => {
+      server.removeListener("listening", onListening);
+      rejectListening(error);
+    };
+    server.once("listening", onListening);
+    server.once("error", onError);
+  });
+};
+
 const retryAt = (error: RetryableJobError, attempt: number, now: string): string => {
   void error;
   const delayMs = Math.min(60_000, 1_000 * 2 ** Math.max(0, attempt - 1));
   return new Date(Date.parse(now) + delayMs).toISOString();
 };
 
-export function startControlPlane(options: StartControlPlaneOptions = {}): ControlPlaneRuntime {
+export async function startControlPlane(
+  options: StartControlPlaneOptions = {}
+): Promise<ControlPlaneRuntime> {
   const config = options.config ?? loadConfig(options.environment);
   const log = options.log ?? ((line: string) => console.log(line));
   const database = (options.openDatabase ?? openDatabase)({
@@ -110,6 +130,7 @@ export function startControlPlane(options: StartControlPlaneOptions = {}): Contr
       port: config.port
     });
     const listeningServer = server;
+    await waitForListening(listeningServer);
     runtimeExecutor.start();
 
     let closePromise: Promise<void> | undefined;
@@ -132,14 +153,26 @@ export function startControlPlane(options: StartControlPlaneOptions = {}): Contr
       closePromise = (async () => {
         for (const signal of signals) process.removeListener(signal, signalHandler);
         let serverError: unknown;
+        let executorError: unknown;
+        let storeError: unknown;
         try {
           await closeServer(listeningServer);
         } catch (error) {
           serverError = error;
         }
-        await runtimeExecutor.stop();
-        await store.close();
+        try {
+          await runtimeExecutor.stop();
+        } catch (error) {
+          executorError = error;
+        }
+        try {
+          await store.close();
+        } catch (error) {
+          storeError = error;
+        }
         if (serverError !== undefined) throw serverError;
+        if (executorError !== undefined) throw executorError;
+        if (storeError !== undefined) throw storeError;
       })();
       return closePromise;
     };
@@ -163,24 +196,20 @@ export function startControlPlane(options: StartControlPlaneOptions = {}): Contr
     return { app, executor: runtimeExecutor, close };
   } catch (error) {
     removeSignalHandlers();
-    if (server === undefined && executor === undefined) {
+    try {
+      if (server !== undefined) await closeServer(server);
+    } catch {
+      // The original startup error remains authoritative.
+    }
+    try {
+      await executor?.stop();
+    } catch {
+      // The original startup error remains authoritative.
+    }
+    try {
       database.close();
-    } else {
-      const startedServer = server;
-      const startedExecutor = executor;
-      void (async () => {
-        try {
-          if (startedServer !== undefined) await closeServer(startedServer);
-        } finally {
-          try {
-            await startedExecutor?.stop();
-          } finally {
-            database.close();
-          }
-        }
-      })().catch(() => {
-        // The original startup error remains authoritative.
-      });
+    } catch {
+      // The original startup error remains authoritative.
     }
     throw error;
   }
@@ -190,9 +219,7 @@ const isEntrypoint =
   process.argv[1] !== undefined && resolve(process.argv[1]) === fileURLToPath(import.meta.url);
 
 if (isEntrypoint) {
-  try {
-    startControlPlane();
-  } catch (error) {
+  void startControlPlane().catch((error: unknown) => {
     console.error(
       JSON.stringify({
         level: "error",
@@ -201,5 +228,5 @@ if (isEntrypoint) {
       })
     );
     process.exitCode = 1;
-  }
+  });
 }

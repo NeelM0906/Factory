@@ -2,6 +2,8 @@ import { describe, expect, it } from "vitest";
 
 import {
   CommitRequestSchema,
+  CompleteJobRequestSchema,
+  FailJobRequestSchema,
   PendingDomainEventSchema,
   StoredDomainEventSchema,
   StreamAppendSchema,
@@ -76,6 +78,48 @@ describe("persistence contracts", () => {
         jobs: []
       }
     );
+  });
+
+  it("strictly validates complete and fail workflow requests", () => {
+    const idempotency = { scope: "executor:complete", key: "job-1:1" };
+    expect(
+      CompleteJobRequestSchema.parse({
+        jobId: "job_123e4567-e89b-42d3-a456-426614174000",
+        leaseToken: "lease-token",
+        now: NOW,
+        idempotency,
+        appends: [],
+        jobs: []
+      })
+    ).toBeDefined();
+    expect(
+      FailJobRequestSchema.parse({
+        jobId: "job_123e4567-e89b-42d3-a456-426614174000",
+        leaseToken: "lease-token",
+        now: NOW,
+        error: { code: "handler_failed", name: "Error", message: "failed", retryable: false }
+      })
+    ).toBeDefined();
+    expect(() =>
+      CompleteJobRequestSchema.parse({
+        jobId: "job_123e4567-e89b-42d3-a456-426614174000",
+        leaseToken: "lease-token",
+        now: NOW,
+        idempotency,
+        appends: [],
+        jobs: [],
+        unexpected: true
+      })
+    ).toThrow();
+    expect(() =>
+      FailJobRequestSchema.parse({
+        jobId: "job_123e4567-e89b-42d3-a456-426614174000",
+        leaseToken: "lease-token",
+        now: NOW,
+        error: { code: "handler_failed", name: "Error", message: "failed", retryable: false },
+        unexpected: true
+      })
+    ).toThrow();
   });
 
   it("enforces work-item, run, approval, and transition stream identities", () => {

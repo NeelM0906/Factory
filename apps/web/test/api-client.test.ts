@@ -63,6 +63,20 @@ describe("AutoStack web API client", () => {
     expect(getToken).toHaveBeenCalledTimes(1);
   });
 
+  it("requests one validated run-event page with a global cursor", async () => {
+    const fetch = vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
+      expect(input).toBe(`/v1/runs/${run.id}/events?after=42`);
+      expect(new Headers(init?.headers).get("Authorization")).toBe(`Bearer ${TOKEN}`);
+      return Response.json({ events: [], nextSequence: 42 });
+    });
+    const client = createApiClient({ baseUrl: "", getToken: () => TOKEN, fetch });
+
+    await expect(client.listRunEvents(run.id, 42)).resolves.toEqual({
+      events: [],
+      nextSequence: 42
+    });
+  });
+
   it("creates a run with a fresh UUID idempotency key", async () => {
     const fetch = vi.fn(async (_input: string | URL | Request, init?: RequestInit) => {
       const headers = new Headers(init?.headers);

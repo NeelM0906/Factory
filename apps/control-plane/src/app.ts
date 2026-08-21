@@ -11,7 +11,7 @@ import { OptimisticConcurrencyError, type DurableStore } from "@autostack/domain
 import type { ExecutorStatus } from "@autostack/workflow";
 
 import { createBearerAuth } from "./auth.js";
-import { RunNotFoundError, RunService } from "./run-service.js";
+import { IdempotencyConflictError, RunNotFoundError, RunService } from "./run-service.js";
 
 export interface CreateAppDependencies {
   readonly store: DurableStore;
@@ -29,6 +29,7 @@ class HttpProblem extends Error {
     | "request_too_large"
     | "missing_idempotency_key"
     | "run_not_found"
+    | "idempotency_conflict"
     | "version_conflict"
     | "internal_error";
 
@@ -159,15 +160,21 @@ export function createApp(dependencies: CreateAppDependencies): Hono {
         ? error
         : error instanceof ZodError
           ? new HttpProblem(400, "invalid_request", "The request is invalid.")
-          : error instanceof RunNotFoundError
-            ? new HttpProblem(404, "run_not_found", "The requested run was not found.")
-            : error instanceof OptimisticConcurrencyError
-              ? new HttpProblem(
-                  409,
-                  "version_conflict",
-                  "The run changed before the command completed."
-                )
-              : new HttpProblem(500, "internal_error", "The request could not be completed.");
+          : error instanceof IdempotencyConflictError
+            ? new HttpProblem(
+                409,
+                "idempotency_conflict",
+                "The idempotency key is already bound to another request."
+              )
+            : error instanceof RunNotFoundError
+              ? new HttpProblem(404, "run_not_found", "The requested run was not found.")
+              : error instanceof OptimisticConcurrencyError
+                ? new HttpProblem(
+                    409,
+                    "version_conflict",
+                    "The run changed before the command completed."
+                  )
+                : new HttpProblem(500, "internal_error", "The request could not be completed.");
 
     return context.json(
       ApiErrorSchema.parse({ error: { code: problem.code, message: problem.message } }),

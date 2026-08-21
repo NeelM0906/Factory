@@ -8,6 +8,7 @@ import {
   CreateRunResponseSchema,
   EventIdSchema,
   HealthResponseSchema,
+  JobIdSchema,
   ListEventsResponseSchema,
   ListRunsResponseSchema,
   PendingDomainEventSchema,
@@ -204,8 +205,13 @@ describe("manual run API", () => {
     expect(firstResponse.status).toBe(201);
     expect(replayResponse.status).toBe(200);
     expect(replay).toEqual({ ...first, replayed: true });
-    expect(collisionResponse.status).toBe(500);
-    expect(await collisionResponse.json()).toMatchObject({ error: { code: "internal_error" } });
+    expect(collisionResponse.status).toBe(409);
+    expect(await collisionResponse.json()).toEqual({
+      error: {
+        code: "idempotency_conflict",
+        message: "The idempotency key is already bound to another request."
+      }
+    });
     expect(list.items).toHaveLength(1);
     expect(list.items[0]).toMatchObject({
       runId: first.run.id,
@@ -249,7 +255,7 @@ describe("manual run API", () => {
       await (await authenticated(`/v1/runs/${first.run.id}/events?after=0`)).json()
     );
     expect(events.events.map((event) => event.globalSequence)).toEqual([2]);
-    expect(events.nextSequence).toBe(4);
+    expect(events.nextSequence).toBe(2);
     const exhausted = ListEventsResponseSchema.parse(
       await (await authenticated(`/v1/runs/${first.run.id}/events?after=4`)).json()
     );
@@ -260,6 +266,61 @@ describe("manual run API", () => {
     );
     expect(missing.status).toBe(404);
     expect(await missing.json()).toMatchObject({ error: { code: "run_not_found" } });
+    await store.close();
+  });
+
+  it("returns one bounded run-event page with an advancing global cursor", async () => {
+    const { authenticated, store } = await makeHarness();
+    const created = CreateRunResponseSchema.parse(
+      await (
+        await authenticated("/v1/runs", {
+          method: "POST",
+          headers: { "Content-Type": "application/json", "Idempotency-Key": "event-page" },
+          body: JSON.stringify({ title: "Paginate run events" })
+        })
+      ).json()
+    );
+    const evidence = Array.from({ length: 120 }, () =>
+      PendingDomainEventSchema.parse({
+        workspaceId: WORKSPACE_ID,
+        actor: { kind: "system", id: "autostack" },
+        correlationId: "123e4567-e89b-42d3-a456-426614174098",
+        occurredAt: NOW,
+        type: "stage.queued",
+        payload: {
+          runId: created.run.id,
+          stage: "triage",
+          jobId: JobIdSchema.parse("job_123e4567-e89b-42d3-a456-426614174098")
+        }
+      })
+    );
+    await store.commit({
+      idempotency: { scope: "test:event-page", key: "evidence" },
+      appends: [
+        {
+          stream: { kind: "run", id: created.run.id },
+          expectedVersion: 1,
+          events: evidence
+        }
+      ],
+      jobs: []
+    });
+
+    const first = ListEventsResponseSchema.parse(
+      await (await authenticated(`/v1/runs/${created.run.id}/events?after=0`)).json()
+    );
+    expect(first.events).toHaveLength(100);
+    expect(first.nextSequence).toBe(first.events.at(-1)?.globalSequence);
+    const second = ListEventsResponseSchema.parse(
+      await (
+        await authenticated(`/v1/runs/${created.run.id}/events?after=${String(first.nextSequence)}`)
+      ).json()
+    );
+    expect(second.events).toHaveLength(21);
+    expect(second.nextSequence).toBe(second.events.at(-1)?.globalSequence);
+    expect(new Set([...first.events, ...second.events].map(({ eventId }) => eventId)).size).toBe(
+      121
+    );
     await store.close();
   });
 

@@ -13,7 +13,6 @@ import {
   type ListEventsResponse,
   type ListRunsResponse,
   type RunId,
-  type StoredDomainEvent,
   type WorkspaceId
 } from "@autostack/contracts";
 import {
@@ -27,6 +26,13 @@ export class RunNotFoundError extends Error {
   constructor(runId: string) {
     super(`Run ${runId} was not found.`);
     this.name = "RunNotFoundError";
+  }
+}
+
+export class IdempotencyConflictError extends Error {
+  constructor() {
+    super("The idempotency key is already bound to another request.");
+    this.name = "IdempotencyConflictError";
   }
 }
 
@@ -108,7 +114,7 @@ export class RunService {
     };
     const requestedIntent = CreateRunRequestSchema.parse(input);
     if (canonicalJson(storedIntent) !== canonicalJson(requestedIntent)) {
-      throw new TypeError("The idempotency key is bound to another create-run request.");
+      throw new IdempotencyConflictError();
     }
 
     return CreateRunResponseSchema.parse({
@@ -130,50 +136,24 @@ export class RunService {
 
   async events(runIdInput: string, afterSequence: number): Promise<ListEventsResponse> {
     const runId: RunId = RunIdSchema.parse(runIdInput);
-    const existing = await this.#dependencies.store.readStream({
-      stream: { kind: "run", id: runId },
-      afterVersion: 0
-    });
     if (
-      !existing.some(
-        (event) =>
-          event.type === "run.created" &&
-          event.workspaceId === this.#dependencies.workspaceId &&
-          event.payload.run.workspaceId === this.#dependencies.workspaceId
-      )
+      !(await this.#dependencies.store.runExists({
+        workspaceId: this.#dependencies.workspaceId,
+        runId
+      }))
     ) {
       throw new RunNotFoundError(runId);
     }
-    const page = await this.#readAllWorkspaceEvents(afterSequence);
-    const events = page.events.filter(
-      (event) => event.stream.kind === "run" && event.stream.id === runId
-    );
+    const events = await this.#dependencies.store.readRunEvents({
+      workspaceId: this.#dependencies.workspaceId,
+      runId,
+      afterGlobalSequence: afterSequence,
+      limit: 100
+    });
 
     return ListEventsResponseSchema.parse({
       events,
-      nextSequence: page.nextSequence
+      nextSequence: events.at(-1)?.globalSequence ?? afterSequence
     });
-  }
-
-  async #readAllWorkspaceEvents(afterGlobalSequence: number): Promise<{
-    readonly events: readonly StoredDomainEvent[];
-    readonly nextSequence: number;
-  }> {
-    const events: StoredDomainEvent[] = [];
-    let cursor = afterGlobalSequence;
-    while (true) {
-      const page = await this.#dependencies.store.readAll({
-        workspaceId: this.#dependencies.workspaceId,
-        afterGlobalSequence: cursor,
-        limit: 500
-      });
-      events.push(...page);
-      const next = page.at(-1)?.globalSequence;
-      if (next === undefined) break;
-      if (next <= cursor) throw new Error("The event store returned a non-advancing cursor.");
-      cursor = next;
-      if (page.length < 500) break;
-    }
-    return { events, nextSequence: cursor };
   }
 }

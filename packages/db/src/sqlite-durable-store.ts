@@ -2,13 +2,15 @@ import type { DatabaseSync } from "node:sqlite";
 
 import {
   CommitRequestSchema,
+  CompleteJobRequestSchema,
   EventIdSchema,
+  FailJobRequestSchema,
   JobIdSchema,
   PendingDomainEventSchema,
+  RunIdSchema,
   RunSummarySchema,
   StreamRefSchema,
   StoredDomainEventSchema,
-  WorkflowFailureSchema,
   WorkspaceIdSchema,
   normalizeSafeJson,
   type EventId,
@@ -30,7 +32,9 @@ import {
   type ReadAllRequest,
   type ReadCommitResultRequest,
   type ListRunSummariesRequest,
+  type ReadRunEventsRequest,
   type ReadStreamRequest,
+  type RunExistsRequest,
   type StoreHealth,
   type StreamAppend
 } from "@autostack/domain";
@@ -89,11 +93,7 @@ export class SqliteDurableStore implements DurableStore {
           throw new TypeError("The idempotency key is bound to another operation.");
         }
         if (replay.binding.requestDigest === undefined) {
-          this.#idempotency.bindLegacyCommit(
-            validated.idempotency.scope,
-            validated.idempotency.key,
-            requestDigest
-          );
+          throw new TypeError("Opaque legacy idempotency records cannot be generically replayed.");
         } else if (replay.binding.requestDigest !== requestDigest) {
           throw new TypeError("The idempotency key is bound to another commit request.");
         }
@@ -171,6 +171,43 @@ export class SqliteDurableStore implements DurableStore {
                LIMIT ?`
             )
             .all(afterGlobalSequence, request.workspaceId, limit) as Row[]);
+    return rows.map(decodeEventRow);
+  }
+
+  async runExists(request: RunExistsRequest): Promise<boolean> {
+    WorkspaceIdSchema.parse(request.workspaceId);
+    RunIdSchema.parse(request.runId);
+    return this.#runExists(request.workspaceId, request.runId);
+  }
+
+  async readRunEvents(request: ReadRunEventsRequest): Promise<readonly StoredDomainEvent[]> {
+    WorkspaceIdSchema.parse(request.workspaceId);
+    RunIdSchema.parse(request.runId);
+    if (
+      request.afterGlobalSequence !== undefined &&
+      (!Number.isSafeInteger(request.afterGlobalSequence) || request.afterGlobalSequence < 0)
+    ) {
+      throw new TypeError("afterGlobalSequence must be a non-negative safe integer.");
+    }
+    if (
+      request.limit !== undefined &&
+      (!Number.isSafeInteger(request.limit) || request.limit <= 0)
+    ) {
+      throw new TypeError("limit must be a positive safe integer.");
+    }
+    const rows = this.#connection
+      .prepare(
+        `SELECT * FROM events
+         WHERE workspace_id = ? AND stream_kind = 'run' AND stream_id = ?
+           AND global_sequence > ?
+         ORDER BY global_sequence ASC LIMIT ?`
+      )
+      .all(
+        request.workspaceId,
+        request.runId,
+        request.afterGlobalSequence ?? 0,
+        Math.min(100, request.limit ?? 100)
+      ) as Row[];
     return rows.map(decodeEventRow);
   }
 
@@ -316,12 +353,9 @@ export class SqliteDurableStore implements DurableStore {
   }
 
   async completeJob(request: CompleteJobRequest): Promise<CommitResult> {
-    const snapshot = normalizeSafeJson(
-      request,
-      this.#dependencies.sensitiveValues ?? []
-    ) as unknown as CompleteJobRequest;
-    JobIdSchema.parse(snapshot.jobId);
-    if (snapshot.leaseToken.trim() === "") throw new TypeError("leaseToken must be non-empty.");
+    const snapshot = CompleteJobRequestSchema.parse(
+      normalizeSafeJson(request, this.#dependencies.sensitiveValues ?? [])
+    );
     const output = CommitRequestSchema.parse({
       idempotency: snapshot.idempotency,
       appends: snapshot.appends,
@@ -400,13 +434,10 @@ export class SqliteDurableStore implements DurableStore {
   }
 
   async failJob(request: FailJobRequest): Promise<void> {
-    const snapshot = normalizeSafeJson(
-      request,
-      this.#dependencies.sensitiveValues ?? []
-    ) as unknown as FailJobRequest;
-    JobIdSchema.parse(snapshot.jobId);
-    if (snapshot.leaseToken.trim() === "") throw new TypeError("leaseToken must be non-empty.");
-    const failure = WorkflowFailureSchema.parse(snapshot.error);
+    const snapshot = FailJobRequestSchema.parse(
+      normalizeSafeJson(request, this.#dependencies.sensitiveValues ?? [])
+    );
+    const failure = snapshot.error;
     this.#transaction(() => {
       parseCanonicalTimestamp(snapshot.now);
       if (snapshot.nextAvailableAt !== undefined) {
@@ -415,8 +446,12 @@ export class SqliteDurableStore implements DurableStore {
       const row = this.#assertActiveLease(snapshot.jobId, snapshot.leaseToken, snapshot.now);
       const attempt = this.#integer(row.attempt, "attempt");
       const maxAttempts = this.#integer(row.max_attempts, "max_attempts");
-      const retry =
-        failure.retryable && snapshot.nextAvailableAt !== undefined && attempt < maxAttempts;
+      let retry = false;
+      let availableAt = this.#text(row.available_at, "available_at");
+      if (failure.retryable && snapshot.nextAvailableAt !== undefined && attempt < maxAttempts) {
+        retry = true;
+        availableAt = snapshot.nextAvailableAt;
+      }
 
       const update = this.#connection
         .prepare(
@@ -427,7 +462,7 @@ export class SqliteDurableStore implements DurableStore {
         )
         .run(
           retry ? "queued" : "failed",
-          retry ? snapshot.nextAvailableAt : this.#text(row.available_at, "available_at"),
+          availableAt,
           snapshot.now,
           JSON.stringify(failure),
           snapshot.jobId,
@@ -488,6 +523,10 @@ export class SqliteDurableStore implements DurableStore {
 
       append.events.forEach((candidate, index) => {
         const event = PendingDomainEventSchema.parse(candidate);
+        const isCreation = event.type === "work_item.created" || event.type === "run.created";
+        if (isCreation && (currentVersion !== 0 || index !== 0)) {
+          throw new TypeError("A creation event is only valid at stream version one.");
+        }
         const eventId = EventIdSchema.parse(this.#dependencies.eventId());
         const streamVersion = append.expectedVersion + index + 1;
         const insert = this.#connection

@@ -2,10 +2,12 @@ import {
   CreateRunRequestSchema,
   CreateRunResponseSchema,
   HealthResponseSchema,
+  ListEventsResponseSchema,
   ListRunsResponseSchema,
   type CreateRunRequest,
   type CreateRunResponse,
   type HealthResponse,
+  type ListEventsResponse,
   type ListRunsResponse
 } from "@autostack/contracts";
 
@@ -26,6 +28,11 @@ export class ApiResponseError extends Error {
 export interface AutoStackApiClient {
   health(signal?: AbortSignal): Promise<HealthResponse>;
   listRuns(cursor?: number, signal?: AbortSignal): Promise<ListRunsResponse>;
+  listRunEvents(
+    runId: string,
+    afterGlobalSequence?: number,
+    signal?: AbortSignal
+  ): Promise<ListEventsResponse>;
   createRun(input: CreateRunRequest, signal?: AbortSignal): Promise<CreateRunResponse>;
 }
 
@@ -88,6 +95,21 @@ export function createApiClient(options: CreateApiClientOptions): AutoStackApiCl
       if (response.status === 401) throw new ApiAuthenticationError();
       if (!response.ok) throw new ApiResponseError();
       return decode(response, ListRunsResponseSchema);
+    },
+
+    async listRunEvents(runId, afterGlobalSequence = 0, signal) {
+      const response = await request(
+        `/v1/runs/${encodeURIComponent(runId)}/events?after=${encodeURIComponent(
+          String(afterGlobalSequence)
+        )}`,
+        {
+          headers: authenticatedHeaders(),
+          ...(signal === undefined ? {} : { signal })
+        }
+      );
+      if (response.status === 401) throw new ApiAuthenticationError();
+      if (!response.ok) throw new ApiResponseError();
+      return decode(response, ListEventsResponseSchema);
     },
 
     async createRun(input, signal) {

@@ -2,8 +2,11 @@ import { randomUUID } from "node:crypto";
 import {
   chmodSync,
   closeSync,
+  constants,
+  fstatSync,
   fsyncSync,
   linkSync,
+  lstatSync,
   mkdirSync,
   openSync,
   readFileSync,
@@ -75,7 +78,21 @@ export function loadOrCreateLocalWorkspaceId(
   chmodSync(dataDirectory, 0o700);
   const installationPath = join(dataDirectory, "installation.json");
   const readIdentity = (): WorkspaceId => {
-    const parsed = JSON.parse(readFileSync(installationPath, "utf8")) as unknown;
+    const pathStatus = lstatSync(installationPath);
+    if (pathStatus.isSymbolicLink() || !pathStatus.isFile()) {
+      throw new TypeError("The installation identity must be a regular file.");
+    }
+    const descriptor = openSync(installationPath, constants.O_RDONLY | constants.O_NOFOLLOW);
+    let text: string;
+    try {
+      if (!fstatSync(descriptor).isFile()) {
+        throw new TypeError("The installation identity must be a regular file.");
+      }
+      text = readFileSync(descriptor, "utf8");
+    } finally {
+      closeSync(descriptor);
+    }
+    const parsed = JSON.parse(text) as unknown;
     if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed))
       throw new TypeError();
     const record = parsed as Readonly<Record<string, unknown>>;

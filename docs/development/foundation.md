@@ -76,11 +76,19 @@ curl --fail-with-body \
   "${AUTOSTACK_URL}/v1/runs"
 ```
 
+Run listings are returned newest first in pages of at most 100. When a response includes
+`nextCursor`, pass it as `GET /v1/runs?cursor=<nextCursor>`; the web control room does this while
+preserving already loaded rows. Run event history is also bounded to 100 events per response. Pass
+the returned global `nextSequence` back as
+`GET /v1/runs/:runId/events?after=<nextSequence>` until a page is empty. Reusing a create-run
+idempotency key with a different request body returns the stable `idempotency_conflict` HTTP 409
+error and never mutates the original run.
+
 ## Persistence invariants
 
 - Events are immutable, schema-versioned, ordered by stream version, and globally ordered by SQLite sequence.
 - A commit checks every expected stream version and appends all events and queued work in one `BEGIN IMMEDIATE` transaction.
-- Idempotency is scoped. A repeated scope/key returns the exact stored commit result and never creates another event or workflow job.
+- Idempotency is scoped and bound to a canonical request digest. A repeated scope/key returns the exact stored commit result only for the same request and never creates another event or workflow job; opaque legacy generic records fail closed.
 - Projections are rebuilt from validated events; serialized database JSON is never trusted without schema validation.
 - Workflow jobs are leased with a unique token and expiry. Only the current, unexpired lease can heartbeat, complete, or fail a job.
 - Expired leases are recoverable and increment the attempt. Maximum attempts terminate the job instead of retrying forever.

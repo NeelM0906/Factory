@@ -665,15 +665,15 @@ Cover:
 - `POST /v1/runs` requires a valid `Idempotency-Key` header and body.
 - first creation returns 201; exact replay returns 200 with `replayed: true`.
 - the response validates against `CreateRunResponseSchema`.
-- `GET /v1/runs` returns projected summaries newest first.
-- `GET /v1/runs/:runId/events?after=0` returns only that stream's ordered events.
+- `GET /v1/runs` returns projected summaries newest first in bounded pages of at most 100, with an optional global-sequence `nextCursor` for the following page.
+- `GET /v1/runs/:runId/events?after=0` returns only that stream's ordered events in a single bounded page of at most 100. `after` and the returned `nextSequence` are global event sequences.
 - malformed input returns `ApiErrorSchema` with a stable code and no stack trace.
 
 - [ ] **Step 5: Implement the run service and routes**
 
 The route calls `createManualRun`, then one `DurableStore.commit`. Use the idempotency scope `api:create-run:<workspaceId>`. The implicit workspace ID is created once by composition and injected. Do not let the client choose a workspace or actor ID in this milestone.
 
-Use stable error codes: `unauthorized`, `invalid_request`, `missing_idempotency_key`, `run_not_found`, `version_conflict`, and `internal_error`.
+Use stable error codes: `unauthorized`, `invalid_request`, `missing_idempotency_key`, `run_not_found`, `idempotency_conflict`, `version_conflict`, and `internal_error`. Reusing a create-run key with a different validated body maps to HTTP 409 `idempotency_conflict`.
 
 - [ ] **Step 6: Compose and build the server**
 

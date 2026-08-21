@@ -17,7 +17,9 @@ import {
   LeaseConflictError,
   OptimisticConcurrencyError,
   createManualRun,
+  type CompleteJobRequest,
   type CommitRequest,
+  type FailJobRequest,
   type NewWorkflowJob,
   type StreamAppend
 } from "@autostack/domain";
@@ -207,6 +209,67 @@ describe("SQLite durable commits", () => {
         jobs: []
       })
     ).rejects.toBeInstanceOf(OptimisticConcurrencyError);
+    await store.close();
+  });
+
+  it("rejects duplicate creation events on established streams and later append positions", async () => {
+    const { database, store } = await makeStore();
+    const decision = createRunDecision();
+    await store.commit(initialCommit({ jobs: [] }));
+    const original = decision.appends[0]?.events[0];
+    if (original?.type !== "work_item.created") {
+      throw new Error("Expected a work item creation event.");
+    }
+    const duplicate = PendingDomainEventSchema.parse({
+      ...original,
+      occurredAt: ONE_SECOND_LATER,
+      payload: {
+        workItem: {
+          ...original.payload.workItem,
+          title: "Divergent replacement title",
+          updatedAt: ONE_SECOND_LATER
+        }
+      }
+    });
+
+    await expect(
+      store.commit({
+        idempotency: { scope: "test:duplicate-create", key: "established" },
+        appends: [
+          {
+            stream: decision.appends[0]!.stream,
+            expectedVersion: 1,
+            events: [duplicate]
+          }
+        ],
+        jobs: []
+      })
+    ).rejects.toThrow(/creation|created|version/i);
+    expect(database.connection.prepare("SELECT COUNT(*) AS count FROM events").get()).toEqual({
+      count: 2
+    });
+    expect(database.connection.prepare("SELECT title FROM run_summaries").get()).toEqual({
+      title: "Persist an AutoStack run"
+    });
+
+    const fresh = await makeStore();
+    await expect(
+      fresh.store.commit({
+        idempotency: { scope: "test:duplicate-create", key: "same-append" },
+        appends: [
+          {
+            stream: decision.appends[0]!.stream,
+            expectedVersion: 0,
+            events: [original, duplicate]
+          }
+        ],
+        jobs: []
+      })
+    ).rejects.toThrow(/creation|created|position/i);
+    expect(fresh.database.connection.prepare("SELECT COUNT(*) AS count FROM events").get()).toEqual(
+      { count: 0 }
+    );
+    await fresh.store.close();
     await store.close();
   });
 
@@ -644,25 +707,32 @@ describe("SQLite durable commits", () => {
       type: "stage.failed",
       payload: { error: { code: "legacy_workflow_failure" } }
     });
-    const replay = await upgraded.store.commit({
-      idempotency: { scope: "legacy:failure", key: "request" },
-      appends: [],
-      jobs: []
-    });
-    expect(replay).toMatchObject({
+    await expect(
+      upgraded.store.readCommitResult({ scope: "legacy:failure", key: "request" })
+    ).resolves.toMatchObject({
       replayed: true,
       events: [{ payload: { error: { code: "legacy_workflow_failure" } } }]
     });
     await expect(
       upgraded.store.listRunSummaries({ workspaceId: WORKSPACE_ID })
     ).resolves.toMatchObject({ items: [{ title: "Persist an AutoStack run" }] });
-    await expect(
-      upgraded.store.commit({
-        idempotency: { scope: "legacy:failure", key: "request" },
-        appends: [transitionAppend()],
-        jobs: []
-      })
-    ).rejects.toThrow(/bound/i);
+    for (const appends of [[], [transitionAppend()]] as const) {
+      await expect(
+        upgraded.store.commit({
+          idempotency: { scope: "legacy:failure", key: "request" },
+          appends,
+          jobs: []
+        })
+      ).rejects.toThrow(/legacy|opaque|digest/i);
+    }
+    expect(
+      upgraded.database.connection
+        .prepare(
+          `SELECT commit_request_digest AS requestDigest FROM idempotency_records
+           WHERE scope = ? AND key = ?`
+        )
+        .get("legacy:failure", "request")
+    ).toEqual({ requestDigest: null });
     await upgraded.store.close();
   });
 });
@@ -882,7 +952,7 @@ describe("SQLite workflow leases", () => {
         },
         nextAvailableAt: "not-a-timestamp"
       })
-    ).rejects.toThrow(TypeError);
+    ).rejects.toThrow();
 
     expect(
       database.connection
@@ -893,6 +963,54 @@ describe("SQLite workflow leases", () => {
     });
     await store.close();
   });
+
+  it.each(["complete", "fail"] as const)(
+    "strictly rejects a malformed %s request before changing its lease",
+    async (operation) => {
+      const { database, store } = await makeStore();
+      await store.commit(initialCommit());
+      const leased = await store.leaseNext({
+        workerId: "worker-1",
+        now: NOW,
+        leaseDurationMs: 1_000
+      });
+      if (leased === null) throw new Error("Expected a workflow lease.");
+
+      if (operation === "complete") {
+        const malformed = {
+          jobId: leased.jobId,
+          leaseToken: leased.leaseToken,
+          now: NOW,
+          idempotency: { scope: "test:strict-complete", key: "request" },
+          appends: [],
+          jobs: [],
+          unexpected: true
+        } as CompleteJobRequest;
+        await expect(store.completeJob(malformed)).rejects.toThrow(/unrecognized|unexpected/i);
+      } else {
+        const malformed = {
+          jobId: leased.jobId,
+          leaseToken: leased.leaseToken,
+          now: NOW,
+          error: {
+            code: "handler_failed",
+            name: "Error",
+            message: "failed",
+            retryable: false
+          },
+          unexpected: true
+        } as FailJobRequest;
+        await expect(store.failJob(malformed)).rejects.toThrow(/unrecognized|unexpected/i);
+      }
+      expect(database.connection.prepare("SELECT status FROM workflow_jobs").get()).toEqual({
+        status: "leased"
+      });
+      expect(
+        database.connection.prepare("SELECT COUNT(*) AS count FROM idempotency_records").get()
+      ).toEqual({ count: 1 });
+      await store.close();
+    }
+  );
 
   it("rejects wrong and expired completion leases without partial output", async () => {
     const { database, store } = await makeStore();

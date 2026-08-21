@@ -82,15 +82,6 @@ export class IdempotencyStore {
     };
   }
 
-  bindLegacyCommit(scope: string, key: string, requestDigest: string): void {
-    this.#connection
-      .prepare(
-        `UPDATE idempotency_records SET commit_request_digest = ?
-         WHERE scope = ? AND key = ? AND commit_request_digest IS NULL`
-      )
-      .run(requestDigest, scope, key);
-  }
-
   save(scope: string, key: string, result: CommitResult, binding: IdempotencyBinding): void {
     this.#connection
       .prepare(
