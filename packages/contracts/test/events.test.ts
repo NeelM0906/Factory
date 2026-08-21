@@ -420,6 +420,16 @@ describe("domain event contracts", () => {
         }
       ])
     ).rejects.toThrow(/timestamp|decision/i);
+    await expect(
+      validateRunStreamCoherence([
+        requestedEvent,
+        {
+          ...context,
+          ...decided,
+          workspaceId: "ws_123e4567-e89b-42d3-a456-426614174099"
+        }
+      ])
+    ).rejects.toThrow(/workspace/i);
   });
 
   it("does not permit environment or command authorization IDs to be reassigned", async () => {
@@ -874,6 +884,31 @@ describe("domain event contracts", () => {
       validateRunStreamCoherence([{ ...context, ...eventBodies[0] }])
     ).resolves.toHaveLength(1);
     await expect(validateRunStreamCoherence([...events, events[13]])).resolves.toHaveLength(15);
+    for (const type of ["command.started", "command.completed", "environment.disposed"] as const) {
+      const replay = events.find((event) => event.type === type);
+      if (replay === undefined) throw new TypeError(`Fixture is missing ${type} evidence.`);
+      await expect(
+        validateRunStreamCoherence([
+          ...events,
+          {
+            ...replay,
+            workspaceId: "ws_123e4567-e89b-42d3-a456-426614174099"
+          }
+        ])
+      ).rejects.toThrow(/replay|context|workspace/i);
+      await expect(
+        validateRunStreamCoherence([
+          ...events,
+          { ...replay, occurredAt: "2026-08-20T12:00:01.000Z" }
+        ])
+      ).rejects.toThrow(/replay|context|timestamp/i);
+      await expect(
+        validateRunStreamCoherence([
+          ...events,
+          { ...replay, actor: { kind: "user", id: "different-authority" } }
+        ])
+      ).rejects.toThrow(/replay|context/i);
+    }
     await expect(validateRunStreamCoherence(events.slice(1))).rejects.toThrow(/approval/i);
     await expect(validateRunStreamCoherence(events.slice(2, 3))).rejects.toThrow(/approved plan/i);
     await expect(validateRunStreamCoherence([events[7]])).rejects.toThrow(/prepare intent/i);

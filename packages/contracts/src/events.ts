@@ -36,6 +36,7 @@ import {
   admitStartCommand,
   canonicalizeCommandAuthorizationForDigest,
   canonicalizeEnvironmentAuthorizationForDigest,
+  canonicalizeVersionedDigestValue,
   digestVersionedValue,
   digestCommandAuthorization,
   digestCommandScope,
@@ -429,6 +430,13 @@ const localPhase = (
       return undefined;
   }
 };
+const canonicalizeLocalPhaseReplayContext = (event: PendingDomainEvent): string =>
+  canonicalizeVersionedDigestValue("autostack.local-execution-phase-replay-context", {
+    type: event.type,
+    workspaceId: event.workspaceId,
+    actor: event.actor,
+    occurredAt: event.occurredAt
+  });
 const assertPhaseKey = (actual: string, expected: string): void => {
   if (actual !== expected) throw new TypeError("Local execution phase key is invalid.");
 };
@@ -474,7 +482,7 @@ export const validateRunStreamCoherence = async (
     }
   >();
   const terminalRuns = new Map<string, TerminalRunEvidence>();
-  const phaseDigests = new Map<string, string>();
+  const phaseDigests = new Map<string, { readonly digest: string; readonly context: string }>();
   const assertAuthorizationIsActiveAt = (
     authorization: EnvironmentAuthorization | CommandAuthorization,
     occurredAt: string,
@@ -517,14 +525,18 @@ export const validateRunStreamCoherence = async (
       const providedDigest = phase.digest;
       if (providedDigest !== actualDigest)
         throw new TypeError("Local execution phase digest is invalid.");
-      const previousDigest = phaseDigests.get(phase.key);
-      if (previousDigest !== undefined) {
-        if (previousDigest !== providedDigest) {
+      const replayContext = canonicalizeLocalPhaseReplayContext(event);
+      const previous = phaseDigests.get(phase.key);
+      if (previous !== undefined) {
+        if (previous.digest !== providedDigest) {
           throw new TypeError("Local execution phase key collision.");
+        }
+        if (previous.context !== replayContext) {
+          throw new TypeError("Local execution phase replay context is immutable.");
         }
         continue;
       }
-      phaseDigests.set(phase.key, providedDigest);
+      phaseDigests.set(phase.key, { digest: providedDigest, context: replayContext });
     }
     switch (event.type) {
       case "run.transitioned": {
@@ -563,9 +575,13 @@ export const validateRunStreamCoherence = async (
       }
       case "approval.decided": {
         const recorded = approvals.get(event.payload.approvalId);
+        if (recorded !== undefined && recorded.approval.workspaceId !== event.workspaceId) {
+          throw new TypeError("Approval decision workspace does not match its recorded approval.");
+        }
         if (
           recorded === undefined ||
           recorded.decided ||
+          recorded.approval.workspaceId !== event.workspaceId ||
           recorded.approval.runId !== event.payload.runId ||
           recorded.approval.evidenceDigest !== event.payload.evidenceDigest ||
           recorded.approval.status !== "pending"

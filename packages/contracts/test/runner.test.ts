@@ -32,8 +32,10 @@ import {
   validateCommandAuthorizationAgainstEnvironment,
   validateArtifactChunkResponse,
   validateRunnerStream,
+  assertResolvedCommandDoesNotUseShellCommandString,
   createId,
   createIdFactory,
+  type Approval,
   type TrustedRunnerAdmissionDependencies
 } from "../src/index.js";
 
@@ -186,6 +188,10 @@ describe("local runner contracts", () => {
       { executable: "doas", args: ["-ni"] },
       { executable: "busybox", args: ["sh", "-c", "echo safe"] },
       { executable: "busybox", args: ["ash", "-c", "echo safe"] },
+      { executable: "busybox", args: ["hush", "-c", "echo safe"] },
+      { executable: "/usr/local/bin/mksh", args: ["-c", "echo safe"] },
+      { executable: "/usr/bin/YASH", args: ["-c", "echo safe"] },
+      { executable: "C:\\Program Files\\PowerShell\\pwsh.exe", args: ["-Command", "echo safe"] },
       { executable: "nice", args: ["sh", "-c", "echo safe"] },
       { executable: "xargs", args: ["sh", "-c", "echo safe"] },
       { executable: "echo", args: ["bash", "-O", "extglob", "-c", "echo safe"] },
@@ -203,6 +209,25 @@ describe("local runner contracts", () => {
         })
       ).toThrow(/shell command-string/i);
     }
+    expect(
+      CommandSpecSchema.parse({
+        executable: "git",
+        args: ["-c", "core.hooksPath=/dev/null", "status"],
+        cwd: ".",
+        environment: [],
+        timeoutSeconds: 60,
+        terminal: { columns: 80, rows: 24 }
+      })
+    ).toMatchObject({ executable: "git" });
+    expect(() =>
+      assertResolvedCommandDoesNotUseShellCommandString("/private/tool-alias/bash", [
+        "-c",
+        "echo safe"
+      ])
+    ).toThrow(/resolved shell command-string/i);
+    expect(() =>
+      assertResolvedCommandDoesNotUseShellCommandString("/private/tool-alias/bash", ["script.sh"])
+    ).not.toThrow();
     expect(
       CommandSpecSchema.parse({
         executable: "bash",
@@ -661,50 +686,48 @@ describe("local runner contracts", () => {
       authorization,
       idempotency: { key: "command-start" }
     };
-    const dependencies: TrustedRunnerAdmissionDependencies = {
-      resolveApproval: async (approvalId) => {
-        if (approvalId === ids.approvalId) {
-          return {
-            schemaVersion: 1,
-            id: ids.approvalId,
-            workspaceId: ids.workspaceId,
-            runId: ids.runId,
-            kind: "plan",
-            status: "approved",
-            evidenceDigest: environmentAuthorization.approvalEvidenceDigest,
-            eligibleApproverIds: ["local-user"],
-            decision: {
-              decision: "approved",
-              actor: { kind: "user", id: "local-user" },
-              origin: "desktop",
-              decidedAt: NOW
-            },
-            createdAt: NOW,
-            updatedAt: NOW
-          };
-        }
-        if (approvalId === ids.permissionApprovalId) {
-          return {
-            schemaVersion: 1,
-            id: ids.permissionApprovalId,
-            workspaceId: ids.workspaceId,
-            runId: ids.runId,
-            kind: "permission",
-            status: "approved",
-            evidenceDigest: authorization.approvalEvidenceDigest,
-            eligibleApproverIds: ["local-user"],
-            decision: {
-              decision: "approved",
-              actor: { kind: "user", id: "local-user" },
-              origin: "desktop",
-              decidedAt: NOW
-            },
-            createdAt: NOW,
-            updatedAt: NOW
-          };
-        }
-        return undefined;
+    const planApproval: Approval = {
+      schemaVersion: 1,
+      id: ids.approvalId,
+      workspaceId: ids.workspaceId,
+      runId: ids.runId,
+      kind: "plan",
+      status: "approved",
+      evidenceDigest: environmentAuthorization.approvalEvidenceDigest,
+      eligibleApproverIds: ["local-user"],
+      decision: {
+        decision: "approved",
+        actor: { kind: "user", id: "local-user" },
+        origin: "desktop",
+        decidedAt: NOW
       },
+      createdAt: NOW,
+      updatedAt: NOW
+    };
+    const permissionApproval: Approval = {
+      schemaVersion: 1,
+      id: ids.permissionApprovalId,
+      workspaceId: ids.workspaceId,
+      runId: ids.runId,
+      kind: "permission",
+      status: "approved",
+      evidenceDigest: authorization.approvalEvidenceDigest,
+      eligibleApproverIds: ["local-user"],
+      decision: {
+        decision: "approved",
+        actor: { kind: "user", id: "local-user" },
+        origin: "desktop",
+        decidedAt: NOW
+      },
+      createdAt: NOW,
+      updatedAt: NOW
+    };
+    const approvals = new Map<Approval["id"], Approval>([
+      [ids.approvalId, planApproval],
+      [ids.permissionApprovalId, permissionApproval]
+    ]);
+    const dependencies: TrustedRunnerAdmissionDependencies = {
+      resolveApproval: async (approvalId) => approvals.get(approvalId),
       resolveEnvironmentAuthorization: async (authorizationId) =>
         authorizationId === environmentAuthorization.id ? environmentAuthorization : undefined,
       resolveCommandAuthorization: async (authorizationId) =>
@@ -713,6 +736,48 @@ describe("local runner contracts", () => {
     await expect(admitStartCommand(request, NOW, dependencies)).resolves.toMatchObject({
       request: { commandId: ids.commandId }
     });
+    const prepareRequest = {
+      workspaceId: ids.workspaceId,
+      runId: ids.runId,
+      environmentId: ids.environmentId,
+      inspection: {
+        repositoryIdentity: scope.repositoryIdentity,
+        canonicalSourcePath: "/source",
+        repositoryCommonDirectory: "/source/.git",
+        resolvedBaseRef: "main",
+        sourceCommit: scope.sourceCommit,
+        dirty: false,
+        diagnostics: []
+      },
+      sourceCommit: scope.sourceCommit,
+      branch: scope.branch,
+      authorization: environmentAuthorization,
+      idempotency: { key: "prepare" }
+    };
+    await expect(admitPrepareEnvironment(prepareRequest, NOW, dependencies)).resolves.toMatchObject(
+      {
+        request: { environmentId: ids.environmentId }
+      }
+    );
+    approvals.set(ids.approvalId, {
+      ...planApproval,
+      decision: {
+        decision: "approved",
+        actor: { kind: "user", id: "not-eligible" },
+        origin: "desktop",
+        decidedAt: NOW
+      }
+    });
+    await expect(admitPrepareEnvironment(prepareRequest, NOW, dependencies)).rejects.toThrow(
+      /eligible/i
+    );
+    approvals.set(ids.approvalId, planApproval);
+    approvals.set(ids.permissionApprovalId, {
+      ...permissionApproval,
+      updatedAt: "2026-08-21T11:59:59.000Z"
+    });
+    await expect(admitStartCommand(request, NOW, dependencies)).rejects.toThrow(/chronolog|stale/i);
+    approvals.set(ids.permissionApprovalId, permissionApproval);
     await expect(
       admitStartCommand(
         { ...request, command: { ...command, args: ["substituted"] } },

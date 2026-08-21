@@ -74,28 +74,43 @@ const SafeCommandStringSchema = z
     (value) => !value.includes("\u0000") && !containsSensitiveMaterial(value),
     "Command strings cannot contain NUL bytes or credential material."
   );
-const ShellInterpreterBasenames = new Set([
-  "sh",
-  "bash",
-  "zsh",
-  "dash",
-  "ksh",
+const ShellLikeExecutableBasenames = new Set([
   "fish",
-  "csh",
-  "tcsh",
-  "ash"
+  "nu",
+  "nushell",
+  "elvish",
+  "powershell",
+  "pwsh",
+  "ion",
+  "rc",
+  "es"
 ]);
-const shellBasename = (executable: string): string =>
-  (executable.split("/").at(-1) ?? executable).toLowerCase();
-const isCommandStringFlag = (argument: string): boolean =>
-  argument === "-c" ||
-  argument === "-lc" ||
-  argument === "-cl" ||
-  argument.startsWith("-c=") ||
-  argument.startsWith("-lc=") ||
-  /^-[A-Za-z]*c[A-Za-z]*$/.test(argument) ||
-  argument === "--command" ||
-  argument.startsWith("--command=");
+const normalizedExecutableBasename = (executable: string): string =>
+  (executable.split(/[\\/]/).at(-1) ?? executable).toLowerCase().replace(/\.(?:exe|cmd|bat)$/, "");
+
+/**
+ * Lexical defense for contracts. A runner must also resolve its executable and
+ * apply this predicate to the resolved identity before launch (Task 6), since
+ * a path or symlink can otherwise disguise a shell interpreter.
+ */
+export const isShellLikeExecutable = (executable: string): boolean => {
+  const basename = normalizedExecutableBasename(executable);
+  return basename.endsWith("sh") || ShellLikeExecutableBasenames.has(basename);
+};
+
+const isCommandStringFlag = (argument: string): boolean => {
+  const normalized = argument.toLowerCase();
+  return (
+    normalized === "-c" ||
+    normalized === "-lc" ||
+    normalized === "-cl" ||
+    normalized.startsWith("-c=") ||
+    normalized.startsWith("-lc=") ||
+    /^-[a-z]*c[a-z]*$/.test(normalized) ||
+    normalized === "--command" ||
+    normalized.startsWith("--command=")
+  );
+};
 const hasShellCommandStringFlag = (argumentsToInspect: readonly string[]): boolean => {
   for (const argument of argumentsToInspect) {
     if (argument === "--") return false;
@@ -104,7 +119,7 @@ const hasShellCommandStringFlag = (argumentsToInspect: readonly string[]): boole
   return false;
 };
 const usesEnvSplitString = (executable: string, args: readonly string[]): boolean =>
-  executable === "env" &&
+  normalizedExecutableBasename(executable) === "env" &&
   args.some(
     (argument) =>
       /^-[^-]*S/.test(argument) ||
@@ -124,7 +139,7 @@ const isForbiddenShellCommandString = (command: {
   readonly executable: string;
   readonly args: readonly string[];
 }): boolean => {
-  const executable = shellBasename(command.executable);
+  const executable = normalizedExecutableBasename(command.executable);
   // env -S parses a command string itself, so it cannot be safely admitted as
   // an argument-vector command even when the embedded shell is not tokenized yet.
   if (usesEnvSplitString(executable, command.args)) return true;
@@ -132,9 +147,22 @@ const isForbiddenShellCommandString = (command: {
   const tokens = [command.executable, ...command.args];
   return tokens.some(
     (token, index) =>
-      ShellInterpreterBasenames.has(shellBasename(token)) &&
-      hasShellCommandStringFlag(tokens.slice(index + 1))
+      isShellLikeExecutable(token) && hasShellCommandStringFlag(tokens.slice(index + 1))
   );
+};
+
+/**
+ * Launchers must call this after resolving the executable identity. It preserves
+ * script-file shell invocation while rejecting aliases or symlinks resolved to
+ * a shell-like executable that would receive a command string.
+ */
+export const assertResolvedCommandDoesNotUseShellCommandString = (
+  resolvedExecutable: string,
+  args: readonly string[]
+): void => {
+  if (isForbiddenShellCommandString({ executable: resolvedExecutable, args })) {
+    throw new TypeError("Resolved shell command-string execution is forbidden.");
+  }
 };
 export const CommandEnvironmentEntrySchema = z.discriminatedUnion("kind", [
   z
@@ -842,17 +870,33 @@ const parseTrustedApproval = async (
   if (candidate === undefined) throw new TypeError("A trusted approved authorization is required.");
   const approval = ApprovalSchema.parse(snapshot(candidate));
   if (
+    approval.decision !== undefined &&
+    !approval.eligibleApproverIds.includes(approval.decision.actor.id)
+  ) {
+    throw new TypeError("Trusted approval decision actor is not eligible.");
+  }
+  if (
+    approval.decision !== undefined &&
+    (approval.decision.decidedAt !== approval.updatedAt ||
+      isAfter(approval.createdAt, approval.decision.decidedAt))
+  ) {
+    throw new TypeError("Trusted approval decision chronology is incoherent.");
+  }
+  if (
     approval.id !== approvalId ||
     approval.kind !== kind ||
     approval.status !== "approved" ||
     approval.decision?.decision !== "approved" ||
+    approval.decision === undefined ||
+    !approval.eligibleApproverIds.includes(approval.decision.actor.id) ||
     approval.workspaceId !== workspaceId ||
     approval.runId !== runId ||
     approval.evidenceDigest !== evidenceDigest ||
     isAfter(approval.createdAt, now) ||
-    approval.decision === undefined ||
     isAfter(approval.decision.decidedAt, now) ||
-    isAfter(approval.updatedAt, now)
+    isAfter(approval.updatedAt, now) ||
+    approval.decision.decidedAt !== approval.updatedAt ||
+    isAfter(approval.createdAt, approval.decision.decidedAt)
   ) {
     throw new TypeError("Trusted approval evidence is invalid or stale.");
   }
