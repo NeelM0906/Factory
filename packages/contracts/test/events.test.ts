@@ -4,8 +4,16 @@ import {
   EVENT_TYPES,
   PendingDomainEventSchema,
   StoredDomainEventSchema,
-  parseStoredDomainEvent
+  parseStoredDomainEvent,
+  validateRunStreamCoherence
 } from "../src/events.js";
+import {
+  digestCommandAuthorization,
+  digestCommandScope,
+  digestCommandSpec,
+  digestEnvironmentAuthorization,
+  digestExecutionScope
+} from "../src/runner.js";
 
 const NOW = "2026-08-20T12:00:00.000Z";
 const WORKSPACE_ID = "ws_123e4567-e89b-42d3-a456-426614174000";
@@ -104,7 +112,229 @@ const eventBodies = [
   }
 ] as const;
 
+const localEventBodies = async () => {
+  const environmentId = "env_123e4567-e89b-42d3-a456-426614174000";
+  const commandId = "cmd_123e4567-e89b-42d3-a456-426614174000";
+  const environmentAuthorizationId = "envauth_123e4567-e89b-42d3-a456-426614174000";
+  const commandAuthorizationId = "cmdauth_123e4567-e89b-42d3-a456-426614174000";
+  const scope = {
+    workspaceId: WORKSPACE_ID,
+    runId: RUN_ID,
+    environmentId,
+    repositoryIdentity: "github:autostack/contracts",
+    sourceCommit: "c".repeat(40),
+    branch: "autostack/events",
+    cwdRoot: ".",
+    resourceLimits: { cpu: 2, memoryMb: 2048, durationSeconds: 600 },
+    networkPolicy: "host",
+    filesystemDisclosure: "host_user",
+    allowedCredentialRefIds: []
+  };
+  const environmentAuthorization = {
+    id: environmentAuthorizationId,
+    digest: "0".repeat(64),
+    approvalId: APPROVAL_ID,
+    approvalEvidenceDigest: await digestExecutionScope(scope),
+    scope,
+    createdAt: NOW,
+    expiresAt: "2026-08-21T13:00:00.000Z"
+  };
+  environmentAuthorization.digest = await digestEnvironmentAuthorization(environmentAuthorization);
+  const command = {
+    executable: "true",
+    args: [],
+    cwd: ".",
+    environment: [],
+    timeoutSeconds: 60,
+    terminal: { columns: 80, rows: 24 }
+  };
+  const commandScope = {
+    environmentAuthorizationId,
+    environmentAuthorizationDigest: environmentAuthorization.digest,
+    workspaceId: WORKSPACE_ID,
+    runId: RUN_ID,
+    environmentId,
+    commandId,
+    action: "implement",
+    commandDigest: await digestCommandSpec(command),
+    repositoryIdentity: scope.repositoryIdentity,
+    sourceCommit: scope.sourceCommit,
+    branch: scope.branch,
+    cwdRoot: scope.cwdRoot,
+    networkPolicy: "host",
+    filesystemDisclosure: "host_user",
+    resourceLimits: scope.resourceLimits,
+    allowedCredentialRefIds: []
+  };
+  const commandAuthorization = {
+    id: commandAuthorizationId,
+    digest: "0".repeat(64),
+    approvalId: APPROVAL_ID,
+    approvalEvidenceDigest: await digestCommandScope(commandScope),
+    scope: commandScope,
+    createdAt: NOW,
+    expiresAt: "2026-08-21T13:00:00.000Z"
+  };
+  commandAuthorization.digest = await digestCommandAuthorization(commandAuthorization);
+  const inspection = {
+    repositoryIdentity: scope.repositoryIdentity,
+    canonicalSourcePath: "/source",
+    repositoryCommonDirectory: "/source/.git",
+    resolvedBaseRef: "main",
+    sourceCommit: scope.sourceCommit,
+    dirty: false,
+    diagnostics: []
+  };
+  const prepare = {
+    workspaceId: WORKSPACE_ID,
+    runId: RUN_ID,
+    environmentId,
+    inspection,
+    sourceCommit: scope.sourceCommit,
+    branch: scope.branch,
+    authorization: environmentAuthorization,
+    idempotency: { key: "prepare" }
+  };
+  const start = {
+    workspaceId: WORKSPACE_ID,
+    runId: RUN_ID,
+    environmentId,
+    commandId,
+    command,
+    environmentAuthorizationId,
+    environmentAuthorizationDigest: environmentAuthorization.digest,
+    authorization: commandAuthorization,
+    idempotency: { key: "start" }
+  };
+  const artifact = {
+    artifactId: "art_123e4567-e89b-42d3-a456-426614174000",
+    workspaceId: WORKSPACE_ID,
+    runId: RUN_ID,
+    commandId,
+    kind: "command_transcript",
+    mediaType: "text/plain",
+    digest: "a".repeat(64),
+    byteSize: 0,
+    createdAt: NOW
+  };
+  return [
+    {
+      type: "environment.authorization_recorded",
+      payload: {
+        runId: RUN_ID,
+        environmentId,
+        authorization: environmentAuthorization,
+        phaseKey: `environment:${environmentId}:authorization`
+      }
+    },
+    {
+      type: "command.authorization_recorded",
+      payload: {
+        runId: RUN_ID,
+        environmentId,
+        commandId,
+        authorization: commandAuthorization,
+        phaseKey: `command:${commandId}:authorization`
+      }
+    },
+    {
+      type: "environment.prepare_requested",
+      payload: { request: prepare, phaseKey: `environment:${environmentId}:intent` }
+    },
+    {
+      type: "environment.prepared",
+      payload: {
+        environment: {
+          environmentId,
+          workspaceId: WORKSPACE_ID,
+          runId: RUN_ID,
+          repositoryIdentity: scope.repositoryIdentity,
+          sourceCommit: scope.sourceCommit,
+          branch: scope.branch,
+          authorization: environmentAuthorization,
+          preparedAt: NOW
+        },
+        phaseKey: `environment:${environmentId}:prepared`
+      }
+    },
+    {
+      type: "command.intent_recorded",
+      payload: { request: start, phaseKey: `command:${commandId}:intent` }
+    },
+    {
+      type: "command.started",
+      payload: {
+        runId: RUN_ID,
+        environmentId,
+        commandId,
+        startedAt: NOW,
+        phaseKey: `command:${commandId}:started`
+      }
+    },
+    {
+      type: "artifact.recorded",
+      payload: {
+        runId: RUN_ID,
+        environmentId,
+        commandId,
+        artifact,
+        phaseKey: `command:${commandId}:artifact`
+      }
+    },
+    {
+      type: "command.completed",
+      payload: {
+        runId: RUN_ID,
+        environmentId,
+        commandId,
+        terminalSequence: 3,
+        terminalDigest: "a".repeat(64),
+        status: "completed",
+        completedAt: NOW,
+        phaseKey: `command:${commandId}:completed`
+      }
+    },
+    {
+      type: "environment.disposed",
+      payload: {
+        runId: RUN_ID,
+        environmentId,
+        environmentAuthorizationId,
+        environmentAuthorizationDigest: environmentAuthorization.digest,
+        terminalRunEvidence: {
+          status: "completed",
+          terminalEventSequence: 3,
+          terminalEventDigest: "a".repeat(64)
+        },
+        disposedAt: NOW,
+        phaseKey: `environment:${environmentId}:disposed`
+      }
+    }
+  ];
+};
+
 describe("domain event contracts", () => {
+  it("rejects a local command completion that lacks prior durable intent and artifact evidence", async () => {
+    await expect(
+      validateRunStreamCoherence([
+        {
+          ...context,
+          type: "command.completed",
+          payload: {
+            runId: RUN_ID,
+            environmentId: "env_123e4567-e89b-42d3-a456-426614174000",
+            commandId: "cmd_123e4567-e89b-42d3-a456-426614174000",
+            terminalSequence: 1,
+            terminalDigest: "a".repeat(64),
+            status: "completed",
+            completedAt: NOW,
+            phaseKey: "command:cmd_123e4567-e89b-42d3-a456-426614174000:completed"
+          }
+        }
+      ])
+    ).rejects.toThrow(/intent/i);
+  });
+
   it("records only safe canonical local execution evidence on the run stream", () => {
     const authorization = {
       id: "envauth_123e4567-e89b-42d3-a456-426614174000",
@@ -130,7 +360,12 @@ describe("domain event contracts", () => {
     const recorded = PendingDomainEventSchema.parse({
       ...context,
       type: "environment.authorization_recorded",
-      payload: { runId: RUN_ID, environmentId: authorization.scope.environmentId, authorization }
+      payload: {
+        runId: RUN_ID,
+        environmentId: authorization.scope.environmentId,
+        authorization,
+        phaseKey: `environment:${authorization.scope.environmentId}:authorization`
+      }
     });
     expect(recorded.type).toBe("environment.authorization_recorded");
     expect(() =>
@@ -143,7 +378,8 @@ describe("domain event contracts", () => {
           authorization: {
             ...authorization,
             scope: { ...authorization.scope, repositoryIdentity: "ghp_0123456789abcdefghijklmnop" }
-          }
+          },
+          phaseKey: `environment:${authorization.scope.environmentId}:authorization`
         }
       })
     ).toThrow();
@@ -152,19 +388,50 @@ describe("domain event contracts", () => {
         ...context,
         workspaceId: "ws_123e4567-e89b-42d3-a456-426614174099",
         type: "environment.authorization_recorded",
-        payload: { runId: RUN_ID, environmentId: authorization.scope.environmentId, authorization }
+        payload: {
+          runId: RUN_ID,
+          environmentId: authorization.scope.environmentId,
+          authorization,
+          phaseKey: `environment:${authorization.scope.environmentId}:authorization`
+        }
       })
     ).toThrow();
   });
 
-  it("covers every declared event type with a valid payload fixture", () => {
-    const parsedTypes = eventBodies.map((body) =>
+  it("covers every declared event type with a valid payload fixture", async () => {
+    const parsedTypes = [...eventBodies, ...(await localEventBodies())].map((body) =>
       PendingDomainEventSchema.parse({ ...context, ...body })
     );
 
-    expect(parsedTypes.map(({ type }) => type)).toEqual(EVENT_TYPES.slice(0, eventBodies.length));
-    expect(EVENT_TYPES).toContain("environment.authorization_recorded");
-    expect(EVENT_TYPES).toContain("environment.disposed");
+    expect(parsedTypes.map(({ type }) => type).sort()).toEqual([...EVENT_TYPES].sort());
+  });
+
+  it("accepts one ordered local execution evidence stream", async () => {
+    const events = (await localEventBodies()).map((body) => ({ ...context, ...body }));
+    await expect(validateRunStreamCoherence(events)).resolves.toHaveLength(9);
+    await expect(
+      validateRunStreamCoherence([{ ...context, ...eventBodies[0] }])
+    ).resolves.toHaveLength(1);
+    await expect(validateRunStreamCoherence([...events, events[8]])).rejects.toThrow(/collision/i);
+    await expect(validateRunStreamCoherence(events.slice(1))).rejects.toThrow(
+      /environment authorization/i
+    );
+    await expect(validateRunStreamCoherence([events[3]])).rejects.toThrow(/prepare intent/i);
+    await expect(
+      validateRunStreamCoherence(events.filter((event) => event.type !== "artifact.recorded"))
+    ).rejects.toThrow(/artifact evidence/i);
+    await expect(
+      validateRunStreamCoherence([
+        ...events.slice(0, 8),
+        {
+          ...events[8],
+          payload: {
+            ...events[8]?.payload,
+            phaseKey: "environment:env_123e4567-e89b-42d3-a456-426614174000:prepared"
+          }
+        }
+      ])
+    ).rejects.toThrow(/phase key/i);
   });
 
   it("rejects an unknown event type", () => {

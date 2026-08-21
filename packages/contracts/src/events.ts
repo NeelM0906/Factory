@@ -3,7 +3,6 @@ import { z } from "zod";
 import {
   ActorSchema,
   ApprovalSchema,
-  ArtifactSchema,
   RunSchema,
   RunStageSchema,
   RunStatusSchema,
@@ -11,7 +10,6 @@ import {
 } from "./entities.js";
 import {
   ApprovalIdSchema,
-  CommandAuthorizationIdSchema,
   CommandIdSchema,
   EnvironmentAuthorizationIdSchema,
   EnvironmentIdSchema,
@@ -26,8 +24,16 @@ import {
   EnvironmentAuthorizationSchema,
   PrepareEnvironmentRequestSchema,
   PreparedEnvironmentSchema,
-  StartCommandRequestSchema
+  StartCommandRequestSchema,
+  TerminalRunEvidenceSchema,
+  type CommandAuthorization,
+  type EnvironmentAuthorization,
+  digestCommandAuthorization,
+  digestCommandScope,
+  digestEnvironmentAuthorization,
+  digestExecutionScope
 } from "./runner.js";
+import { normalizeSafeJson } from "./secret-safety.js";
 import { WorkflowFailureSchema } from "./workflow-failure.js";
 
 export const EVENT_TYPES = [
@@ -51,13 +57,20 @@ export const EVENT_TYPES = [
   "environment.disposed"
 ] as const;
 
-const EventContextSchema = z.object({
-  workspaceId: WorkspaceIdSchema,
-  actor: ActorSchema,
-  correlationId: z.uuid(),
-  causationId: EventIdSchema.optional(),
-  occurredAt: z.iso.datetime()
-});
+const EventContextSchema = z
+  .object({
+    workspaceId: WorkspaceIdSchema,
+    actor: ActorSchema,
+    correlationId: z.uuid(),
+    causationId: EventIdSchema.optional(),
+    occurredAt: z.iso.datetime()
+  })
+  .strict();
+const PhaseKeySchema = z
+  .string()
+  .regex(
+    /^(?:environment|command):[a-z]+_[0-9a-f-]{36}:(?:authorization|intent|prepared|disposed|started|artifact|completed|cancel)$/
+  );
 
 const StageIdentityShape = {
   runId: RunIdSchema,
@@ -155,7 +168,8 @@ const DomainEventBodySchema = z.discriminatedUnion("type", [
         .object({
           runId: RunIdSchema,
           environmentId: EnvironmentIdSchema,
-          authorization: EnvironmentAuthorizationSchema
+          authorization: EnvironmentAuthorizationSchema,
+          phaseKey: PhaseKeySchema
         })
         .strict()
     })
@@ -181,7 +195,8 @@ const DomainEventBodySchema = z.discriminatedUnion("type", [
           runId: RunIdSchema,
           environmentId: EnvironmentIdSchema,
           commandId: CommandIdSchema,
-          authorization: CommandAuthorizationSchema
+          authorization: CommandAuthorizationSchema,
+          phaseKey: PhaseKeySchema
         })
         .strict()
     })
@@ -203,19 +218,23 @@ const DomainEventBodySchema = z.discriminatedUnion("type", [
   z
     .object({
       type: z.literal("environment.prepare_requested"),
-      payload: z.object({ request: PrepareEnvironmentRequestSchema }).strict()
+      payload: z
+        .object({ request: PrepareEnvironmentRequestSchema, phaseKey: PhaseKeySchema })
+        .strict()
     })
     .strict(),
   z
     .object({
       type: z.literal("environment.prepared"),
-      payload: z.object({ environment: PreparedEnvironmentSchema }).strict()
+      payload: z
+        .object({ environment: PreparedEnvironmentSchema, phaseKey: PhaseKeySchema })
+        .strict()
     })
     .strict(),
   z
     .object({
       type: z.literal("command.intent_recorded"),
-      payload: z.object({ request: StartCommandRequestSchema }).strict()
+      payload: z.object({ request: StartCommandRequestSchema, phaseKey: PhaseKeySchema }).strict()
     })
     .strict(),
   z
@@ -226,7 +245,8 @@ const DomainEventBodySchema = z.discriminatedUnion("type", [
           runId: RunIdSchema,
           environmentId: EnvironmentIdSchema,
           commandId: CommandIdSchema,
-          startedAt: z.iso.datetime()
+          startedAt: z.iso.datetime(),
+          phaseKey: PhaseKeySchema
         })
         .strict()
     })
@@ -240,9 +260,10 @@ const DomainEventBodySchema = z.discriminatedUnion("type", [
           environmentId: EnvironmentIdSchema,
           commandId: CommandIdSchema,
           terminalSequence: z.number().int().positive(),
-          terminalDigest: z.string().regex(/^[0-9a-f]{64}$/i),
+          terminalDigest: z.string().regex(/^[0-9a-f]{64}$/),
           status: z.enum(["completed", "cancelled", "failed"]),
-          completedAt: z.iso.datetime()
+          completedAt: z.iso.datetime(),
+          phaseKey: PhaseKeySchema
         })
         .strict()
     })
@@ -255,7 +276,8 @@ const DomainEventBodySchema = z.discriminatedUnion("type", [
           runId: RunIdSchema,
           environmentId: EnvironmentIdSchema,
           commandId: CommandIdSchema,
-          artifact: ArtifactDescriptorSchema
+          artifact: ArtifactDescriptorSchema,
+          phaseKey: PhaseKeySchema
         })
         .strict()
     })
@@ -280,9 +302,10 @@ const DomainEventBodySchema = z.discriminatedUnion("type", [
           runId: RunIdSchema,
           environmentId: EnvironmentIdSchema,
           environmentAuthorizationId: EnvironmentAuthorizationIdSchema,
-          terminalEventSequence: z.number().int().positive(),
-          terminalEventDigest: z.string().regex(/^[0-9a-f]{64}$/i),
-          disposedAt: z.iso.datetime()
+          environmentAuthorizationDigest: z.string().regex(/^[0-9a-f]{64}$/),
+          terminalRunEvidence: TerminalRunEvidenceSchema,
+          disposedAt: z.iso.datetime(),
+          phaseKey: PhaseKeySchema
         })
         .strict()
     })
@@ -338,6 +361,173 @@ export const PendingDomainEventSchema = EventContextSchema.and(DomainEventBodySc
   }
 );
 export type PendingDomainEvent = z.infer<typeof PendingDomainEventSchema>;
+
+const localPhaseKey = (event: PendingDomainEvent): string | undefined => {
+  switch (event.type) {
+    case "environment.authorization_recorded":
+    case "command.authorization_recorded":
+    case "environment.prepare_requested":
+    case "environment.prepared":
+    case "command.intent_recorded":
+    case "command.started":
+    case "command.completed":
+    case "artifact.recorded":
+    case "environment.disposed":
+      return event.payload.phaseKey;
+    default:
+      return undefined;
+  }
+};
+const assertPhaseKey = (actual: string, expected: string): void => {
+  if (actual !== expected) throw new TypeError("Local execution phase key is invalid.");
+};
+
+export const validateRunStreamCoherence = async (
+  candidates: readonly unknown[]
+): Promise<readonly PendingDomainEvent[]> => {
+  const events = candidates.map((candidate) =>
+    PendingDomainEventSchema.parse(normalizeSafeJson(candidate))
+  );
+  const environmentAuthorizations = new Map<string, EnvironmentAuthorization>();
+  const commandAuthorizations = new Map<string, CommandAuthorization>();
+  const prepareIntents = new Set<string>();
+  const preparedEnvironments = new Set<string>();
+  const commandIntents = new Set<string>();
+  const startedCommands = new Set<string>();
+  const commandArtifacts = new Set<string>();
+  const terminalCommands = new Set<string>();
+  const phaseKeys = new Set<string>();
+  for (const event of events) {
+    const phaseKey = localPhaseKey(event);
+    if (phaseKey !== undefined) {
+      if (phaseKeys.has(phaseKey)) throw new TypeError("Local execution phase key collision.");
+      phaseKeys.add(phaseKey);
+    }
+    switch (event.type) {
+      case "environment.authorization_recorded": {
+        const { authorization, environmentId } = event.payload;
+        assertPhaseKey(event.payload.phaseKey, `environment:${environmentId}:authorization`);
+        if (
+          authorization.digest !== (await digestEnvironmentAuthorization(authorization)) ||
+          authorization.approvalEvidenceDigest !== (await digestExecutionScope(authorization.scope))
+        ) {
+          throw new TypeError("Environment authorization digest is invalid.");
+        }
+        environmentAuthorizations.set(environmentId, authorization);
+        break;
+      }
+      case "command.authorization_recorded": {
+        const { authorization, environmentId, commandId } = event.payload;
+        assertPhaseKey(event.payload.phaseKey, `command:${commandId}:authorization`);
+        const environmentAuthorization = environmentAuthorizations.get(environmentId);
+        if (environmentAuthorization === undefined)
+          throw new TypeError("Command authorization lacks environment authorization.");
+        if (
+          authorization.digest !== (await digestCommandAuthorization(authorization)) ||
+          authorization.approvalEvidenceDigest !==
+            (await digestCommandScope(authorization.scope)) ||
+          authorization.scope.environmentAuthorizationId !== environmentAuthorization.id ||
+          authorization.scope.environmentAuthorizationDigest !== environmentAuthorization.digest
+        ) {
+          throw new TypeError("Command authorization digest is invalid.");
+        }
+        commandAuthorizations.set(commandId, authorization);
+        break;
+      }
+      case "environment.prepare_requested": {
+        const { request, phaseKey } = event.payload;
+        assertPhaseKey(phaseKey, `environment:${request.environmentId}:intent`);
+        const authorization = environmentAuthorizations.get(request.environmentId);
+        if (
+          authorization === undefined ||
+          authorization.id !== request.authorization.id ||
+          authorization.digest !== request.authorization.digest
+        ) {
+          throw new TypeError("Environment prepare lacks recorded authorization.");
+        }
+        prepareIntents.add(request.environmentId);
+        break;
+      }
+      case "environment.prepared": {
+        const { environment, phaseKey } = event.payload;
+        assertPhaseKey(phaseKey, `environment:${environment.environmentId}:prepared`);
+        if (!prepareIntents.has(environment.environmentId)) {
+          throw new TypeError("Prepared environment lacks durable prepare intent.");
+        }
+        preparedEnvironments.add(environment.environmentId);
+        break;
+      }
+      case "command.intent_recorded": {
+        const { request, phaseKey } = event.payload;
+        assertPhaseKey(phaseKey, `command:${request.commandId}:intent`);
+        const authorization = commandAuthorizations.get(request.commandId);
+        if (
+          authorization === undefined ||
+          !preparedEnvironments.has(request.environmentId) ||
+          authorization.id !== request.authorization.id ||
+          authorization.digest !== request.authorization.digest
+        ) {
+          throw new TypeError(
+            "Command intent lacks recorded authorization or environment preparation."
+          );
+        }
+        commandIntents.add(request.commandId);
+        break;
+      }
+      case "command.started":
+        assertPhaseKey(event.payload.phaseKey, `command:${event.payload.commandId}:started`);
+        if (!commandIntents.has(event.payload.commandId)) {
+          throw new TypeError("Command started before durable intent.");
+        }
+        startedCommands.add(event.payload.commandId);
+        break;
+      case "artifact.recorded":
+        assertPhaseKey(event.payload.phaseKey, `command:${event.payload.commandId}:artifact`);
+        if (!startedCommands.has(event.payload.commandId)) {
+          throw new TypeError("Artifact recorded before command start.");
+        }
+        commandArtifacts.add(event.payload.commandId);
+        break;
+      case "command.completed":
+        assertPhaseKey(event.payload.phaseKey, `command:${event.payload.commandId}:completed`);
+        if (!commandIntents.has(event.payload.commandId)) {
+          throw new TypeError("Command completion lacks durable intent.");
+        }
+        if (!commandArtifacts.has(event.payload.commandId)) {
+          throw new TypeError("Command completion lacks artifact evidence.");
+        }
+        if (terminalCommands.has(event.payload.commandId)) {
+          throw new TypeError("Command has more than one terminal result.");
+        }
+        terminalCommands.add(event.payload.commandId);
+        break;
+      case "environment.disposed":
+        assertPhaseKey(
+          event.payload.phaseKey,
+          `environment:${event.payload.environmentId}:disposed`
+        );
+        if (
+          !Array.from(terminalCommands).some(
+            (commandId) =>
+              commandAuthorizations.get(commandId)?.scope.environmentId ===
+              event.payload.environmentId
+          ) ||
+          environmentAuthorizations.get(event.payload.environmentId)?.id !==
+            event.payload.environmentAuthorizationId ||
+          environmentAuthorizations.get(event.payload.environmentId)?.digest !==
+            event.payload.environmentAuthorizationDigest
+        ) {
+          throw new TypeError(
+            "Environment disposal lacks terminal evidence or authorization binding."
+          );
+        }
+        break;
+      default:
+        break;
+    }
+  }
+  return events;
+};
 
 export const domainEventIdentity = (event: PendingDomainEvent) => {
   switch (event.type) {

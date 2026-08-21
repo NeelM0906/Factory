@@ -12,14 +12,15 @@ import {
   WorkspaceIdSchema
 } from "./ids.js";
 import {
+  containsSensitiveMaterial,
   normalizeSafeJson,
   SafeMetadataStringSchema,
   type SafeJsonValue
 } from "./secret-safety.js";
 
-const Sha256Schema = z.string().regex(/^[0-9a-f]{64}$/i);
-const CommitSchema = z.string().regex(/^[0-9a-f]{40}$/i);
-const TimestampSchema = z.iso.datetime();
+const Sha256Schema = z.string().regex(/^[0-9a-f]{64}$/);
+const CommitSchema = z.string().regex(/^[0-9a-f]{40}$/);
+const TimestampSchema = z.iso.datetime({ offset: true });
 const ByteCountSchema = z.number().int().nonnegative();
 const PositiveSequenceSchema = z.number().int().positive();
 const AbsolutePathSchema = z
@@ -57,12 +58,25 @@ export const RelativeWorkspacePathSchema = z
   });
 
 const EnvironmentNameSchema = z.string().regex(/^[A-Za-z_][A-Za-z0-9_]{0,127}$/);
+const SafeCommandStringSchema = z
+  .string()
+  .max(8_192)
+  .refine(
+    (value) => !value.includes("\u0000") && !containsSensitiveMaterial(value),
+    "Command strings cannot contain NUL bytes or credential material."
+  );
 export const CommandEnvironmentEntrySchema = z.discriminatedUnion("kind", [
   z
     .object({
       kind: z.literal("literal"),
       name: EnvironmentNameSchema,
-      value: SafeMetadataStringSchema.max(8_192)
+      value: z
+        .string()
+        .max(8_192)
+        .refine(
+          (value) => !value.includes("\u0000") && !containsSensitiveMaterial(value),
+          "Literal environment values cannot contain NUL bytes or credential material."
+        )
     })
     .strict(),
   z
@@ -76,8 +90,8 @@ export const CommandEnvironmentEntrySchema = z.discriminatedUnion("kind", [
 
 export const CommandSpecSchema = z
   .object({
-    executable: z.string().trim().min(1).max(1_024),
-    args: z.array(z.string().max(8_192)).max(256),
+    executable: SafeCommandStringSchema.trim().min(1).max(1_024),
+    args: z.array(SafeCommandStringSchema).max(256),
     cwd: RelativeWorkspacePathSchema.default("."),
     environment: z.array(CommandEnvironmentEntrySchema).max(128),
     timeoutSeconds: z.number().int().min(1).max(14_400),
@@ -88,7 +102,20 @@ export const CommandSpecSchema = z
       })
       .strict()
   })
-  .strict();
+  .strict()
+  .superRefine((value, context) => {
+    const names = new Set<string>();
+    for (const [index, entry] of value.environment.entries()) {
+      if (names.has(entry.name)) {
+        context.addIssue({
+          code: "custom",
+          path: ["environment", index, "name"],
+          message: "Environment variable names must be unique."
+        });
+      }
+      names.add(entry.name);
+    }
+  });
 
 export const NetworkPolicySchema = z.enum(["host", "none", "restricted"]);
 export const ResourceLimitsSchema = z
@@ -127,7 +154,24 @@ export const RunnerCapabilitiesSchema = z
       })
       .strict()
   })
-  .strict();
+  .strict()
+  .superRefine((value, context) => {
+    const local =
+      value.supportedNetworkPolicies.length === 1 &&
+      value.supportedNetworkPolicies[0] === "host" &&
+      value.enforcement.cpu !== "hard" &&
+      value.enforcement.memory !== "hard" &&
+      value.enforcement.network === "unavailable" &&
+      value.enforcement.childFilesystem === "unavailable" &&
+      value.enforcement.duration === "hard" &&
+      value.enforcement.autostackPathOperations === "hard";
+    if (!local) {
+      context.addIssue({
+        code: "custom",
+        message: "Local runner capabilities must describe only enforceable host-user controls."
+      });
+    }
+  });
 
 export const InspectRepositoryRequestSchema = z
   .object({ sourcePath: AbsolutePathSchema, baseRef: SafeMetadataStringSchema.max(512) })
@@ -145,18 +189,31 @@ export const RepositoryInspectionSchema = z
   })
   .strict();
 
+const GeneratedBranchSchema = z
+  .string()
+  .max(250)
+  .regex(/^autostack\/[A-Za-z0-9][A-Za-z0-9._-]*(?:\/[A-Za-z0-9][A-Za-z0-9._-]*)*$/)
+  .refine((branch) => !branch.includes(".."), "Generated branches cannot contain traversal.");
+const CredentialReferenceSetSchema = z
+  .array(CredentialRefIdSchema)
+  .max(128)
+  .superRefine((value, context) => {
+    if (new Set(value).size !== value.length) {
+      context.addIssue({ code: "custom", message: "Credential references must be unique." });
+    }
+  });
 const ExecutionScopeShape = {
   workspaceId: WorkspaceIdSchema,
   runId: RunIdSchema,
   environmentId: EnvironmentIdSchema,
   repositoryIdentity: SafeMetadataStringSchema.max(1_024),
   sourceCommit: CommitSchema,
-  branch: z.string().regex(/^autostack\/[A-Za-z0-9._/-]{1,240}$/),
+  branch: GeneratedBranchSchema,
   cwdRoot: RelativeWorkspacePathSchema,
   resourceLimits: ResourceLimitsSchema,
   networkPolicy: z.literal("host"),
   filesystemDisclosure: z.literal("host_user"),
-  allowedCredentialRefIds: z.array(CredentialRefIdSchema).max(128)
+  allowedCredentialRefIds: CredentialReferenceSetSchema
 } as const;
 export const ExecutionScopeSchema = z.object(ExecutionScopeShape).strict();
 
@@ -171,7 +228,7 @@ const EnvironmentAuthorizationWithoutDigestSchema = z
   })
   .strict()
   .superRefine((value, context) => {
-    if (value.expiresAt <= value.createdAt) {
+    if (Date.parse(value.expiresAt) <= Date.parse(value.createdAt)) {
       context.addIssue({
         code: "custom",
         path: ["expiresAt"],
@@ -196,12 +253,12 @@ const CommandScopeShape = {
   commandDigest: Sha256Schema,
   repositoryIdentity: SafeMetadataStringSchema.max(1_024),
   sourceCommit: CommitSchema,
-  branch: z.string().regex(/^autostack\/[A-Za-z0-9._/-]{1,240}$/),
+  branch: GeneratedBranchSchema,
   cwdRoot: RelativeWorkspacePathSchema,
   networkPolicy: z.literal("host"),
   filesystemDisclosure: z.literal("host_user"),
   resourceLimits: ResourceLimitsSchema,
-  allowedCredentialRefIds: z.array(CredentialRefIdSchema).max(128)
+  allowedCredentialRefIds: CredentialReferenceSetSchema
 } as const;
 export const CommandScopeSchema = z.object(CommandScopeShape).strict();
 const CommandAuthorizationWithoutDigestSchema = z
@@ -215,7 +272,7 @@ const CommandAuthorizationWithoutDigestSchema = z
   })
   .strict()
   .superRefine((value, context) => {
-    if (value.expiresAt <= value.createdAt) {
+    if (Date.parse(value.expiresAt) <= Date.parse(value.createdAt)) {
       context.addIssue({
         code: "custom",
         path: ["expiresAt"],
@@ -241,25 +298,63 @@ const canonicalJson = (value: SafeJsonValue): string => {
   if (Array.isArray(value)) return `[${value.map(canonicalJson).join(",")}]`;
   if (!isSafeJsonObject(value)) throw new TypeError("A JSON object is required.");
   return `{${Object.entries(value)
-    .sort(([left], [right]) => left.localeCompare(right))
+    .sort(([left], [right]) => (left < right ? -1 : left > right ? 1 : 0))
     .map(([key, nested]) => `${JSON.stringify(key)}:${canonicalJson(nested)}`)
     .join(",")}}`;
 };
 
+const snapshot = (candidate: unknown): SafeJsonValue => normalizeSafeJson(candidate);
+const canonicalDigestInput = (domain: string, value: SafeJsonValue): string =>
+  canonicalJson({ domain, version: 1, value });
+const sha256Hex = async (input: string): Promise<string> => {
+  const digest = await globalThis.crypto.subtle.digest("SHA-256", new TextEncoder().encode(input));
+  return Array.from(new Uint8Array(digest), (byte) => byte.toString(16).padStart(2, "0")).join("");
+};
+const isAtOrAfter = (now: string, expiry: string): boolean => Date.parse(now) >= Date.parse(expiry);
+
 export const canonicalizeExecutionScope = (scope: unknown): string =>
-  canonicalJson(normalizeSafeJson(ExecutionScopeSchema.parse(scope)));
+  canonicalDigestInput(
+    "autostack.execution-scope",
+    snapshot(ExecutionScopeSchema.parse(snapshot(scope)))
+  );
 export const canonicalizeEnvironmentAuthorizationForDigest = (authorization: unknown): string => {
-  const { digest: _digest, ...digestInput } = EnvironmentAuthorizationSchema.parse(authorization);
-  return canonicalJson(
-    normalizeSafeJson(EnvironmentAuthorizationDigestInputSchema.parse(digestInput))
+  const { digest: _digest, ...digestInput } = EnvironmentAuthorizationSchema.parse(
+    snapshot(authorization)
+  );
+  return canonicalDigestInput(
+    "autostack.environment-authorization",
+    snapshot(EnvironmentAuthorizationDigestInputSchema.parse(snapshot(digestInput)))
   );
 };
 export const canonicalizeCommandScope = (scope: unknown): string =>
-  canonicalJson(normalizeSafeJson(CommandScopeSchema.parse(scope)));
+  canonicalDigestInput(
+    "autostack.command-scope",
+    snapshot(CommandScopeSchema.parse(snapshot(scope)))
+  );
 export const canonicalizeCommandAuthorizationForDigest = (authorization: unknown): string => {
-  const { digest: _digest, ...digestInput } = CommandAuthorizationSchema.parse(authorization);
-  return canonicalJson(normalizeSafeJson(CommandAuthorizationDigestInputSchema.parse(digestInput)));
+  const { digest: _digest, ...digestInput } = CommandAuthorizationSchema.parse(
+    snapshot(authorization)
+  );
+  return canonicalDigestInput(
+    "autostack.command-authorization",
+    snapshot(CommandAuthorizationDigestInputSchema.parse(snapshot(digestInput)))
+  );
 };
+export const canonicalizeCommandSpec = (command: unknown): string =>
+  canonicalDigestInput(
+    "autostack.command-spec",
+    snapshot(CommandSpecSchema.parse(snapshot(command)))
+  );
+export const digestExecutionScope = async (scope: unknown): Promise<string> =>
+  sha256Hex(canonicalizeExecutionScope(scope));
+export const digestEnvironmentAuthorization = async (authorization: unknown): Promise<string> =>
+  sha256Hex(canonicalizeEnvironmentAuthorizationForDigest(authorization));
+export const digestCommandScope = async (scope: unknown): Promise<string> =>
+  sha256Hex(canonicalizeCommandScope(scope));
+export const digestCommandAuthorization = async (authorization: unknown): Promise<string> =>
+  sha256Hex(canonicalizeCommandAuthorizationForDigest(authorization));
+export const digestCommandSpec = async (command: unknown): Promise<string> =>
+  sha256Hex(canonicalizeCommandSpec(command));
 
 export function validateCommandAuthorizationAgainstEnvironment(
   authorization: CommandAuthorization,
@@ -309,7 +404,7 @@ export function validateCommandAuthorizationAgainstEnvironment(
   return authorization;
 }
 
-const IdempotencyKeySchema = z.string().trim().min(1).max(256);
+const IdempotencyKeySchema = z.string().regex(/^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/);
 const IdempotencySchema = z.object({ key: IdempotencyKeySchema }).strict();
 export const PrepareEnvironmentRequestSchema = z
   .object({
@@ -318,7 +413,7 @@ export const PrepareEnvironmentRequestSchema = z
     environmentId: EnvironmentIdSchema,
     inspection: RepositoryInspectionSchema,
     sourceCommit: CommitSchema,
-    branch: z.string().regex(/^autostack\/[A-Za-z0-9._/-]{1,240}$/),
+    branch: GeneratedBranchSchema,
     authorization: EnvironmentAuthorizationSchema,
     idempotency: IdempotencySchema
   })
@@ -330,6 +425,7 @@ export const PrepareEnvironmentRequestSchema = z
       scope.runId !== value.runId ||
       scope.environmentId !== value.environmentId ||
       scope.repositoryIdentity !== value.inspection.repositoryIdentity ||
+      value.inspection.sourceCommit !== value.sourceCommit ||
       scope.sourceCommit !== value.sourceCommit ||
       scope.branch !== value.branch
     ) {
@@ -347,6 +443,8 @@ export const StartCommandRequestSchema = z
     environmentId: EnvironmentIdSchema,
     commandId: CommandIdSchema,
     command: CommandSpecSchema,
+    environmentAuthorizationId: EnvironmentAuthorizationIdSchema,
+    environmentAuthorizationDigest: Sha256Schema,
     authorization: CommandAuthorizationSchema,
     idempotency: IdempotencySchema
   })
@@ -357,7 +455,9 @@ export const StartCommandRequestSchema = z
       scope.workspaceId !== value.workspaceId ||
       scope.runId !== value.runId ||
       scope.environmentId !== value.environmentId ||
-      scope.commandId !== value.commandId
+      scope.commandId !== value.commandId ||
+      scope.environmentAuthorizationId !== value.environmentAuthorizationId ||
+      scope.environmentAuthorizationDigest !== value.environmentAuthorizationDigest
     ) {
       context.addIssue({
         code: "custom",
@@ -375,6 +475,10 @@ export const ReadCommandEventsRequestSchema = z
     runId: RunIdSchema,
     environmentId: EnvironmentIdSchema,
     commandId: CommandIdSchema,
+    environmentAuthorizationId: EnvironmentAuthorizationIdSchema,
+    environmentAuthorizationDigest: Sha256Schema,
+    commandAuthorizationId: CommandAuthorizationIdSchema,
+    commandAuthorizationDigest: Sha256Schema,
     after: z.number().int().nonnegative().default(0)
   })
   .strict();
@@ -384,6 +488,10 @@ export const CancelCommandRequestSchema = z
     runId: RunIdSchema,
     environmentId: EnvironmentIdSchema,
     commandId: CommandIdSchema,
+    environmentAuthorizationId: EnvironmentAuthorizationIdSchema,
+    environmentAuthorizationDigest: Sha256Schema,
+    commandAuthorizationId: CommandAuthorizationIdSchema,
+    commandAuthorizationDigest: Sha256Schema,
     idempotency: IdempotencySchema
   })
   .strict();
@@ -396,9 +504,12 @@ export const ArtifactDescriptorSchema = z
     artifactId: ArtifactIdSchema,
     workspaceId: WorkspaceIdSchema,
     runId: RunIdSchema,
-    commandId: CommandIdSchema.optional(),
+    commandId: CommandIdSchema,
     kind: z.enum(["command_transcript", "command_output"]),
-    mediaType: z.string().min(1).max(255),
+    mediaType: z
+      .string()
+      .max(255)
+      .regex(/^[a-z]+\/[a-z0-9!#$&^_.+-]+(?:; charset=[A-Za-z0-9._-]+)?$/),
     digest: Sha256Schema,
     byteSize: ByteCountSchema,
     createdAt: TimestampSchema
@@ -408,7 +519,13 @@ export const ReadArtifactChunkRequestSchema = z
   .object({
     workspaceId: WorkspaceIdSchema,
     runId: RunIdSchema,
+    environmentId: EnvironmentIdSchema,
+    commandId: CommandIdSchema,
     artifactId: ArtifactIdSchema,
+    environmentAuthorizationId: EnvironmentAuthorizationIdSchema,
+    environmentAuthorizationDigest: Sha256Schema,
+    commandAuthorizationId: CommandAuthorizationIdSchema,
+    commandAuthorizationDigest: Sha256Schema,
     offset: ByteCountSchema,
     length: z.number().int().min(1).max(1_048_576)
   })
@@ -423,26 +540,51 @@ export const ReadArtifactChunkResponseSchema = z
   })
   .strict()
   .superRefine((value, context) => {
-    if (value.nextOffset < value.offset || value.nextOffset > value.artifact.byteSize) {
+    const padding = value.bytes.endsWith("==") ? 2 : value.bytes.endsWith("=") ? 1 : 0;
+    const canonicalBase64 = /^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/.test(
+      value.bytes
+    );
+    const decodedByteLength = canonicalBase64 ? (value.bytes.length / 4) * 3 - padding : 0;
+    if (!canonicalBase64 || decodedByteLength > 1_048_576) {
+      context.addIssue({
+        code: "custom",
+        path: ["bytes"],
+        message: "Artifact bytes must be bounded canonical base64."
+      });
+    }
+    if (
+      value.nextOffset < value.offset ||
+      value.nextOffset > value.artifact.byteSize ||
+      value.nextOffset - value.offset !== decodedByteLength
+    ) {
       context.addIssue({ code: "custom", message: "Artifact cursor is invalid." });
+    }
+    if (!value.done && decodedByteLength === 0) {
+      context.addIssue({
+        code: "custom",
+        message: "A nonterminal artifact chunk must make progress."
+      });
     }
     if (value.done !== (value.nextOffset === value.artifact.byteSize)) {
       context.addIssue({ code: "custom", message: "Artifact completion is invalid." });
     }
   });
 
+export const TerminalRunEvidenceSchema = z
+  .object({
+    status: z.enum(["completed", "cancelled", "failed"]),
+    terminalEventSequence: PositiveSequenceSchema,
+    terminalEventDigest: Sha256Schema
+  })
+  .strict();
 export const DisposeEnvironmentRequestSchema = z
   .object({
     workspaceId: WorkspaceIdSchema,
     runId: RunIdSchema,
     environmentId: EnvironmentIdSchema,
-    terminalRunEvidence: z
-      .object({
-        status: z.enum(["completed", "cancelled", "failed"]),
-        terminalEventSequence: PositiveSequenceSchema,
-        terminalEventDigest: Sha256Schema
-      })
-      .strict(),
+    environmentAuthorizationId: EnvironmentAuthorizationIdSchema,
+    environmentAuthorizationDigest: Sha256Schema,
+    terminalRunEvidence: TerminalRunEvidenceSchema,
     idempotency: IdempotencySchema
   })
   .strict();
@@ -457,15 +599,131 @@ export const PreparedEnvironmentSchema = z
     runId: RunIdSchema,
     repositoryIdentity: SafeMetadataStringSchema.max(1_024),
     sourceCommit: CommitSchema,
-    branch: z.string().regex(/^autostack\/[A-Za-z0-9._/-]{1,240}$/),
+    branch: GeneratedBranchSchema,
     authorization: EnvironmentAuthorizationSchema,
-    state: z.enum(["prepared", "disposed"]),
     preparedAt: TimestampSchema
   })
-  .strict();
+  .strict()
+  .superRefine((value, context) => {
+    const scope = value.authorization.scope;
+    if (
+      scope.workspaceId !== value.workspaceId ||
+      scope.runId !== value.runId ||
+      scope.environmentId !== value.environmentId ||
+      scope.repositoryIdentity !== value.repositoryIdentity ||
+      scope.sourceCommit !== value.sourceCommit ||
+      scope.branch !== value.branch
+    ) {
+      context.addIssue({
+        code: "custom",
+        message: "Prepared environment must match its authorization."
+      });
+    }
+  });
 export const ListEnvironmentsResponseSchema = z
   .object({ items: z.array(PreparedEnvironmentSchema).max(1_000) })
   .strict();
+
+const cwdIsWithin = (cwdRoot: string, cwd: string): boolean =>
+  cwdRoot === "." || cwd === cwdRoot || cwd.startsWith(`${cwdRoot}/`);
+const assertDigest = (actual: string, expected: string, label: string): void => {
+  if (actual !== expected) throw new TypeError(`${label} digest is invalid.`);
+};
+const assertUnexpired = (expiresAt: string, now: string, label: string): void => {
+  if (isAtOrAfter(now, expiresAt)) throw new TypeError(`${label} is expired.`);
+};
+
+export interface PrepareEnvironmentAdmission {
+  readonly request: PrepareEnvironmentRequest;
+}
+
+export async function admitPrepareEnvironment(
+  candidate: unknown,
+  now: unknown
+): Promise<PrepareEnvironmentAdmission> {
+  const request = PrepareEnvironmentRequestSchema.parse(snapshot(candidate));
+  const parsedNow = TimestampSchema.parse(snapshot(now));
+  const authorization = request.authorization;
+  assertUnexpired(authorization.expiresAt, parsedNow, "Environment authorization");
+  assertDigest(
+    authorization.approvalEvidenceDigest,
+    await digestExecutionScope(authorization.scope),
+    "Environment approval evidence"
+  );
+  assertDigest(
+    authorization.digest,
+    await digestEnvironmentAuthorization(authorization),
+    "Environment authorization"
+  );
+  return { request };
+}
+
+export interface StartCommandAdmission {
+  readonly request: StartCommandRequest;
+  readonly environmentAuthorization: EnvironmentAuthorization;
+}
+
+export async function admitStartCommand(
+  candidate: unknown,
+  environmentAuthorizationCandidate: unknown,
+  now: unknown
+): Promise<StartCommandAdmission> {
+  const request = StartCommandRequestSchema.parse(snapshot(candidate));
+  const environmentAuthorization = EnvironmentAuthorizationSchema.parse(
+    snapshot(environmentAuthorizationCandidate)
+  );
+  const parsedNow = TimestampSchema.parse(snapshot(now));
+  const authorization = request.authorization;
+  assertUnexpired(environmentAuthorization.expiresAt, parsedNow, "Environment authorization");
+  assertUnexpired(authorization.expiresAt, parsedNow, "Command authorization");
+  validateCommandAuthorizationAgainstEnvironment(authorization, environmentAuthorization);
+  assertDigest(
+    authorization.approvalEvidenceDigest,
+    await digestCommandScope(authorization.scope),
+    "Command approval evidence"
+  );
+  assertDigest(
+    authorization.digest,
+    await digestCommandAuthorization(authorization),
+    "Command authorization"
+  );
+  assertDigest(
+    authorization.scope.commandDigest,
+    await digestCommandSpec(request.command),
+    "Command specification"
+  );
+  if (
+    !cwdIsWithin(authorization.scope.cwdRoot, request.command.cwd) ||
+    request.command.timeoutSeconds > authorization.scope.resourceLimits.durationSeconds ||
+    request.command.environment.some(
+      (entry) =>
+        entry.kind === "credential_ref" &&
+        !authorization.scope.allowedCredentialRefIds.includes(entry.credentialRefId)
+    )
+  ) {
+    throw new TypeError("Command is outside its recorded authorization scope.");
+  }
+  return { request, environmentAuthorization };
+}
+
+export const validateArtifactChunkResponse = (
+  requestCandidate: unknown,
+  responseCandidate: unknown
+): ReadArtifactChunkResponse => {
+  const request = ReadArtifactChunkRequestSchema.parse(snapshot(requestCandidate));
+  const response = ReadArtifactChunkResponseSchema.parse(snapshot(responseCandidate));
+  if (
+    response.artifact.artifactId !== request.artifactId ||
+    response.artifact.workspaceId !== request.workspaceId ||
+    response.artifact.runId !== request.runId ||
+    response.artifact.commandId !== request.commandId ||
+    response.offset !== request.offset ||
+    response.nextOffset - response.offset > request.length
+  ) {
+    throw new TypeError("Artifact chunk does not match its request.");
+  }
+  return response;
+};
 
 const EventBaseShape = {
   commandId: CommandIdSchema,
@@ -480,7 +738,7 @@ export const RunnerStreamEventSchema = z.discriminatedUnion("type", [
     .object({
       type: z.literal("terminal.output"),
       ...EventBaseShape,
-      stream: z.enum(["stdout", "stderr", "pty"]),
+      stream: z.literal("pty"),
       text: SafeMetadataStringSchema.max(65_536)
     })
     .strict(),
@@ -488,7 +746,7 @@ export const RunnerStreamEventSchema = z.discriminatedUnion("type", [
     .object({
       type: z.literal("terminal.truncated"),
       ...EventBaseShape,
-      stream: z.enum(["stdout", "stderr", "pty"]),
+      stream: z.literal("pty"),
       droppedBytes: ByteCountSchema.positive()
     })
     .strict(),
@@ -539,6 +797,35 @@ export const RunnerSubscriptionItemSchema = z.discriminatedUnion("type", [
     })
 ]);
 
+export const validateRunnerStream = (
+  candidates: readonly unknown[]
+): readonly RunnerStreamEvent[] => {
+  const events = candidates.map((candidate) => RunnerStreamEventSchema.parse(snapshot(candidate)));
+  if (events.length === 0) throw new TypeError("A command stream requires terminal evidence.");
+  const commandId = events[0]?.commandId;
+  let terminal = false;
+  let previousSequence = 0;
+  for (const event of events) {
+    if (event.commandId !== commandId || event.sequence <= previousSequence || terminal) {
+      throw new TypeError("Runner stream sequence is incoherent.");
+    }
+    if (event.type === "artifact.created" && event.artifact.commandId !== event.commandId) {
+      throw new TypeError("Artifact event command identity is invalid.");
+    }
+    if (
+      event.type === "command.completed" &&
+      (event.transcript.commandId !== event.commandId ||
+        event.transcript.kind !== "command_transcript")
+    ) {
+      throw new TypeError("Command transcript identity is invalid.");
+    }
+    previousSequence = event.sequence;
+    terminal = event.type === "command.completed" || event.type === "stream.error";
+  }
+  if (!terminal) throw new TypeError("Runner stream requires exactly one terminal event.");
+  return events;
+};
+
 export const GuardianLaunchDescriptorSchema = z
   .object({
     electronExecutable: AbsolutePathSchema,
@@ -546,10 +833,21 @@ export const GuardianLaunchDescriptorSchema = z
     nativeDirectory: AbsolutePathSchema,
     desktopBuildRoot: AbsolutePathSchema,
     runtimeManifestDigest: Sha256Schema,
-    electronVersion: z.string().regex(/^\d+\.\d+\.\d+$/),
-    nodePtyVersion: z.string().regex(/^\d+\.\d+\.\d+$/)
+    electronVersion: z.literal("43.4.0"),
+    nodePtyVersion: z.literal("1.1.0")
   })
-  .strict();
+  .strict()
+  .superRefine((value, context) => {
+    const insideBuildRoot = (path: string) =>
+      path.startsWith(`${value.desktopBuildRoot}/`) && path !== value.desktopBuildRoot;
+    if (!insideBuildRoot(value.guardianModule) || !insideBuildRoot(value.nativeDirectory)) {
+      context.addIssue({
+        code: "custom",
+        message:
+          "Guardian module and native directory must be lexically contained by the desktop build root."
+      });
+    }
+  });
 
 export type CommandSpec = z.infer<typeof CommandSpecSchema>;
 export type RunnerCapabilities = z.infer<typeof RunnerCapabilitiesSchema>;

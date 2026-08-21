@@ -2,6 +2,8 @@ import { describe, expect, it } from "vitest";
 
 import {
   CommandAuthorizationSchema,
+  DesktopApiOperationMapSchema,
+  admitStartCommand,
   canonicalizeCommandScope,
   canonicalizeEnvironmentAuthorizationForDigest,
   canonicalizeExecutionScope,
@@ -16,11 +18,18 @@ import {
   StartCommandRequestSchema,
   PrepareEnvironmentRequestSchema,
   EnvironmentAuthorizationSchema,
+  digestCommandAuthorization,
+  digestCommandScope,
+  digestCommandSpec,
+  digestEnvironmentAuthorization,
+  digestExecutionScope,
   ExecutionScopeSchema,
   NetworkPolicySchema,
   RelativeWorkspacePathSchema,
   RunnerSubscriptionItemSchema,
   validateCommandAuthorizationAgainstEnvironment,
+  validateArtifactChunkResponse,
+  validateRunnerStream,
   createId,
   createIdFactory
 } from "../src/index.js";
@@ -62,6 +71,26 @@ describe("local runner contracts", () => {
     expect(factory.commandAuthorization()).toBe(`cmdauth_${UUID}`);
     expect(factory.repositoryCapability()).toBe(`repocap_${UUID}`);
     expect(() => createId("command", "not-a-uuid")).toThrow();
+    expect(
+      DesktopApiOperationMapSchema.parse({
+        operation: "runtime.status",
+        request: {},
+        response: { status: "ready" }
+      })
+    ).toMatchObject({ operation: "runtime.status" });
+    expect(() =>
+      DesktopApiOperationMapSchema.parse({
+        operation: "repository.pick",
+        request: {},
+        response: {
+          repository: {
+            id: `repocap_${UUID}`,
+            label: "/private/source",
+            expiresAt: "2026-08-21T13:00:00.000Z"
+          }
+        }
+      })
+    ).toThrow();
   });
 
   it("accepts argument-array commands and rejects unsafe workspace paths or literal credentials", () => {
@@ -85,6 +114,39 @@ describe("local runner contracts", () => {
         kind: "literal",
         name: "TOKEN",
         value: "ghp_0123456789abcdefghijklmnop"
+      })
+    ).toThrow();
+    expect(() =>
+      CommandSpecSchema.parse({
+        executable: "ghp_0123456789abcdefghijklmnop",
+        args: [""],
+        cwd: ".",
+        environment: [{ kind: "literal", name: "EMPTY", value: "" }],
+        timeoutSeconds: 1,
+        terminal: { columns: 80, rows: 24 }
+      })
+    ).toThrow();
+    expect(() =>
+      CommandSpecSchema.parse({
+        executable: "echo",
+        args: ["Bearer abcdefghijklmnopqrst"],
+        cwd: ".",
+        environment: [],
+        timeoutSeconds: 1,
+        terminal: { columns: 80, rows: 24 }
+      })
+    ).toThrow();
+    expect(() =>
+      CommandSpecSchema.parse({
+        executable: "echo",
+        args: [],
+        cwd: ".",
+        environment: [
+          { kind: "literal", name: "DUPLICATE", value: "" },
+          { kind: "credential_ref", name: "DUPLICATE", credentialRefId: ids.credentialRefId }
+        ],
+        timeoutSeconds: 1,
+        terminal: { columns: 80, rows: 24 }
       })
     ).toThrow();
   });
@@ -238,10 +300,21 @@ describe("local runner contracts", () => {
         nativeDirectory: "/app/native",
         desktopBuildRoot: "/app",
         runtimeManifestDigest: DIGEST,
-        electronVersion: "43.0.0",
+        electronVersion: "43.4.0",
         nodePtyVersion: "1.1.0"
       })
     ).toBeDefined();
+    expect(() =>
+      GuardianLaunchDescriptorSchema.parse({
+        electronExecutable: "/app/electron",
+        guardianModule: "/app/guardian.mjs",
+        nativeDirectory: "/app/native",
+        desktopBuildRoot: "/app",
+        runtimeManifestDigest: DIGEST,
+        electronVersion: "43.0.0",
+        nodePtyVersion: "1.1.0"
+      })
+    ).toThrow();
     const environmentAuthorization = {
       id: ids.environmentAuthorizationId,
       digest: DIGEST,
@@ -254,6 +327,13 @@ describe("local runner contracts", () => {
     expect(() =>
       EnvironmentAuthorizationSchema.parse({ ...environmentAuthorization, expiresAt: NOW })
     ).toThrow();
+    expect(
+      EnvironmentAuthorizationSchema.parse({
+        ...environmentAuthorization,
+        createdAt: "2026-08-21T12:00:00+05:00",
+        expiresAt: "2026-08-21T08:00:00Z"
+      })
+    ).toBeDefined();
     const inspection = {
       repositoryIdentity: scope.repositoryIdentity,
       canonicalSourcePath: "/source",
@@ -281,6 +361,18 @@ describe("local runner contracts", () => {
         runId: ids.runId,
         environmentId: ids.environmentId,
         inspection: { ...inspection, repositoryIdentity: "wrong" },
+        sourceCommit: scope.sourceCommit,
+        branch: scope.branch,
+        authorization: environmentAuthorization,
+        idempotency: { key: "prepare" }
+      })
+    ).toThrow();
+    expect(() =>
+      PrepareEnvironmentRequestSchema.parse({
+        workspaceId: ids.workspaceId,
+        runId: ids.runId,
+        environmentId: ids.environmentId,
+        inspection: { ...inspection, sourceCommit: "d".repeat(40) },
         sourceCommit: scope.sourceCommit,
         branch: scope.branch,
         authorization: environmentAuthorization,
@@ -328,6 +420,8 @@ describe("local runner contracts", () => {
         environmentId: ids.environmentId,
         commandId: ids.commandId,
         command,
+        environmentAuthorizationId: ids.environmentAuthorizationId,
+        environmentAuthorizationDigest: DIGEST,
         authorization: commandAuthorization,
         idempotency: { key: "start" }
       })
@@ -339,6 +433,8 @@ describe("local runner contracts", () => {
         environmentId: ids.environmentId,
         commandId: createId("command", "123e4567-e89b-42d3-a456-426614174001"),
         command,
+        environmentAuthorizationId: ids.environmentAuthorizationId,
+        environmentAuthorizationDigest: DIGEST,
         authorization: commandAuthorization,
         idempotency: { key: "start" }
       })
@@ -347,6 +443,7 @@ describe("local runner contracts", () => {
       artifactId: createId("artifact", UUID),
       workspaceId: ids.workspaceId,
       runId: ids.runId,
+      commandId: ids.commandId,
       kind: "command_transcript",
       mediaType: "text/plain",
       digest: DIGEST,
@@ -372,5 +469,175 @@ describe("local runner contracts", () => {
         text: "safe"
       })
     ).toMatchObject({ stream: "pty" });
+  });
+
+  it("admits only digest-bound, unexpired command requests and validates owned artifact and stream evidence", async () => {
+    const command = {
+      executable: "true",
+      args: [""],
+      cwd: ".",
+      environment: [],
+      timeoutSeconds: 60,
+      terminal: { columns: 80, rows: 24 }
+    };
+    const environmentAuthorization = {
+      id: ids.environmentAuthorizationId,
+      digest: "0".repeat(64),
+      approvalId: ids.approvalId,
+      approvalEvidenceDigest: await digestExecutionScope(scope),
+      scope,
+      createdAt: NOW,
+      expiresAt: "2026-08-21T13:00:00.000Z"
+    };
+    environmentAuthorization.digest =
+      await digestEnvironmentAuthorization(environmentAuthorization);
+    const commandScope = {
+      environmentAuthorizationId: ids.environmentAuthorizationId,
+      environmentAuthorizationDigest: environmentAuthorization.digest,
+      workspaceId: ids.workspaceId,
+      runId: ids.runId,
+      environmentId: ids.environmentId,
+      commandId: ids.commandId,
+      action: "implement",
+      commandDigest: await digestCommandSpec(command),
+      repositoryIdentity: scope.repositoryIdentity,
+      sourceCommit: scope.sourceCommit,
+      branch: scope.branch,
+      cwdRoot: scope.cwdRoot,
+      networkPolicy: "host",
+      filesystemDisclosure: "host_user",
+      resourceLimits: scope.resourceLimits,
+      allowedCredentialRefIds: scope.allowedCredentialRefIds
+    };
+    const authorization = {
+      id: ids.commandAuthorizationId,
+      digest: "0".repeat(64),
+      approvalId: ids.approvalId,
+      approvalEvidenceDigest: await digestCommandScope(commandScope),
+      scope: commandScope,
+      createdAt: NOW,
+      expiresAt: "2026-08-21T13:00:00.000Z"
+    };
+    authorization.digest = await digestCommandAuthorization(authorization);
+    const request = {
+      workspaceId: ids.workspaceId,
+      runId: ids.runId,
+      environmentId: ids.environmentId,
+      commandId: ids.commandId,
+      command,
+      environmentAuthorizationId: ids.environmentAuthorizationId,
+      environmentAuthorizationDigest: environmentAuthorization.digest,
+      authorization,
+      idempotency: { key: "command-start" }
+    };
+    await expect(admitStartCommand(request, environmentAuthorization, NOW)).resolves.toMatchObject({
+      request: { commandId: ids.commandId }
+    });
+    await expect(
+      admitStartCommand(
+        { ...request, command: { ...command, args: ["substituted"] } },
+        environmentAuthorization,
+        NOW
+      )
+    ).rejects.toThrow(/specification/i);
+    await expect(
+      admitStartCommand(request, environmentAuthorization, "2026-08-22T12:00:00.000Z")
+    ).rejects.toThrow(/expired/i);
+    const artifact = {
+      artifactId: createId("artifact", UUID),
+      workspaceId: ids.workspaceId,
+      runId: ids.runId,
+      commandId: ids.commandId,
+      kind: "command_transcript",
+      mediaType: "text/plain",
+      digest: DIGEST,
+      byteSize: 1,
+      createdAt: NOW
+    };
+    const artifactRequest = {
+      workspaceId: ids.workspaceId,
+      runId: ids.runId,
+      environmentId: ids.environmentId,
+      commandId: ids.commandId,
+      artifactId: artifact.artifactId,
+      environmentAuthorizationId: ids.environmentAuthorizationId,
+      environmentAuthorizationDigest: environmentAuthorization.digest,
+      commandAuthorizationId: ids.commandAuthorizationId,
+      commandAuthorizationDigest: authorization.digest,
+      offset: 0,
+      length: 1
+    };
+    expect(
+      validateArtifactChunkResponse(artifactRequest, {
+        artifact,
+        offset: 0,
+        bytes: "YQ==",
+        nextOffset: 1,
+        done: true
+      })
+    ).toMatchObject({ done: true });
+    expect(
+      validateRunnerStream([
+        {
+          type: "command.started",
+          commandId: ids.commandId,
+          sequence: 1,
+          occurredAt: NOW,
+          pty: true
+        },
+        {
+          type: "artifact.created",
+          commandId: ids.commandId,
+          sequence: 2,
+          occurredAt: NOW,
+          artifact
+        },
+        {
+          type: "command.completed",
+          commandId: ids.commandId,
+          sequence: 3,
+          occurredAt: NOW,
+          exitCode: 0,
+          signal: null,
+          durationMs: 1,
+          cancelled: false,
+          interrupted: false,
+          transcript: artifact
+        }
+      ])
+    ).toHaveLength(3);
+    expect(() => validateRunnerStream([])).toThrow(/terminal/i);
+    expect(() =>
+      validateRunnerStream([
+        {
+          type: "command.started",
+          commandId: ids.commandId,
+          sequence: 1,
+          occurredAt: NOW,
+          pty: true
+        }
+      ])
+    ).toThrow(/terminal/i);
+    expect(() =>
+      validateArtifactChunkResponse(artifactRequest, {
+        artifact: {
+          ...artifact,
+          commandId: createId("command", "123e4567-e89b-42d3-a456-426614174001")
+        },
+        offset: 0,
+        bytes: "YQ==",
+        nextOffset: 1,
+        done: true
+      })
+    ).toThrow(/match/i);
+    expect(() =>
+      ReadArtifactChunkResponseSchema.parse({
+        artifact: { ...artifact, byteSize: 2 },
+        offset: 0,
+        bytes: "",
+        nextOffset: 0,
+        done: false
+      })
+    ).toThrow(/progress/i);
   });
 });
