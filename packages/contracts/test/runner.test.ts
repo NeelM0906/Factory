@@ -196,6 +196,14 @@ describe("local runner contracts", () => {
       { executable: "C:\\Program Files\\PowerShell\\pwsh.exe", args: ["-Command", "echo safe"] },
       { executable: "nu", args: ["--commands", "echo safe"] },
       { executable: "nu", args: ["--commands=echo safe"] },
+      { executable: "nu", args: ["-e", "print 1"] },
+      { executable: "nu", args: ["--execute", "print 1"] },
+      { executable: "nu", args: ["--execute=print 1"] },
+      { executable: "fish", args: ["-C", "echo safe"] },
+      { executable: "fish", args: ["--init-command", "echo safe"] },
+      { executable: "fish", args: ["--init-command=echo safe"] },
+      { executable: "powershell.exe", args: ["-EncodedCommand", "ZQBjAGgAbwA="] },
+      { executable: "cmd.exe", args: ["/c", "echo safe"] },
       { executable: "nice", args: ["sh", "-c", "echo safe"] },
       { executable: "xargs", args: ["sh", "-c", "echo safe"] },
       { executable: "echo", args: ["bash", "-O", "extglob", "-c", "echo safe"] },
@@ -248,6 +256,21 @@ describe("local runner contracts", () => {
         terminal: { columns: 80, rows: 24 }
       })
     ).toMatchObject({ executable: "bash" });
+    for (const command of [
+      { executable: "nu", args: ["script.nu"] },
+      { executable: "fish", args: ["script.fish"] },
+      { executable: "powershell.exe", args: ["-File", "script.ps1"] }
+    ]) {
+      expect(
+        CommandSpecSchema.parse({
+          ...command,
+          cwd: ".",
+          environment: [],
+          timeoutSeconds: 1,
+          terminal: { columns: 80, rows: 24 }
+        })
+      ).toMatchObject({ executable: command.executable });
+    }
     expect(() =>
       CommandSpecSchema.parse({
         executable: "echo",

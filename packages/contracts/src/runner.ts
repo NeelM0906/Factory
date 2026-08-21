@@ -81,6 +81,7 @@ const ShellLikeExecutableBasenames = new Set([
   "elvish",
   "powershell",
   "pwsh",
+  "cmd",
   "ion",
   "rc",
   "es"
@@ -98,7 +99,7 @@ export const isShellLikeExecutable = (executable: string): boolean => {
   return basename.endsWith("sh") || ShellLikeExecutableBasenames.has(basename);
 };
 
-const isCommandStringFlag = (argument: string): boolean => {
+const isGenericShellCommandStringFlag = (argument: string): boolean => {
   const normalized = argument.toLowerCase();
   return (
     normalized === "-c" ||
@@ -113,10 +114,37 @@ const isCommandStringFlag = (argument: string): boolean => {
     normalized.startsWith("--commands=")
   );
 };
-const hasShellCommandStringFlag = (argumentsToInspect: readonly string[]): boolean => {
+const isInterpreterSpecificCommandStringFlag = (executable: string, argument: string): boolean => {
+  const basename = normalizedExecutableBasename(executable);
+  const normalized = argument.toLowerCase();
+  if (basename === "nu" || basename === "nushell") {
+    return normalized === "-e" || normalized === "--execute" || normalized.startsWith("--execute=");
+  }
+  if (basename === "fish") {
+    return normalized === "--init-command" || normalized.startsWith("--init-command=");
+  }
+  if (basename === "powershell" || basename === "pwsh") {
+    return (
+      normalized === "--encoded-command" ||
+      normalized.startsWith("--encoded-command=") ||
+      normalized === "--command-with-args" ||
+      normalized.startsWith("--command-with-args=")
+    );
+  }
+  if (basename === "cmd") return normalized === "/c" || normalized === "/k";
+  return false;
+};
+const hasShellCommandStringFlag = (
+  executable: string,
+  argumentsToInspect: readonly string[]
+): boolean => {
   for (const argument of argumentsToInspect) {
     if (argument === "--") return false;
-    if (isCommandStringFlag(argument)) return true;
+    if (
+      isGenericShellCommandStringFlag(argument) ||
+      isInterpreterSpecificCommandStringFlag(executable, argument)
+    )
+      return true;
   }
   return false;
 };
@@ -157,7 +185,7 @@ const isForbiddenShellCommandString = (command: {
     return true;
   return tokens.some(
     (token, index) =>
-      isShellLikeExecutable(token) && hasShellCommandStringFlag(tokens.slice(index + 1))
+      isShellLikeExecutable(token) && hasShellCommandStringFlag(token, tokens.slice(index + 1))
   );
 };
 
