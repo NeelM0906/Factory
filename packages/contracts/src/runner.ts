@@ -107,7 +107,9 @@ const usesEnvSplitString = (executable: string, args: readonly string[]): boolea
   executable === "env" &&
   args.some(
     (argument) =>
-      argument === "-S" || argument === "--split-string" || argument.startsWith("--split-string=")
+      /^-[^-]*S/.test(argument) ||
+      argument === "--split-string" ||
+      argument.startsWith("--split-string=")
   );
 const hasImplicitWrapperShellCommandString = (
   executable: string,

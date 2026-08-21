@@ -177,6 +177,8 @@ describe("local runner contracts", () => {
       { executable: "bash", args: ["-o", "pipefail", "-c", "echo safe"] },
       { executable: "/usr/bin/env", args: ["MODE=safe", "-i", "sh", "-c", "echo safe"] },
       { executable: "/usr/bin/env", args: ["-S", "bash -c 'echo safe'"] },
+      { executable: "/usr/bin/env", args: ["-Sbash -c 'echo safe'"] },
+      { executable: "/usr/bin/env", args: ["-ivSbash -c 'echo safe'"] },
       { executable: "sudo", args: ["-n", "zsh", "-c", "echo safe"] },
       { executable: "sudo", args: ["-s", "-c", "echo safe"] },
       { executable: "sudo", args: ["--shell"] },
