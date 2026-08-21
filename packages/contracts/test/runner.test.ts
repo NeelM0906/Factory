@@ -16,6 +16,7 @@ import {
   InspectRepositoryRequestSchema,
   ReadArtifactChunkResponseSchema,
   RunnerCapabilitiesSchema,
+  RunnerDrainResultSchema,
   RunnerStreamEventSchema,
   StartCommandRequestSchema,
   PrepareEnvironmentRequestSchema,
@@ -523,6 +524,41 @@ describe("local runner contracts", () => {
   });
 
   it("validates runner capabilities, internal launch paths, and request/artifact coherence", () => {
+    expect(
+      RunnerDrainResultSchema.parse({
+        interruptedCommandIds: [ids.commandId],
+        releasedGuardianLeaseCount: 1,
+        remainingGuardianLeaseCount: 0
+      })
+    ).toEqual({
+      interruptedCommandIds: [ids.commandId],
+      releasedGuardianLeaseCount: 1,
+      remainingGuardianLeaseCount: 0
+    });
+    expect(() =>
+      RunnerDrainResultSchema.parse({
+        interruptedCommandIds: [ids.commandId, ids.commandId],
+        releasedGuardianLeaseCount: 1,
+        remainingGuardianLeaseCount: 0
+      })
+    ).toThrow(/unique/i);
+    expect(() =>
+      RunnerDrainResultSchema.parse({
+        interruptedCommandIds: [
+          ids.commandId,
+          createId("command", "123e4567-e89b-42d3-a456-426614174001")
+        ],
+        releasedGuardianLeaseCount: 1,
+        remainingGuardianLeaseCount: 0
+      })
+    ).toThrow(/guardian lease/i);
+    expect(() =>
+      RunnerDrainResultSchema.parse({
+        interruptedCommandIds: [],
+        releasedGuardianLeaseCount: 0,
+        remainingGuardianLeaseCount: 1
+      })
+    ).toThrow();
     expect(
       RunnerCapabilitiesSchema.parse({
         runnerId: "runner-local",

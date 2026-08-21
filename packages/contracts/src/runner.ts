@@ -1233,6 +1233,24 @@ export const RunnerSubscriptionItemSchema = z.discriminatedUnion("type", [
       }
     })
 ]);
+export const RunnerDrainResultSchema = z
+  .object({
+    interruptedCommandIds: z.array(CommandIdSchema).max(10_000),
+    releasedGuardianLeaseCount: z.number().int().nonnegative(),
+    remainingGuardianLeaseCount: z.literal(0)
+  })
+  .strict()
+  .superRefine((value, context) => {
+    if (new Set(value.interruptedCommandIds).size !== value.interruptedCommandIds.length) {
+      context.addIssue({ code: "custom", message: "Interrupted command IDs must be unique." });
+    }
+    if (value.releasedGuardianLeaseCount < value.interruptedCommandIds.length) {
+      context.addIssue({
+        code: "custom",
+        message: "Every interrupted command must release its guardian lease."
+      });
+    }
+  });
 
 export const validateRunnerStream = (
   candidates: readonly unknown[],
@@ -1324,4 +1342,5 @@ export type PreparedEnvironment = z.infer<typeof PreparedEnvironmentSchema>;
 export type ListEnvironmentsResponse = z.infer<typeof ListEnvironmentsResponseSchema>;
 export type RunnerStreamEvent = z.infer<typeof RunnerStreamEventSchema>;
 export type RunnerSubscriptionItem = z.infer<typeof RunnerSubscriptionItemSchema>;
+export type RunnerDrainResult = z.infer<typeof RunnerDrainResultSchema>;
 export type GuardianLaunchDescriptor = z.infer<typeof GuardianLaunchDescriptorSchema>;
