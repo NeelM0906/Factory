@@ -1,0 +1,29 @@
+{
+  "name": "autostack",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "packageManager": "pnpm@10.27.0",
+  "engines": {
+    "node": ">=24 <27"
+  },
+  "scripts": {
+    "build": "turbo run build",
+    "check": "turbo run check",
+    "dev": "turbo run dev --parallel",
+    "format": "prettier --write .",
+    "format:check": "prettier --check .",
+    "test": "turbo run test",
+    "test:coverage": "turbo run test:coverage"
+  },
+  "devDependencies": {
+    "@types/node": "^24.3.0",
+    "@vitest/coverage-v8": "^4.1.1",
+    "prettier": "^3.6.2",
+    "tsup": "^8.5.0",
+    "tsx": "^4.20.5",
+    "turbo": "^2.5.6",
+    "typescript": "^5.9.3",
+    "vitest": "^4.1.1"
+  }
+}

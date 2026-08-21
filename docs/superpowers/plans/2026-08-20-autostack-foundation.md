@@ -155,10 +155,7 @@ Expected failure: the test cannot import `../src/ids.js`.
 Use a private `unique symbol` brand, one exported Zod schema per ID type, and this factory signature:
 
 ```ts
-export function createId<K extends IdKind>(
-  kind: K,
-  uuid: string = randomUUID()
-): IdFor<K>;
+export function createId<K extends IdKind>(kind: K, uuid: string = randomUUID()): IdFor<K>;
 
 export interface IdFactory {
   workspace(): WorkspaceId;
@@ -327,9 +324,10 @@ export interface TransitionRunCommand {
   readonly occurredAt: string;
 }
 
-export function transitionRun(
-  command: TransitionRunCommand
-): { readonly run: Run; readonly events: readonly PendingDomainEvent[] };
+export function transitionRun(command: TransitionRunCommand): {
+  readonly run: Run;
+  readonly events: readonly PendingDomainEvent[];
+};
 ```
 
 Throw `InvalidRunTransitionError` with `from` and `to`; never silently coerce a transition.
