@@ -181,6 +181,8 @@ describe("local runner contracts", () => {
       { executable: "/usr/bin/env", args: ["-S", "bash -c 'echo safe'"] },
       { executable: "/usr/bin/env", args: ["-Sbash -c 'echo safe'"] },
       { executable: "/usr/bin/env", args: ["-ivSbash -c 'echo safe'"] },
+      { executable: "nice", args: ["/usr/bin/env", "-S", "bash -c 'echo safe'"] },
+      { executable: "sudo", args: ["-n", "/usr/bin/env", "-Sbash -c 'echo safe'"] },
       { executable: "sudo", args: ["-n", "zsh", "-c", "echo safe"] },
       { executable: "sudo", args: ["-s", "-c", "echo safe"] },
       { executable: "sudo", args: ["--shell"] },
@@ -192,6 +194,8 @@ describe("local runner contracts", () => {
       { executable: "/usr/local/bin/mksh", args: ["-c", "echo safe"] },
       { executable: "/usr/bin/YASH", args: ["-c", "echo safe"] },
       { executable: "C:\\Program Files\\PowerShell\\pwsh.exe", args: ["-Command", "echo safe"] },
+      { executable: "nu", args: ["--commands", "echo safe"] },
+      { executable: "nu", args: ["--commands=echo safe"] },
       { executable: "nice", args: ["sh", "-c", "echo safe"] },
       { executable: "xargs", args: ["sh", "-c", "echo safe"] },
       { executable: "echo", args: ["bash", "-O", "extglob", "-c", "echo safe"] },
@@ -228,6 +232,12 @@ describe("local runner contracts", () => {
     expect(() =>
       assertResolvedCommandDoesNotUseShellCommandString("/private/tool-alias/bash", ["script.sh"])
     ).not.toThrow();
+    expect(() =>
+      assertResolvedCommandDoesNotUseShellCommandString("/usr/bin/nice", [
+        "/usr/bin/env",
+        "-Sbash -c 'echo safe'"
+      ])
+    ).toThrow(/resolved shell command-string/i);
     expect(
       CommandSpecSchema.parse({
         executable: "bash",

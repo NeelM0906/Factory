@@ -108,7 +108,9 @@ const isCommandStringFlag = (argument: string): boolean => {
     normalized.startsWith("-lc=") ||
     /^-[a-z]*c[a-z]*$/.test(normalized) ||
     normalized === "--command" ||
-    normalized.startsWith("--command=")
+    normalized.startsWith("--command=") ||
+    normalized === "--commands" ||
+    normalized.startsWith("--commands=")
   );
 };
 const hasShellCommandStringFlag = (argumentsToInspect: readonly string[]): boolean => {
@@ -139,12 +141,20 @@ const isForbiddenShellCommandString = (command: {
   readonly executable: string;
   readonly args: readonly string[];
 }): boolean => {
-  const executable = normalizedExecutableBasename(command.executable);
-  // env -S parses a command string itself, so it cannot be safely admitted as
-  // an argument-vector command even when the embedded shell is not tokenized yet.
-  if (usesEnvSplitString(executable, command.args)) return true;
-  if (hasImplicitWrapperShellCommandString(executable, command.args)) return true;
   const tokens = [command.executable, ...command.args];
+  // env -S parses a command string itself, so it cannot be safely admitted as
+  // an argument-vector command even when nested behind another wrapper.
+  if (tokens.some((token, index) => usesEnvSplitString(token, tokens.slice(index + 1))))
+    return true;
+  if (
+    tokens.some((token, index) =>
+      hasImplicitWrapperShellCommandString(
+        normalizedExecutableBasename(token),
+        tokens.slice(index + 1)
+      )
+    )
+  )
+    return true;
   return tokens.some(
     (token, index) =>
       isShellLikeExecutable(token) && hasShellCommandStringFlag(tokens.slice(index + 1))

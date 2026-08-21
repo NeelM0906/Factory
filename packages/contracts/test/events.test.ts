@@ -908,6 +908,18 @@ describe("domain event contracts", () => {
           { ...replay, actor: { kind: "user", id: "different-authority" } }
         ])
       ).rejects.toThrow(/replay|context/i);
+      await expect(
+        validateRunStreamCoherence([
+          ...events,
+          { ...replay, correlationId: "123e4567-e89b-42d3-a456-426614174099" }
+        ])
+      ).rejects.toThrow(/replay|context/i);
+      await expect(
+        validateRunStreamCoherence([
+          ...events,
+          { ...replay, causationId: "evt_123e4567-e89b-42d3-a456-426614174099" }
+        ])
+      ).rejects.toThrow(/replay|context/i);
     }
     await expect(validateRunStreamCoherence(events.slice(1))).rejects.toThrow(/approval/i);
     await expect(validateRunStreamCoherence(events.slice(2, 3))).rejects.toThrow(/approved plan/i);

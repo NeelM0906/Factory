@@ -435,6 +435,8 @@ const canonicalizeLocalPhaseReplayContext = (event: PendingDomainEvent): string 
     type: event.type,
     workspaceId: event.workspaceId,
     actor: event.actor,
+    correlationId: event.correlationId,
+    causationId: event.causationId ?? null,
     occurredAt: event.occurredAt
   });
 const assertPhaseKey = (actual: string, expected: string): void => {
