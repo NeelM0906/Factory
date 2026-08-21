@@ -14,7 +14,11 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { GitClient } from "../src/git-client.js";
 import { EnvironmentRegistry } from "../src/environment-registry.js";
 import { acquireCommandGuardianLease } from "../src/data-root-lock.js";
-import { WorktreeManager, WorktreeManagerError } from "../src/worktree-manager.js";
+import {
+  WorktreeManager,
+  WorktreeManagerError,
+  type WorktreeManagerOptions
+} from "../src/worktree-manager.js";
 import { assertTargetRecord, exactTargetRecord } from "../src/worktree-manager-shared.js";
 import { BoundedProcessRunner, type ProcessRunner } from "../src/process-runner.js";
 import {
@@ -112,7 +116,10 @@ const createSetup = async () => {
   return { fixture, dataRoot, inspected, request };
 };
 
-const managerOptions = (dataRoot: string, start = "2026-08-21T12:00:00.000Z") => {
+const managerOptions = (
+  dataRoot: string,
+  start = "2026-08-21T12:00:00.000Z"
+): WorktreeManagerOptions => {
   let tick = 0;
   return {
     dataRoot,
@@ -136,6 +143,25 @@ const disposalRequest = (request: PrepareEnvironmentRequest): DisposeEnvironment
   },
   idempotency: { key: "dispose-1" }
 });
+
+const recordPhase4Disposal = async (
+  dataRoot: string,
+  request: PrepareEnvironmentRequest,
+  recordedAt = "2026-08-21T12:01:00.000Z"
+): Promise<EnvironmentRegistry> => {
+  const registry = await EnvironmentRegistry.create({ dataRoot, now: () => recordedAt });
+  const ready = await registry.recoverEnvironment(request.environmentId);
+  if (ready?.phase !== "ready") throw new Error("expected a ready environment fixture");
+  await registry.recordDisposalIntent({
+    environmentId: request.environmentId,
+    creationAttemptId: ready.intent.creationAttemptId,
+    disposalRequestDigest: "6".repeat(64),
+    environmentAuthorizationId: request.authorization.id,
+    environmentAuthorizationDigest: request.authorization.digest,
+    terminalRunEvidence: disposalRequest(request).terminalRunEvidence
+  });
+  return registry;
+};
 
 const phaseFile = (dataRoot: string, environmentId: string, sequence: number, phase: string) =>
   join(
@@ -715,19 +741,7 @@ describe("WorktreeManager", () => {
     const first = await WorktreeManager.create(managerOptions(dataRoot));
     await first.prepareEnvironment(request);
     await first.close();
-    const registry = await EnvironmentRegistry.create({
-      dataRoot,
-      now: () => "2026-08-21T12:01:00.000Z"
-    });
-    const ready = await registry.recoverEnvironment(request.environmentId);
-    await registry.recordDisposalIntent({
-      environmentId: request.environmentId,
-      creationAttemptId: ready!.intent.creationAttemptId,
-      disposalRequestDigest: "6".repeat(64),
-      environmentAuthorizationId: request.authorization.id,
-      environmentAuthorizationDigest: request.authorization.digest,
-      terminalRunEvidence: disposalRequest(request).terminalRunEvidence
-    });
+    const registry = await recordPhase4Disposal(dataRoot, request);
     let verifierCalls = 0;
 
     const recovered = await WorktreeManager.create({
@@ -739,7 +753,277 @@ describe("WorktreeManager", () => {
     });
 
     expect(verifierCalls).toBe(1);
+    await recovered.resumePendingDisposals();
+    expect(verifierCalls).toBe(1);
     await recovered.close();
+  });
+
+  it("defers a durable phase-4 disposal and resumes it exactly once under concurrent replay", async () => {
+    const { fixture, dataRoot, request } = await createSetup();
+    const before = await captureSourceCheckoutInvariant(fixture);
+    const first = await WorktreeManager.create(managerOptions(dataRoot));
+    await first.prepareEnvironment(request);
+    const resolved = await first.resolvePreparedEnvironment(request.environmentId);
+    await first.close();
+    const registry = await recordPhase4Disposal(dataRoot, request);
+    const delegate = new BoundedProcessRunner({
+      timeoutMs: 10_000,
+      maximumOutputBytes: 4 * 1024 * 1024
+    });
+    const calls: string[][] = [];
+    const processRunner: ProcessRunner = {
+      async run(processRequest) {
+        calls.push([...processRequest.args]);
+        return delegate.run(processRequest);
+      }
+    };
+    let verifierCalls = 0;
+    let leaseCloseReads = 0;
+    let leaseCloseCalls = 0;
+
+    const deferred = await WorktreeManager.create({
+      ...managerOptions(dataRoot, "2026-08-21T12:02:00.000Z"),
+      deferStartupDisposal: true,
+      gitProcessRunner: processRunner,
+      verifyTerminalEvidence: async () => {
+        verifierCalls += 1;
+        return true;
+      },
+      acquireEnvironmentQuiescence: async () => {
+        const lease = Object.create(null) as { readonly close: () => Promise<void> };
+        Object.defineProperty(lease, "close", {
+          enumerable: true,
+          get: () => {
+            leaseCloseReads += 1;
+            return async () => {
+              leaseCloseCalls += 1;
+            };
+          }
+        });
+        return lease;
+      }
+    });
+
+    const mutationSubcommandsBeforeResume = calls.flatMap((args) => {
+      const worktree = args.indexOf("worktree");
+      return worktree < 0 ? [] : [args[worktree + 1]];
+    });
+    expect(mutationSubcommandsBeforeResume).not.toContain("unlock");
+    expect(mutationSubcommandsBeforeResume).not.toContain("remove");
+    expect(verifierCalls).toBe(0);
+    expect(leaseCloseReads).toBe(0);
+    expect((await registry.recoverEnvironment(request.environmentId))?.phase).toBe(
+      "disposal_recorded"
+    );
+    expect(await gitFixtureCommand(resolved.managedPath, ["rev-parse", "HEAD"])).toBe(
+      request.sourceCommit
+    );
+    expect(await captureSourceCheckoutInvariant(fixture)).toEqual(before);
+    await expect(WorktreeManager.create(managerOptions(dataRoot))).rejects.toMatchObject({
+      code: "root_busy"
+    });
+
+    await Promise.all([deferred.resumePendingDisposals(), deferred.resumePendingDisposals()]);
+
+    expect(verifierCalls).toBe(1);
+    expect(leaseCloseReads).toBe(1);
+    expect(leaseCloseCalls).toBe(1);
+    expect((await registry.recoverEnvironment(request.environmentId))?.phase).toBe("disposed");
+    expect(await deferred.listEnvironments()).toEqual([]);
+    await expect(gitFixtureCommand(resolved.managedPath, ["rev-parse", "HEAD"])).rejects.toThrow();
+    const mutationSubcommands = calls.flatMap((args) => {
+      const worktree = args.indexOf("worktree");
+      return worktree < 0 ? [] : [args[worktree + 1]];
+    });
+    expect(mutationSubcommands.filter((command) => command === "unlock")).toHaveLength(1);
+    expect(mutationSubcommands.filter((command) => command === "remove")).toHaveLength(1);
+    await deferred.resumePendingDisposals();
+    expect(verifierCalls).toBe(1);
+    expect(leaseCloseCalls).toBe(1);
+    expect(await captureSourceCheckoutInvariant(fixture)).toEqual(before);
+    await deferred.close();
+  });
+
+  it("retains phase 4 after a failed deferred resume and retries from the journal", async () => {
+    const { fixture, dataRoot, request } = await createSetup();
+    const before = await captureSourceCheckoutInvariant(fixture);
+    const first = await WorktreeManager.create(managerOptions(dataRoot));
+    await first.prepareEnvironment(request);
+    const resolved = await first.resolvePreparedEnvironment(request.environmentId);
+    await first.close();
+    const registry = await recordPhase4Disposal(dataRoot, request);
+    let acceptEvidence = false;
+    let verifierCalls = 0;
+    let leaseCloseCalls = 0;
+    const deferred = await WorktreeManager.create({
+      ...managerOptions(dataRoot, "2026-08-21T12:02:00.000Z"),
+      deferStartupDisposal: true,
+      verifyTerminalEvidence: async () => {
+        verifierCalls += 1;
+        return acceptEvidence;
+      },
+      acquireEnvironmentQuiescence: async () => ({
+        close: async () => {
+          leaseCloseCalls += 1;
+        }
+      })
+    });
+
+    await expect(deferred.resumePendingDisposals()).rejects.toMatchObject({
+      code: "terminal_evidence_invalid",
+      message: "The terminal run evidence is invalid."
+    });
+    expect((await registry.recoverEnvironment(request.environmentId))?.phase).toBe(
+      "disposal_recorded"
+    );
+    expect(await gitFixtureCommand(resolved.managedPath, ["rev-parse", "HEAD"])).toBe(
+      request.sourceCommit
+    );
+    expect(verifierCalls).toBe(1);
+    expect(leaseCloseCalls).toBe(1);
+    expect(await captureSourceCheckoutInvariant(fixture)).toEqual(before);
+
+    acceptEvidence = true;
+    await deferred.resumePendingDisposals();
+    expect((await registry.recoverEnvironment(request.environmentId))?.phase).toBe("disposed");
+    expect(verifierCalls).toBe(2);
+    expect(leaseCloseCalls).toBe(2);
+    expect(await captureSourceCheckoutInvariant(fixture)).toEqual(before);
+    await deferred.close();
+  });
+
+  it("lets an admitted deferred resume finish before close and rejects replay after close", async () => {
+    const { dataRoot, request } = await createSetup();
+    const first = await WorktreeManager.create(managerOptions(dataRoot));
+    await first.prepareEnvironment(request);
+    await first.close();
+    await recordPhase4Disposal(dataRoot, request);
+    let verifierEntered!: () => void;
+    const entered = new Promise<void>((resolvePromise) => {
+      verifierEntered = resolvePromise;
+    });
+    let releaseVerifier!: () => void;
+    const released = new Promise<void>((resolvePromise) => {
+      releaseVerifier = resolvePromise;
+    });
+    const deferred = await WorktreeManager.create({
+      ...managerOptions(dataRoot, "2026-08-21T12:02:00.000Z"),
+      deferStartupDisposal: true,
+      verifyTerminalEvidence: async () => {
+        verifierEntered();
+        await released;
+        return true;
+      }
+    });
+
+    const resuming = deferred.resumePendingDisposals();
+    await entered;
+    const closing = deferred.close();
+    await expect(WorktreeManager.create(managerOptions(dataRoot))).rejects.toMatchObject({
+      code: "root_busy"
+    });
+    releaseVerifier();
+    await resuming;
+    await closing;
+
+    const outcome = await deferred.resumePendingDisposals().then(
+      () => undefined,
+      (error: unknown) => error
+    );
+    expect(outcome).toMatchObject({
+      code: "closed",
+      message: "The worktree manager is closed."
+    });
+    expect(Object.isFrozen(outcome)).toBe(true);
+    const replacement = await WorktreeManager.create(managerOptions(dataRoot));
+    await replacement.close();
+  });
+
+  it("captures the defer option once and rejects hostile or extra construction values", async () => {
+    const { dataRoot } = await createSetup();
+    let reads = 0;
+    const captured: WorktreeManagerOptions = { ...managerOptions(dataRoot) };
+    Object.defineProperty(captured, "deferStartupDisposal", {
+      enumerable: true,
+      get: () => {
+        reads += 1;
+        if (reads > 1) throw new Error("defer option read twice");
+        return true;
+      }
+    });
+    const manager = await WorktreeManager.create(captured);
+    expect(reads).toBe(1);
+    await manager.resumePendingDisposals();
+    await manager.close();
+
+    await expect(
+      WorktreeManager.create({
+        ...managerOptions(dataRoot),
+        deferStartupDisposal: "true"
+      } as never)
+    ).rejects.toMatchObject({ code: "invalid_request" });
+    const hostile = { ...managerOptions(dataRoot) } as Record<string, unknown>;
+    Object.defineProperty(hostile, "deferStartupDisposal", {
+      enumerable: true,
+      get: () => {
+        throw new Error("hostile defer getter detail");
+      }
+    });
+    await expect(WorktreeManager.create(hostile as never)).rejects.toMatchObject({
+      code: "invalid_request",
+      message: "The worktree request is invalid."
+    });
+    await expect(
+      WorktreeManager.create({
+        ...managerOptions(dataRoot),
+        deferStartupDisposal: true,
+        extraDeferAuthority: true
+      } as never)
+    ).rejects.toMatchObject({ code: "invalid_request" });
+    const replacement = await WorktreeManager.create(managerOptions(dataRoot));
+    await replacement.close();
+  });
+
+  it("releases the root lock when deferred construction fails before publication", async () => {
+    const { dataRoot } = await createSetup();
+    await mkdir(join(dataRoot, "worktrees", "unexpected"), {
+      recursive: true,
+      mode: 0o700
+    });
+
+    await expect(
+      WorktreeManager.create({
+        ...managerOptions(dataRoot),
+        deferStartupDisposal: true
+      })
+    ).rejects.toMatchObject({ code: "maintenance_required" });
+    await rm(join(dataRoot, "worktrees", "unexpected"), { recursive: true });
+
+    const replacement = await WorktreeManager.create({
+      ...managerOptions(dataRoot),
+      deferStartupDisposal: true
+    });
+    await replacement.close();
+  });
+
+  it("still reconciles ready environments when only phase-4 disposal is deferred", async () => {
+    const { fixture, dataRoot, request } = await createSetup();
+    const first = await WorktreeManager.create(managerOptions(dataRoot));
+    await first.prepareEnvironment(request);
+    await first.close();
+    await configureRepository(fixture, "user.name", "Deferred Ready Drift");
+
+    const outcome = await WorktreeManager.create({
+      ...managerOptions(dataRoot, "2026-08-21T12:02:00.000Z"),
+      deferStartupDisposal: true
+    }).then(
+      async (unexpected) => {
+        await unexpected.close();
+        return undefined;
+      },
+      (error: unknown) => error
+    );
+    expect(outcome).toMatchObject({ code: "environment_conflict" });
   });
 
   it("preserves a primary disposal failure when lease release also fails", async () => {

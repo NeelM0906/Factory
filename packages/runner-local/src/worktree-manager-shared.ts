@@ -82,6 +82,7 @@ export type WorktreeManagerDisposalBoundary =
 export interface WorktreeManagerOptions {
   readonly dataRoot: string;
   readonly now: () => string;
+  readonly deferStartupDisposal?: boolean;
   readonly verifyTerminalEvidence: (
     verification: TerminalEvidenceVerification
   ) => Promise<boolean> | boolean;
@@ -105,6 +106,7 @@ export interface WorktreeManagerOptions {
 export interface AdmittedWorktreeManagerOptions {
   readonly dataRoot: string;
   readonly now: () => string;
+  readonly deferStartupDisposal: boolean;
   readonly verifyTerminalEvidence: (verification: TerminalEvidenceVerification) => Promise<boolean>;
   readonly acquireEnvironmentQuiescence: (
     environmentId: EnvironmentId
@@ -126,6 +128,7 @@ export const snapshotManagerOptions = (
 ): AdmittedWorktreeManagerOptions => {
   let dataRoot: unknown;
   let now: unknown;
+  let deferStartupDisposal: unknown;
   let verifyTerminalEvidence: unknown;
   let acquireEnvironmentQuiescence: unknown;
   let trustedGitExecutable: unknown;
@@ -141,6 +144,7 @@ export const snapshotManagerOptions = (
       !exactOwnKeys(candidate, [
         "dataRoot",
         "now",
+        "deferStartupDisposal",
         "verifyTerminalEvidence",
         "acquireEnvironmentQuiescence",
         "trustedGitExecutable",
@@ -154,6 +158,7 @@ export const snapshotManagerOptions = (
     }
     dataRoot = candidate.dataRoot;
     now = candidate.now;
+    deferStartupDisposal = candidate.deferStartupDisposal;
     verifyTerminalEvidence = candidate.verifyTerminalEvidence;
     acquireEnvironmentQuiescence = candidate.acquireEnvironmentQuiescence;
     trustedGitExecutable = candidate.trustedGitExecutable;
@@ -172,6 +177,7 @@ export const snapshotManagerOptions = (
     typeof dataRoot !== "string" ||
     !dataRoot.startsWith("/") ||
     typeof now !== "function" ||
+    (deferStartupDisposal !== undefined && typeof deferStartupDisposal !== "boolean") ||
     typeof verifyTerminalEvidence !== "function" ||
     typeof acquireEnvironmentQuiescence !== "function" ||
     (trustedGitExecutable !== undefined && typeof trustedGitExecutable !== "string") ||
@@ -196,6 +202,7 @@ export const snapshotManagerOptions = (
   return Object.freeze({
     dataRoot,
     now: () => Reflect.apply(nowFunction, undefined, []) as string,
+    deferStartupDisposal: deferStartupDisposal === true,
     verifyTerminalEvidence: async (verification: TerminalEvidenceVerification) =>
       (await Reflect.apply(verifier, undefined, [verification])) as boolean,
     acquireEnvironmentQuiescence: async (environmentId: EnvironmentId) =>

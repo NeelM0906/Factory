@@ -126,7 +126,10 @@ export class WorktreeManager {
       });
       const states = await registry.recoverAll();
       await assertManagedRoot(paths, states);
-      for (const state of states) await manager.#recoverStartupState(state);
+      for (const state of states) {
+        if (state.phase === "disposal_recorded" && options.deferStartupDisposal) continue;
+        await manager.#recoverStartupState(state);
+      }
       lock = undefined;
       return manager;
     } catch (error) {
@@ -246,6 +249,15 @@ export class WorktreeManager {
         state = await this.#disposal.finish(state);
         return this.#disposeResponse(state.intent.environmentId, false);
       });
+    });
+  }
+
+  async resumePendingDisposals(): Promise<void> {
+    return this.#runOperation(async () => {
+      const states = await this.#registry.recoverAll();
+      for (const state of states) {
+        if (state.phase === "disposal_recorded") await this.#recoverStartupState(state);
+      }
     });
   }
 
