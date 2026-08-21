@@ -29,7 +29,7 @@ const CORRELATION_ID = "123e4567-e89b-42d3-a456-426614174001";
 
 const context = {
   workspaceId: WORKSPACE_ID,
-  actor: { kind: "system", id: "autostack" },
+  actor: { kind: "user", id: "local-user" },
   correlationId: CORRELATION_ID,
   occurredAt: NOW
 } as const;
@@ -375,6 +375,206 @@ const localEventBodies = async () => {
 };
 
 describe("domain event contracts", () => {
+  it("rejects ineligible, early, and timestamp-mismatched approval decisions", async () => {
+    const bodies = await localEventBodies();
+    const requested = bodies.find(
+      (body) => body.type === "approval.requested" && "approval" in body.payload
+    );
+    const decided = bodies.find(
+      (body) => body.type === "approval.decided" && body.payload.approvalId === APPROVAL_ID
+    );
+    if (
+      requested?.type !== "approval.requested" ||
+      decided?.type !== "approval.decided" ||
+      !("approval" in requested.payload)
+    ) {
+      throw new TypeError("Fixture is missing plan approval evidence.");
+    }
+    const requestedEvent = { ...context, ...requested };
+    await expect(
+      validateRunStreamCoherence([
+        requestedEvent,
+        { ...context, ...decided, actor: { kind: "user", id: "not-eligible" } }
+      ])
+    ).rejects.toThrow(/eligible/i);
+    const early = "2026-08-20T11:00:00.000Z";
+    await expect(
+      validateRunStreamCoherence([
+        requestedEvent,
+        {
+          ...context,
+          ...decided,
+          occurredAt: early,
+          payload: { ...decided.payload, decidedAt: early }
+        }
+      ])
+    ).rejects.toThrow(/created|decision/i);
+    await expect(
+      validateRunStreamCoherence([
+        requestedEvent,
+        {
+          ...context,
+          ...decided,
+          occurredAt: "2026-08-20T12:01:00.000Z",
+          payload: { ...decided.payload, decidedAt: NOW }
+        }
+      ])
+    ).rejects.toThrow(/timestamp|decision/i);
+  });
+
+  it("does not permit environment or command authorization IDs to be reassigned", async () => {
+    const bodies = await localEventBodies();
+    const planRequested = bodies.find(
+      (body) =>
+        body.type === "approval.requested" &&
+        "approval" in body.payload &&
+        body.payload.approval.kind === "plan"
+    );
+    const planDecided = bodies.find(
+      (body) => body.type === "approval.decided" && body.payload.approvalId === APPROVAL_ID
+    );
+    const environmentRecorded = bodies.find(
+      (body) => body.type === "environment.authorization_recorded"
+    );
+    const permissionRequested = bodies.find(
+      (body) =>
+        body.type === "approval.requested" &&
+        "approval" in body.payload &&
+        body.payload.approval.kind === "permission"
+    );
+    const permissionDecided = bodies.find(
+      (body) =>
+        body.type === "approval.decided" && body.payload.approvalId === PERMISSION_APPROVAL_ID
+    );
+    const commandRecorded = bodies.find((body) => body.type === "command.authorization_recorded");
+    if (
+      planRequested?.type !== "approval.requested" ||
+      planDecided?.type !== "approval.decided" ||
+      environmentRecorded?.type !== "environment.authorization_recorded" ||
+      permissionRequested?.type !== "approval.requested" ||
+      permissionDecided?.type !== "approval.decided" ||
+      commandRecorded?.type !== "command.authorization_recorded" ||
+      !("approval" in planRequested.payload) ||
+      !("authorization" in environmentRecorded.payload) ||
+      !("approval" in permissionRequested.payload) ||
+      !("authorization" in commandRecorded.payload)
+    ) {
+      throw new TypeError("Fixture is missing authorization evidence.");
+    }
+
+    const replacementEnvironmentId = "env_123e4567-e89b-42d3-a456-426614174099";
+    const replacementPlanApprovalId = "apr_123e4567-e89b-42d3-a456-426614174099";
+    const replacementEnvironmentScope = {
+      ...environmentRecorded.payload.authorization.scope,
+      environmentId: replacementEnvironmentId
+    };
+    const replacementEnvironmentAuthorization = {
+      ...environmentRecorded.payload.authorization,
+      approvalId: replacementPlanApprovalId,
+      approvalEvidenceDigest: await digestExecutionScope(replacementEnvironmentScope),
+      scope: replacementEnvironmentScope,
+      digest: "0".repeat(64)
+    };
+    replacementEnvironmentAuthorization.digest = await digestEnvironmentAuthorization(
+      replacementEnvironmentAuthorization
+    );
+    const replacementPlanApproval = {
+      ...planRequested.payload.approval,
+      id: replacementPlanApprovalId,
+      evidenceDigest: replacementEnvironmentAuthorization.approvalEvidenceDigest
+    };
+    const replacementEnvironmentPayload = {
+      ...environmentRecorded.payload,
+      environmentId: replacementEnvironmentId,
+      authorization: replacementEnvironmentAuthorization,
+      phaseKey: `environment:${replacementEnvironmentId}:authorization`
+    };
+    await expect(
+      validateRunStreamCoherence([
+        ...bodies.slice(0, 3).map((body) => ({ ...context, ...body })),
+        { ...context, ...planRequested, payload: { approval: replacementPlanApproval } },
+        {
+          ...context,
+          ...planDecided,
+          payload: {
+            ...planDecided.payload,
+            approvalId: replacementPlanApprovalId,
+            evidenceDigest: replacementPlanApproval.evidenceDigest
+          }
+        },
+        {
+          ...context,
+          ...environmentRecorded,
+          payload: {
+            ...replacementEnvironmentPayload,
+            phaseDigest: await digestLocalExecutionPhase(
+              "environment.authorization_recorded",
+              replacementEnvironmentPayload
+            )
+          }
+        }
+      ])
+    ).rejects.toThrow(/immutable/i);
+
+    const replacementCommandId = "cmd_123e4567-e89b-42d3-a456-426614174099";
+    const replacementPermissionApprovalId = "apr_123e4567-e89b-42d3-a456-426614174098";
+    const replacementCommandScope = {
+      ...commandRecorded.payload.authorization.scope,
+      commandId: replacementCommandId
+    };
+    const replacementCommandAuthorization = {
+      ...commandRecorded.payload.authorization,
+      approvalId: replacementPermissionApprovalId,
+      approvalEvidenceDigest: await digestCommandScope(replacementCommandScope),
+      scope: replacementCommandScope,
+      digest: "0".repeat(64)
+    };
+    replacementCommandAuthorization.digest = await digestCommandAuthorization(
+      replacementCommandAuthorization
+    );
+    const replacementPermissionApproval = {
+      ...permissionRequested.payload.approval,
+      id: replacementPermissionApprovalId,
+      evidenceDigest: replacementCommandAuthorization.approvalEvidenceDigest
+    };
+    const replacementCommandPayload = {
+      ...commandRecorded.payload,
+      commandId: replacementCommandId,
+      authorization: replacementCommandAuthorization,
+      phaseKey: `command:${replacementCommandId}:authorization`
+    };
+    await expect(
+      validateRunStreamCoherence([
+        ...bodies.slice(0, 6).map((body) => ({ ...context, ...body })),
+        {
+          ...context,
+          ...permissionRequested,
+          payload: { approval: replacementPermissionApproval }
+        },
+        {
+          ...context,
+          ...permissionDecided,
+          payload: {
+            ...permissionDecided.payload,
+            approvalId: replacementPermissionApprovalId,
+            evidenceDigest: replacementPermissionApproval.evidenceDigest
+          }
+        },
+        {
+          ...context,
+          ...commandRecorded,
+          payload: {
+            ...replacementCommandPayload,
+            phaseDigest: await digestLocalExecutionPhase(
+              "command.authorization_recorded",
+              replacementCommandPayload
+            )
+          }
+        }
+      ])
+    ).rejects.toThrow(/immutable/i);
+  });
+
   it("rejects a local command completion that lacks prior durable intent and artifact evidence", async () => {
     const payload = {
       runId: RUN_ID,

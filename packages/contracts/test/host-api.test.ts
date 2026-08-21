@@ -5,6 +5,7 @@ import {
   HostApiRouteSchema,
   admitHostOperation,
   admitHostResponse,
+  createHostCommandEventResponseAdmission,
   HostArtifactContentRequestSchema,
   HostArtifactRangeSchema,
   HostCommandEventFrameSchema,
@@ -421,7 +422,7 @@ describe("host daemon API contracts", () => {
     ).toMatchObject({ disposed: true });
   });
 
-  it("binds durable event frames to the event request identity and forward-only cursor", () => {
+  it("binds durable event frames to the event request identity and exact stream cursor", () => {
     const request = {
       route: "GET /v1/environments/:environmentId/commands/:commandId/events" as const,
       environmentId: "env_123e4567-e89b-42d3-a456-426614174000",
@@ -459,6 +460,10 @@ describe("host daemon API contracts", () => {
         response({ ...event, workspaceId: "ws_123e4567-e89b-42d3-a456-426614174099" })
       )
     ).toThrow(/event/i);
+    expect(admitHostResponse(request, response(event))).toMatchObject({ type: "runner.event" });
+    expect(() => admitHostResponse(request, response({ ...event, sequence: 7 }))).toThrow(
+      /sequence/i
+    );
     expect(() => admitHostResponse(request, response({ ...event, sequence: 5 }))).toThrow(
       /sequence/i
     );
@@ -469,6 +474,55 @@ describe("host daemon API contracts", () => {
         body: { type: "subscription.lagged", lastDurableSequence: 4, resumeCursor: 4 }
       })
     ).toThrow(/cursor/i);
+
+    const admission = createHostCommandEventResponseAdmission(request);
+    expect(admission.cursor).toBe(5);
+    expect(admission.admit(response(event))).toMatchObject({ type: "runner.event" });
+    expect(admission.cursor).toBe(6);
+    expect(() => admission.admit(response({ ...event, sequence: 8 }))).toThrow(/sequence/i);
+    expect(() => admission.admit(response(event))).toThrow(/sequence/i);
+    expect(() =>
+      admission.admit(
+        response({ ...event, sequence: 7, commandId: "cmd_123e4567-e89b-42d3-a456-426614174099" })
+      )
+    ).toThrow(/identity/i);
+
+    const lagAdmission = createHostCommandEventResponseAdmission(request);
+    lagAdmission.admit(response(event));
+    expect(
+      lagAdmission.admit({
+        status: 200,
+        mediaType: "application/x-ndjson",
+        body: { type: "subscription.lagged", lastDurableSequence: 6, resumeCursor: 6 }
+      })
+    ).toMatchObject({ type: "subscription.lagged", resumeCursor: 6 });
+    expect(lagAdmission.cursor).toBe(6);
+    expect(lagAdmission.terminal).toBe(true);
+    expect(() => lagAdmission.admit(response({ ...event, sequence: 7 }))).toThrow(/terminal/i);
+
+    const invalidLagAdmission = createHostCommandEventResponseAdmission(request);
+    expect(() =>
+      invalidLagAdmission.admit({
+        status: 200,
+        mediaType: "application/x-ndjson",
+        body: { type: "subscription.lagged", lastDurableSequence: 6, resumeCursor: 5 }
+      })
+    ).toThrow(/cursor/i);
+
+    const terminalAdmission = createHostCommandEventResponseAdmission(request);
+    terminalAdmission.admit(
+      response({
+        type: "stream.error",
+        workspaceId: request.query.workspaceId,
+        runId: request.query.runId,
+        commandId: request.query.commandId,
+        sequence: 6,
+        occurredAt: "2026-08-21T12:00:00.000Z",
+        code: "protocol_failure",
+        message: "safe"
+      })
+    );
+    expect(() => terminalAdmission.admit(response({ ...event, sequence: 7 }))).toThrow(/terminal/i);
   });
 
   it("admits trusted prepare, start, lifecycle, artifact, and terminal disposal operations", async () => {

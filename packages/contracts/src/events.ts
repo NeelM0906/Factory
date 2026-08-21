@@ -567,9 +567,24 @@ export const validateRunStreamCoherence = async (
           recorded.decided ||
           recorded.approval.runId !== event.payload.runId ||
           recorded.approval.evidenceDigest !== event.payload.evidenceDigest ||
-          Date.parse(event.payload.decidedAt) > Date.parse(event.occurredAt)
+          recorded.approval.status !== "pending"
         ) {
           throw new TypeError("Approval decision lacks matching request evidence.");
+        }
+        if (!recorded.approval.eligibleApproverIds.includes(event.actor.id)) {
+          throw new TypeError("Approval decision actor is not eligible.");
+        }
+        const createdAt = Date.parse(recorded.approval.createdAt);
+        const decidedAt = Date.parse(event.payload.decidedAt);
+        const occurredAt = Date.parse(event.occurredAt);
+        if (
+          Number.isNaN(createdAt) ||
+          Number.isNaN(decidedAt) ||
+          Number.isNaN(occurredAt) ||
+          decidedAt < createdAt ||
+          decidedAt !== occurredAt
+        ) {
+          throw new TypeError("Approval decision timestamp is incoherent.");
         }
         const approval = ApprovalSchema.parse({
           ...recorded.approval,
@@ -616,6 +631,9 @@ export const validateRunStreamCoherence = async (
         if (existing !== undefined) {
           throw new TypeError("Environment authorization is already recorded.");
         }
+        if (environmentAuthorizations.has(authorization.id)) {
+          throw new TypeError("Environment authorization IDs are immutable.");
+        }
         environmentAuthorizations.set(authorization.id, authorization);
         environments.set(environmentId, { authorization, disposed: false });
         break;
@@ -653,6 +671,9 @@ export const validateRunStreamCoherence = async (
         }
         if (commands.has(commandId))
           throw new TypeError("Command authorization is already recorded.");
+        if (commandAuthorizations.has(authorization.id)) {
+          throw new TypeError("Command authorization IDs are immutable.");
+        }
         commandAuthorizations.set(authorization.id, authorization);
         commands.set(commandId, {
           authorization,

@@ -87,10 +87,28 @@ const isCommandStringFlag = (argument: string): boolean =>
   argument.startsWith("--command=");
 const hasShellCommandStringFlag = (argumentsToInspect: readonly string[]): boolean => {
   for (const argument of argumentsToInspect) {
+    if (argument === "--") return false;
     if (isCommandStringFlag(argument)) return true;
-    if (!argument.startsWith("-")) return false;
   }
   return false;
+};
+const ShellWrapperBasenames = new Set(["env", "sudo", "doas", "busybox"]);
+const usesEnvSplitString = (executable: string, args: readonly string[]): boolean =>
+  executable === "env" &&
+  args.some(
+    (argument) =>
+      argument === "-S" || argument === "--split-string" || argument.startsWith("--split-string=")
+  );
+const hasImplicitWrapperShellCommandString = (
+  executable: string,
+  args: readonly string[]
+): boolean => {
+  if (executable !== "sudo" && executable !== "doas") return false;
+  const shellOptionIndex = args.findIndex(
+    (argument) =>
+      argument === "-s" || argument === "--shell" || argument === "-i" || argument === "--login"
+  );
+  return shellOptionIndex >= 0 && hasShellCommandStringFlag(args.slice(shellOptionIndex + 1));
 };
 const isForbiddenShellCommandString = (command: {
   readonly executable: string;
@@ -100,7 +118,11 @@ const isForbiddenShellCommandString = (command: {
   if (ShellInterpreterBasenames.has(executable)) {
     return hasShellCommandStringFlag(command.args);
   }
-  if (executable !== "env") return false;
+  if (!ShellWrapperBasenames.has(executable)) return false;
+  // env -S parses a command string itself, so it cannot be safely admitted as
+  // an argument-vector command even when the embedded shell is not tokenized yet.
+  if (usesEnvSplitString(executable, command.args)) return true;
+  if (hasImplicitWrapperShellCommandString(executable, command.args)) return true;
   const shellIndex = command.args.findIndex((argument) =>
     ShellInterpreterBasenames.has(shellBasename(argument))
   );

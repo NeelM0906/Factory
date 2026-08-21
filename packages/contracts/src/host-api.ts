@@ -455,6 +455,88 @@ export interface HostResponseBodyByRoute {
   >;
 }
 
+type HostCommandEventsRouteRequest = Extract<
+  z.infer<typeof HostRouteRequestSchema>,
+  { readonly route: "GET /v1/environments/:environmentId/commands/:commandId/events" }
+>;
+
+const HostResponseEnvelopeSchema = z
+  .object({ status: z.number().int(), mediaType: z.string(), body: z.unknown() })
+  .strict();
+
+const parseHostResponseEnvelope = (
+  request: HostRouteRequest,
+  responseCandidate: unknown
+): z.infer<typeof HostResponseEnvelopeSchema> => {
+  const response = HostResponseEnvelopeSchema.parse(normalizeSafeJson(responseCandidate));
+  const contract = HOST_ROUTE_CONTRACTS[request.route];
+  if (response.status !== contract.successStatus || response.mediaType !== contract.mediaType) {
+    throw new TypeError("Host response status or media type is invalid.");
+  }
+  return response;
+};
+
+export interface HostCommandEventResponseAdmission {
+  readonly cursor: number;
+  readonly terminal: boolean;
+  admit(responseCandidate: unknown): HostCommandEventFrame;
+}
+
+/**
+ * Admits a single NDJSON command-event transport stream.  The returned state
+ * owns the resume cursor, so each frame is checked against the immediately
+ * preceding durable frame rather than only against the initial request.
+ */
+export const createHostCommandEventResponseAdmission = (
+  requestCandidate: unknown
+): HostCommandEventResponseAdmission => {
+  const request = HostRouteRequestSchema.parse(normalizeSafeJson(requestCandidate));
+  if (request.route !== "GET /v1/environments/:environmentId/commands/:commandId/events") {
+    throw new TypeError("A command events request is required for stream admission.");
+  }
+  const eventRequest: HostCommandEventsRouteRequest = request;
+  let cursor = eventRequest.query.after;
+  let terminal = false;
+
+  return {
+    get cursor(): number {
+      return cursor;
+    },
+    get terminal(): boolean {
+      return terminal;
+    },
+    admit(responseCandidate: unknown): HostCommandEventFrame {
+      if (terminal) throw new TypeError("Host event stream is already terminal.");
+      const response = parseHostResponseEnvelope(eventRequest, responseCandidate);
+      const body = HostCommandEventFrameSchema.parse(response.body);
+      if (body.type === "runner.event") {
+        if (
+          body.event.workspaceId !== eventRequest.query.workspaceId ||
+          body.event.runId !== eventRequest.query.runId ||
+          body.event.commandId !== eventRequest.query.commandId
+        ) {
+          throw new TypeError("Host event response does not match its request identity.");
+        }
+        if (body.event.sequence !== cursor + 1) {
+          throw new TypeError("Host event response sequence must equal the next request cursor.");
+        }
+        cursor = body.event.sequence;
+        terminal = body.event.type === "command.completed" || body.event.type === "stream.error";
+      } else {
+        if (body.lastDurableSequence < cursor || body.resumeCursor !== body.lastDurableSequence) {
+          throw new TypeError(
+            "Host subscription lag cursor cannot regress or contradict durable state."
+          );
+        }
+        cursor = body.resumeCursor;
+        // Lag is a transport terminal: reconnect using the safe durable cursor.
+        terminal = true;
+      }
+      return body;
+    }
+  };
+};
+
 export function admitHostResponse<Route extends HostApiRoute>(
   requestCandidate: Extract<HostRouteRequest, { readonly route: Route }>,
   responseCandidate: unknown
@@ -468,14 +550,10 @@ export function admitHostResponse(
   responseCandidate: unknown
 ): HostResponseBodyByRoute[HostApiRoute] {
   const request = HostRouteRequestSchema.parse(normalizeSafeJson(requestCandidate));
-  const response = z
-    .object({ status: z.number().int(), mediaType: z.string(), body: z.unknown() })
-    .strict()
-    .parse(normalizeSafeJson(responseCandidate));
-  const contract = HOST_ROUTE_CONTRACTS[request.route];
-  if (response.status !== contract.successStatus || response.mediaType !== contract.mediaType) {
-    throw new TypeError("Host response status or media type is invalid.");
+  if (request.route === "GET /v1/environments/:environmentId/commands/:commandId/events") {
+    return createHostCommandEventResponseAdmission(request).admit(responseCandidate);
   }
+  const response = parseHostResponseEnvelope(request, responseCandidate);
   switch (request.route) {
     case "GET /v1/health":
       return HostHealthResponseSchema.parse(response.body);
@@ -500,28 +578,6 @@ export function admitHostResponse(
       const body = CommandAcceptedSchema.parse(response.body);
       if (body.commandId !== request.body.commandId) {
         throw new TypeError("Command response does not match request.");
-      }
-      return body;
-    }
-    case "GET /v1/environments/:environmentId/commands/:commandId/events": {
-      const body = HostCommandEventFrameSchema.parse(response.body);
-      if (body.type === "runner.event") {
-        if (
-          body.event.workspaceId !== request.query.workspaceId ||
-          body.event.runId !== request.query.runId ||
-          body.event.commandId !== request.query.commandId
-        ) {
-          throw new TypeError("Host event response does not match its request identity.");
-        }
-        if (body.event.sequence <= request.query.after) {
-          throw new TypeError("Host event response sequence must advance the request cursor.");
-        }
-      } else if (
-        body.lastDurableSequence < request.query.after ||
-        body.resumeCursor < request.query.after ||
-        body.resumeCursor < body.lastDurableSequence
-      ) {
-        throw new TypeError("Host subscription lag cursor cannot regress.");
       }
       return body;
     }

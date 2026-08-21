@@ -171,7 +171,15 @@ describe("local runner contracts", () => {
       { executable: "bash", args: ["-lc", "echo safe"] },
       { executable: "dash", args: ["-c=echo safe"] },
       { executable: "/bin/zsh", args: ["--command=echo safe"] },
-      { executable: "/usr/bin/env", args: ["fish", "-c", "echo safe"] }
+      { executable: "/usr/bin/env", args: ["fish", "-c", "echo safe"] },
+      { executable: "bash", args: ["-O", "extglob", "-c", "echo safe"] },
+      { executable: "bash", args: ["--rcfile", "/dev/null", "-c", "echo safe"] },
+      { executable: "bash", args: ["-o", "pipefail", "-c", "echo safe"] },
+      { executable: "/usr/bin/env", args: ["MODE=safe", "-i", "sh", "-c", "echo safe"] },
+      { executable: "/usr/bin/env", args: ["-S", "bash -c 'echo safe'"] },
+      { executable: "sudo", args: ["-n", "zsh", "-c", "echo safe"] },
+      { executable: "sudo", args: ["-s", "-c", "echo safe"] },
+      { executable: "busybox", args: ["sh", "-c", "echo safe"] }
     ]) {
       expect(() =>
         CommandSpecSchema.parse({
@@ -700,6 +708,13 @@ describe("local runner contracts", () => {
         dependencies
       )
     ).rejects.toThrow(/specification/i);
+    await expect(
+      admitStartCommand(
+        { ...request, command: { ...command, executable: "bash", args: ["-c", "echo safe"] } },
+        NOW,
+        dependencies
+      )
+    ).rejects.toThrow(/shell command-string/i);
     await expect(
       admitStartCommand(request, "2026-08-22T12:00:00.000Z", dependencies)
     ).rejects.toThrow(/expired/i);
