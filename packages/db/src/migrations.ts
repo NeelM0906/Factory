@@ -62,6 +62,18 @@ export const MIGRATIONS: readonly Migration[] = [
       `CREATE INDEX workflow_jobs_expired_lease_idx
         ON workflow_jobs (status, lease_expires_at)`
     ]
+  },
+  {
+    version: 2,
+    name: "bind_job_completion_idempotency",
+    statements: [
+      `ALTER TABLE idempotency_records
+        ADD COLUMN operation_kind TEXT NOT NULL DEFAULT 'commit'
+        CHECK (operation_kind IN ('commit', 'job_completion'))`,
+      `ALTER TABLE idempotency_records ADD COLUMN completion_job_id TEXT`,
+      `ALTER TABLE idempotency_records ADD COLUMN completion_lease_digest TEXT`,
+      `ALTER TABLE idempotency_records ADD COLUMN completion_request_digest TEXT`
+    ]
   }
 ] as const;
 
@@ -79,27 +91,26 @@ export function applyMigrations(
   now: () => string = () => new Date().toISOString()
 ): void {
   ensureMigrationTable(connection);
-  const appliedRows = connection.prepare("SELECT version FROM schema_migrations").all() as Array<{
-    version: number;
-  }>;
-  const applied = new Set(appliedRows.map(({ version }) => version));
+  connection.exec("BEGIN IMMEDIATE");
+  try {
+    const appliedRows = connection.prepare("SELECT version FROM schema_migrations").all() as Array<{
+      version: number;
+    }>;
+    const applied = new Set(appliedRows.map(({ version }) => version));
 
-  for (const migration of [...migrations].sort((left, right) => left.version - right.version)) {
-    if (applied.has(migration.version)) continue;
-    if (!Number.isSafeInteger(migration.version) || migration.version <= 0) {
-      throw new TypeError(`Migration version ${migration.version} is invalid.`);
-    }
-
-    connection.exec("BEGIN IMMEDIATE");
-    try {
+    for (const migration of [...migrations].sort((left, right) => left.version - right.version)) {
+      if (applied.has(migration.version)) continue;
+      if (!Number.isSafeInteger(migration.version) || migration.version <= 0) {
+        throw new TypeError(`Migration version ${migration.version} is invalid.`);
+      }
       for (const statement of migration.statements) connection.exec(statement);
       connection
         .prepare("INSERT INTO schema_migrations (version, name, applied_at) VALUES (?, ?, ?)")
         .run(migration.version, migration.name, now());
-      connection.exec("COMMIT");
-    } catch (error) {
-      connection.exec("ROLLBACK");
-      throw error;
     }
+    connection.exec("COMMIT");
+  } catch (error) {
+    connection.exec("ROLLBACK");
+    throw error;
   }
 }

@@ -13,6 +13,7 @@ import {
   WorkItemIdSchema,
   WorkspaceIdSchema
 } from "./ids.js";
+import { SafeMetadataStringSchema } from "./secret-safety.js";
 
 const TimestampSchema = z.iso.datetime();
 const VersionSchema = z.literal(1);
@@ -347,26 +348,71 @@ export const AutomationSchema = z
   })
   .strict();
 
-export const CredentialRefSchema = z
+const CredentialMetadataSchema = z
   .object({
-    schemaVersion: VersionSchema,
-    id: CredentialRefIdSchema,
-    workspaceId: WorkspaceIdSchema,
-    provider: z.string().min(1),
-    store: z.enum(["macos_keychain", "vercel", "server_encrypted", "external_vault"]),
-    locator: z.string().min(1),
-    metadata: z
-      .object({
-        label: z.string().min(1),
-        account: z.string().min(1).optional(),
-        scopes: z.array(z.string().min(1)).default([]),
-        expiresAt: TimestampSchema.optional()
-      })
-      .strict(),
-    createdAt: TimestampSchema,
-    updatedAt: TimestampSchema
+    label: SafeMetadataStringSchema.max(160),
+    account: SafeMetadataStringSchema.max(320).optional(),
+    scopes: z.array(SafeMetadataStringSchema.max(320)).max(100).default([]),
+    expiresAt: TimestampSchema.optional()
   })
   .strict();
+
+const CredentialRefBaseShape = {
+  schemaVersion: VersionSchema,
+  id: CredentialRefIdSchema,
+  workspaceId: WorkspaceIdSchema,
+  provider: SafeMetadataStringSchema.max(120),
+  metadata: CredentialMetadataSchema,
+  createdAt: TimestampSchema,
+  updatedAt: TimestampSchema
+} as const;
+
+export const CredentialRefSchema = z.discriminatedUnion("store", [
+  z
+    .object({
+      ...CredentialRefBaseShape,
+      store: z.literal("macos_keychain"),
+      locator: z
+        .object({
+          service: SafeMetadataStringSchema.max(320),
+          account: SafeMetadataStringSchema.max(320)
+        })
+        .strict()
+    })
+    .strict(),
+  z
+    .object({
+      ...CredentialRefBaseShape,
+      store: z.literal("vercel"),
+      locator: z
+        .object({
+          projectId: SafeMetadataStringSchema.max(320),
+          name: SafeMetadataStringSchema.max(320)
+        })
+        .strict()
+    })
+    .strict(),
+  z
+    .object({
+      ...CredentialRefBaseShape,
+      store: z.literal("server_encrypted"),
+      locator: z.object({ recordId: SafeMetadataStringSchema.max(320) }).strict()
+    })
+    .strict(),
+  z
+    .object({
+      ...CredentialRefBaseShape,
+      store: z.literal("external_vault"),
+      locator: z
+        .object({
+          vault: SafeMetadataStringSchema.max(320),
+          path: SafeMetadataStringSchema.max(1_000),
+          key: SafeMetadataStringSchema.max(320)
+        })
+        .strict()
+    })
+    .strict()
+]);
 
 export type Actor = z.infer<typeof ActorSchema>;
 export type Workspace = z.infer<typeof WorkspaceSchema>;

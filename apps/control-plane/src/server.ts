@@ -13,7 +13,7 @@ import {
 } from "@autostack/workflow";
 
 import { createApp } from "./app.js";
-import { deriveLocalWorkspaceId, loadConfig, type ControlPlaneConfig } from "./config.js";
+import { loadConfig, loadOrCreateLocalWorkspaceId, type ControlPlaneConfig } from "./config.js";
 
 type ServeImplementation = typeof honoServe;
 type Server = ReturnType<ServeImplementation>;
@@ -52,12 +52,14 @@ export function startControlPlane(options: StartControlPlaneOptions = {}): Contr
   const database = openDatabase({ filePath: join(config.dataDirectory, "autostack.sqlite") });
   const ids = createIdFactory();
   const now = () => new Date().toISOString();
+  const workspaceId = loadOrCreateLocalWorkspaceId(config.dataDirectory, ids.workspace, now);
   const store = new SqliteDurableStore(database, {
     eventId: ids.event,
     leaseToken: randomUUID,
-    now
+    now,
+    sensitiveValues: [config.token]
   });
-  const registry = new HandlerRegistry();
+  const registry = new HandlerRegistry({ sensitiveValues: [config.token] });
   const executor = new LocalWorkflowExecutor({
     store,
     registry,
@@ -65,6 +67,7 @@ export function startControlPlane(options: StartControlPlaneOptions = {}): Contr
     now,
     leaseDurationMs: 30_000,
     pollIntervalMs: 1_000,
+    sensitiveValues: [config.token],
     retryAt: (error, job, timestamp) => retryAt(error, job.attempt, timestamp),
     reportError: (error, job) => {
       log(
@@ -81,7 +84,7 @@ export function startControlPlane(options: StartControlPlaneOptions = {}): Contr
     store,
     executor,
     token: config.token,
-    workspaceId: deriveLocalWorkspaceId(config.token),
+    workspaceId,
     ids,
     now,
     correlationId: randomUUID

@@ -9,7 +9,7 @@ const DEFAULT_URL = "http://127.0.0.1:4318";
 const HELP = `AutoStack ${VERSION}
 
 Usage:
-  autostack doctor [--url http://127.0.0.1:4318] [--token <value>] [--json]
+  autostack doctor [--url http://127.0.0.1:4318] [--token <deprecated>] [--json]
   autostack --help
   autostack --version
 `;
@@ -31,6 +31,8 @@ const validatedBaseUrl = (value: string): string | undefined => {
     const url = new URL(value);
     if (!new Set(["http:", "https:"]).has(url.protocol)) return undefined;
     if (url.username !== "" || url.password !== "") return undefined;
+    const loopback = new Set(["127.0.0.1", "localhost", "[::1]"]).has(url.hostname);
+    if (url.protocol === "http:" && !loopback) return undefined;
     return url.href.replace(/\/$/, "");
   } catch {
     return undefined;
@@ -77,9 +79,15 @@ export async function runCli(
   const baseUrl = validatedBaseUrl(
     parsed.values.url ?? dependencies.environment.AUTOSTACK_URL ?? DEFAULT_URL
   );
-  const token = parsed.values.token ?? dependencies.environment.AUTOSTACK_LOCAL_API_TOKEN;
+  const environmentToken = dependencies.environment.AUTOSTACK_LOCAL_API_TOKEN;
+  const token = environmentToken ?? parsed.values.token;
   if (baseUrl === undefined || token === undefined || token.length === 0) {
     return usageError(dependencies.stderr);
+  }
+  if (parsed.values.token !== undefined) {
+    dependencies.stderr.write(
+      "Warning: --token is deprecated; use AUTOSTACK_LOCAL_API_TOKEN instead.\n"
+    );
   }
 
   return runDoctor({ baseUrl, token, json: parsed.values.json ?? false }, dependencies);

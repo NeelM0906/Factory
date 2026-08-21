@@ -42,7 +42,13 @@ afterEach(async () => {
   );
 });
 
-const makeStore = async (requestedFilePath?: string) => {
+const makeStore = async (
+  requestedFilePath?: string,
+  options: {
+    readonly leaseTokens?: readonly string[];
+    readonly sensitiveValues?: readonly string[];
+  } = {}
+) => {
   const filePath = requestedFilePath ?? (await temporaryDatabasePath());
   let eventNumber = 10;
   let leaseNumber = 0;
@@ -52,8 +58,13 @@ const makeStore = async (requestedFilePath?: string) => {
       EventIdSchema.parse(
         `evt_123e4567-e89b-42d3-a456-${String(426614174000 + eventNumber++).padStart(12, "0")}`
       ),
-    leaseToken: () => `lease-${++leaseNumber}`,
-    now: () => NOW
+    leaseToken: () => {
+      const token = options.leaseTokens?.[leaseNumber];
+      leaseNumber += 1;
+      return token ?? `lease-${leaseNumber}`;
+    },
+    now: () => NOW,
+    ...(options.sensitiveValues === undefined ? {} : { sensitiveValues: options.sensitiveValues })
   });
   return { database, store, filePath };
 };
@@ -191,7 +202,7 @@ describe("SQLite durable commits", () => {
 
     await expect(
       store.commit(initialCommit({ jobs: [job({ availableAt: "not-a-timestamp" })] }))
-    ).rejects.toThrow(TypeError);
+    ).rejects.toThrow();
 
     expect(database.connection.prepare("SELECT COUNT(*) AS count FROM events").get()).toEqual({
       count: 0
@@ -201,6 +212,102 @@ describe("SQLite durable commits", () => {
     ).toEqual({
       count: 0
     });
+    await store.close();
+  });
+
+  it.each([
+    ["function", { value: () => undefined }],
+    ["undefined", { value: undefined }],
+    ["bigint", { value: 1n }],
+    ["symbol", { value: Symbol("unsafe") }],
+    ["NaN", { value: Number.NaN }],
+    ["Infinity", { value: Number.POSITIVE_INFINITY }],
+    ["credential", { value: "ghp_0123456789abcdefghijklmnop" }]
+  ])("rejects %s in job payloads and rolls back atomically", async (_label, payload) => {
+    const { database, store } = await makeStore();
+
+    await expect(store.commit(initialCommit({ jobs: [job({ payload })] }))).rejects.toThrow();
+    expect(database.connection.prepare("SELECT COUNT(*) AS count FROM events").get()).toEqual({
+      count: 0
+    });
+    expect(
+      database.connection.prepare("SELECT COUNT(*) AS count FROM workflow_jobs").get()
+    ).toEqual({
+      count: 0
+    });
+    await store.close();
+  });
+
+  it("rejects cyclic and configured-secret job payloads", async () => {
+    const configuredSecret = "configured-secret-0123456789abcdef";
+    const cyclic: Record<string, unknown> = {};
+    cyclic.self = cyclic;
+    const first = await makeStore(undefined, { sensitiveValues: [configuredSecret] });
+    await expect(
+      first.store.commit(initialCommit({ jobs: [job({ payload: cyclic })] }))
+    ).rejects.toThrow(/cyclic/i);
+    await expect(
+      first.store.commit(
+        initialCommit({
+          idempotency: { scope: "secret", key: "secret" },
+          jobs: [job({ payload: { value: configuredSecret } })]
+        })
+      )
+    ).rejects.toThrow();
+    expect(first.database.connection.prepare("SELECT COUNT(*) AS count FROM events").get()).toEqual(
+      { count: 0 }
+    );
+    await first.store.close();
+  });
+
+  it("validates stream identity and event workspace coherence before writing", async () => {
+    const { database, store } = await makeStore();
+    const decision = createRunDecision();
+    const runAppend = decision.appends[1];
+    if (runAppend === undefined) throw new Error("Expected run append.");
+
+    await expect(
+      store.commit(
+        initialCommit({
+          appends: [{ ...runAppend, stream: { kind: "run", id: createRunDecision().workItem.id } }],
+          jobs: []
+        })
+      )
+    ).rejects.toThrow();
+    const wrongWorkspaceEvent = {
+      ...runAppend.events[0],
+      workspaceId: WorkspaceIdSchema.parse("ws_123e4567-e89b-42d3-a456-426614174099")
+    } as (typeof runAppend.events)[number];
+    await expect(
+      store.commit(
+        initialCommit({
+          idempotency: { scope: "wrong-workspace", key: "request" },
+          appends: [{ ...runAppend, events: [wrongWorkspaceEvent] }],
+          jobs: []
+        })
+      )
+    ).rejects.toThrow();
+    expect(database.connection.prepare("SELECT COUNT(*) AS count FROM events").get()).toEqual({
+      count: 0
+    });
+    await store.close();
+  });
+
+  it("runtime-validates job IDs, stage, handler, and timestamps", async () => {
+    const { database, store } = await makeStore();
+    const invalid = {
+      ...job(),
+      jobId: "not-a-job-id",
+      workspaceId: "not-a-workspace-id",
+      runId: "not-a-run-id",
+      stage: "unknown",
+      handler: "",
+      createdAt: "not-a-timestamp"
+    } as unknown as NewWorkflowJob;
+    await expect(store.commit(initialCommit({ appends: [], jobs: [invalid] }))).rejects.toThrow();
+    expect(
+      database.connection.prepare("SELECT COUNT(*) AS count FROM workflow_jobs").get()
+    ).toEqual({ count: 0 });
     await store.close();
   });
 
@@ -305,6 +412,26 @@ describe("SQLite workflow leases", () => {
     await store.close();
   });
 
+  it("retries colliding lease tokens until it obtains a unique active token", async () => {
+    const { store } = await makeStore(undefined, {
+      leaseTokens: ["collision", "collision", "unique-token"]
+    });
+    const secondJob = job({
+      jobId: JobIdSchema.parse("job_123e4567-e89b-42d3-a456-426614174002")
+    });
+    await store.commit(initialCommit({ jobs: [job(), secondJob] }));
+
+    const first = await store.leaseNext({ workerId: "worker-1", now: NOW, leaseDurationMs: 1_000 });
+    const second = await store.leaseNext({
+      workerId: "worker-2",
+      now: NOW,
+      leaseDurationMs: 1_000
+    });
+    expect(first?.leaseToken).toBe("collision");
+    expect(second?.leaseToken).toBe("unique-token");
+    await store.close();
+  });
+
   it("completes a leased job with output events and next work atomically", async () => {
     const { database, store } = await makeStore();
     await store.commit(initialCommit());
@@ -360,7 +487,12 @@ describe("SQLite workflow leases", () => {
       jobId: job().jobId,
       leaseToken: firstLease.leaseToken,
       now: NOW,
-      error: { name: "TemporaryError", message: "try again", retryable: true },
+      error: {
+        code: "temporary_error",
+        name: "TemporaryError",
+        message: "try again",
+        retryable: true
+      },
       nextAvailableAt: ONE_SECOND_LATER
     });
     expect(
@@ -381,7 +513,12 @@ describe("SQLite workflow leases", () => {
       jobId: job().jobId,
       leaseToken: secondLease.leaseToken,
       now: ONE_SECOND_LATER,
-      error: { name: "TemporaryError", message: "still failing", retryable: true },
+      error: {
+        code: "temporary_error",
+        name: "TemporaryError",
+        message: "still failing",
+        retryable: true
+      },
       nextAvailableAt: TWO_SECONDS_LATER
     });
 
@@ -392,6 +529,7 @@ describe("SQLite workflow leases", () => {
     ).toEqual({
       status: "failed",
       lastError: JSON.stringify({
+        code: "temporary_error",
         name: "TemporaryError",
         message: "still failing",
         retryable: true
@@ -415,7 +553,12 @@ describe("SQLite workflow leases", () => {
         jobId: job().jobId,
         leaseToken: leased.leaseToken,
         now: NOW,
-        error: { name: "TemporaryError", message: "try again", retryable: true },
+        error: {
+          code: "temporary_error",
+          name: "TemporaryError",
+          message: "try again",
+          retryable: true
+        },
         nextAvailableAt: "not-a-timestamp"
       })
     ).rejects.toThrow(TypeError);
@@ -425,6 +568,255 @@ describe("SQLite workflow leases", () => {
         .prepare("SELECT status FROM workflow_jobs WHERE job_id = ?")
         .get(job().jobId)
     ).toEqual({
+      status: "leased"
+    });
+    await store.close();
+  });
+
+  it("rejects wrong and expired completion leases without partial output", async () => {
+    const { database, store } = await makeStore();
+    await store.commit(initialCommit());
+    const leased = await store.leaseNext({
+      workerId: "worker-1",
+      now: NOW,
+      leaseDurationMs: 1_000
+    });
+    if (leased === null) throw new Error("Expected a workflow lease.");
+    const completion = {
+      jobId: leased.jobId,
+      now: NOW,
+      idempotency: { scope: "test:wrong-complete", key: "request" },
+      appends: [transitionAppend()],
+      jobs: []
+    } as const;
+
+    await expect(store.completeJob({ ...completion, leaseToken: "wrong" })).rejects.toBeInstanceOf(
+      LeaseConflictError
+    );
+    await expect(
+      store.completeJob({
+        ...completion,
+        now: TWO_SECONDS_LATER,
+        leaseToken: leased.leaseToken,
+        idempotency: { scope: "test:expired-complete", key: "request" }
+      })
+    ).rejects.toBeInstanceOf(LeaseConflictError);
+    expect(database.connection.prepare("SELECT COUNT(*) AS count FROM events").get()).toEqual({
+      count: 2
+    });
+    expect(database.connection.prepare("SELECT status FROM workflow_jobs").get()).toEqual({
+      status: "leased"
+    });
+    await store.close();
+  });
+
+  it("validates the active lease before returning an idempotent completion replay", async () => {
+    const { store } = await makeStore();
+    await store.commit(initialCommit());
+    const leased = await store.leaseNext({
+      workerId: "worker-1",
+      now: NOW,
+      leaseDurationMs: 10_000
+    });
+    if (leased === null) throw new Error("Expected a workflow lease.");
+    const completion = {
+      jobId: leased.jobId,
+      now: ONE_SECOND_LATER,
+      idempotency: { scope: "test:leased-replay", key: "request" },
+      appends: [transitionAppend()],
+      jobs: []
+    } as const;
+    await store.completeJob({ ...completion, leaseToken: leased.leaseToken });
+
+    await expect(
+      store.completeJob({ ...completion, leaseToken: "wrong-lease-token" })
+    ).rejects.toBeInstanceOf(LeaseConflictError);
+    await store.close();
+  });
+
+  it("replays an exact completed request only for its original job and lease", async () => {
+    const { database, store } = await makeStore();
+    await store.commit(initialCommit());
+    const leased = await store.leaseNext({
+      workerId: "worker-1",
+      now: NOW,
+      leaseDurationMs: 10_000
+    });
+    if (leased === null) throw new Error("Expected a workflow lease.");
+    const completion = {
+      jobId: leased.jobId,
+      leaseToken: leased.leaseToken,
+      now: ONE_SECOND_LATER,
+      idempotency: { scope: "test:exact-completion-replay", key: "request" },
+      appends: [transitionAppend()],
+      jobs: []
+    } as const;
+    const first = await store.completeJob(completion);
+
+    await expect(store.completeJob(completion)).resolves.toEqual({ ...first, replayed: true });
+    await expect(store.completeJob({ ...completion, appends: [] })).rejects.toThrow(/bound/i);
+    const binding = database.connection
+      .prepare(
+        `SELECT completion_lease_digest AS leaseDigest,
+                completion_request_digest AS requestDigest
+         FROM idempotency_records WHERE scope = ? AND key = ?`
+      )
+      .get(completion.idempotency.scope, completion.idempotency.key) as {
+      leaseDigest: string;
+      requestDigest: string;
+    };
+    expect(binding.leaseDigest).toMatch(/^[0-9a-f]{64}$/);
+    expect(binding.requestDigest).toMatch(/^[0-9a-f]{64}$/);
+    expect(JSON.stringify(binding)).not.toContain(leased.leaseToken);
+    await store.close();
+  });
+
+  it("rejects a generic idempotency record reused by an active job", async () => {
+    const { database, store } = await makeStore();
+    await store.commit({
+      idempotency: { scope: "test:cross-operation", key: "request" },
+      appends: [],
+      jobs: []
+    });
+    await store.commit(initialCommit());
+    const leased = await store.leaseNext({
+      workerId: "worker-1",
+      now: NOW,
+      leaseDurationMs: 10_000
+    });
+    if (leased === null) throw new Error("Expected a workflow lease.");
+
+    await expect(
+      store.completeJob({
+        jobId: leased.jobId,
+        leaseToken: leased.leaseToken,
+        now: ONE_SECOND_LATER,
+        idempotency: { scope: "test:cross-operation", key: "request" },
+        appends: [transitionAppend()],
+        jobs: []
+      })
+    ).rejects.toThrow(/idempotency|bound/i);
+    expect(database.connection.prepare("SELECT status FROM workflow_jobs").get()).toEqual({
+      status: "leased"
+    });
+    expect(database.connection.prepare("SELECT COUNT(*) AS count FROM events").get()).toEqual({
+      count: 2
+    });
+    await store.close();
+  });
+
+  it("rejects coherent output appends outside the leased workspace and run atomically", async () => {
+    const { database, store } = await makeStore();
+    await store.commit(initialCommit());
+    const leased = await store.leaseNext({
+      workerId: "worker-1",
+      now: NOW,
+      leaseDurationMs: 10_000
+    });
+    if (leased === null) throw new Error("Expected a workflow lease.");
+    const foreignWorkspaceId = WorkspaceIdSchema.parse("ws_123e4567-e89b-42d3-a456-426614174099");
+    const outputFor = (workspaceId: typeof WORKSPACE_ID, suffix: string) =>
+      createManualRun(
+        { title: "Foreign run" },
+        {
+          workspaceId,
+          actor: { kind: "user", id: "foreign-user" },
+          correlationId: `123e4567-e89b-42d3-a456-${suffix}`
+        },
+        {
+          now: () => ONE_SECOND_LATER,
+          ids: createIdFactory(() => `123e4567-e89b-42d3-a456-${suffix}`)
+        }
+      );
+    const foreignWorkspace = outputFor(foreignWorkspaceId, "426614174099");
+    const foreignRun = outputFor(WORKSPACE_ID, "426614174098");
+
+    await expect(
+      store.completeJob({
+        jobId: leased.jobId,
+        leaseToken: leased.leaseToken,
+        now: ONE_SECOND_LATER,
+        idempotency: { scope: "test:foreign-output", key: "request" },
+        appends: foreignWorkspace.appends,
+        jobs: []
+      })
+    ).rejects.toThrow(/leased workspace|leased run/i);
+    await expect(
+      store.completeJob({
+        jobId: leased.jobId,
+        leaseToken: leased.leaseToken,
+        now: ONE_SECOND_LATER,
+        idempotency: { scope: "test:foreign-run-output", key: "request" },
+        appends: foreignRun.appends,
+        jobs: []
+      })
+    ).rejects.toThrow(/leased workspace|leased run/i);
+    expect(database.connection.prepare("SELECT COUNT(*) AS count FROM events").get()).toEqual({
+      count: 2
+    });
+    expect(database.connection.prepare("SELECT status FROM workflow_jobs").get()).toEqual({
+      status: "leased"
+    });
+    await store.close();
+  });
+
+  it("rejects wrong and expired failure leases without changing job state", async () => {
+    const { database, store } = await makeStore();
+    await store.commit(initialCommit());
+    const leased = await store.leaseNext({
+      workerId: "worker-1",
+      now: NOW,
+      leaseDurationMs: 1_000
+    });
+    if (leased === null) throw new Error("Expected a workflow lease.");
+    const failure = {
+      jobId: leased.jobId,
+      error: { code: "workflow_handler_failed", name: "Error", message: "failed", retryable: false }
+    } as const;
+    await expect(
+      store.failJob({ ...failure, leaseToken: "wrong", now: NOW })
+    ).rejects.toBeInstanceOf(LeaseConflictError);
+    await expect(
+      store.failJob({ ...failure, leaseToken: leased.leaseToken, now: TWO_SECONDS_LATER })
+    ).rejects.toBeInstanceOf(LeaseConflictError);
+    expect(
+      database.connection
+        .prepare("SELECT status, last_error_json AS error FROM workflow_jobs")
+        .get()
+    ).toEqual({
+      status: "leased",
+      error: null
+    });
+    await store.close();
+  });
+
+  it("rejects child jobs outside the leased workspace and run atomically", async () => {
+    const { database, store } = await makeStore();
+    await store.commit(initialCommit());
+    const leased = await store.leaseNext({
+      workerId: "worker-1",
+      now: NOW,
+      leaseDurationMs: 10_000
+    });
+    if (leased === null) throw new Error("Expected a workflow lease.");
+    const child = job({
+      jobId: JobIdSchema.parse("job_123e4567-e89b-42d3-a456-426614174003"),
+      workspaceId: WorkspaceIdSchema.parse("ws_123e4567-e89b-42d3-a456-426614174099")
+    });
+    await expect(
+      store.completeJob({
+        jobId: leased.jobId,
+        leaseToken: leased.leaseToken,
+        now: ONE_SECOND_LATER,
+        idempotency: { scope: "test:foreign-child", key: "request" },
+        appends: [transitionAppend()],
+        jobs: [child]
+      })
+    ).rejects.toThrow(/workspace|run/i);
+    expect(database.connection.prepare("SELECT COUNT(*) AS count FROM events").get()).toEqual({
+      count: 2
+    });
+    expect(database.connection.prepare("SELECT status FROM workflow_jobs").get()).toEqual({
       status: "leased"
     });
     await store.close();

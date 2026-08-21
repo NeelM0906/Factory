@@ -48,7 +48,9 @@ const workflowJob = (overrides: Partial<NewWorkflowJob> = {}): NewWorkflowJob =>
   ...overrides
 });
 
-const harness = async (options: { now?: () => string; maxAttempts?: number } = {}) => {
+const harness = async (
+  options: { now?: () => string; maxAttempts?: number; sensitiveValues?: readonly string[] } = {}
+) => {
   const database = openDatabase({ filePath: await temporaryDatabasePath() });
   let eventNumber = 20;
   let leaseNumber = 0;
@@ -58,7 +60,8 @@ const harness = async (options: { now?: () => string; maxAttempts?: number } = {
         `evt_123e4567-e89b-42d3-a456-${String(426614174000 + eventNumber++).padStart(12, "0")}`
       ),
     leaseToken: () => `lease-${++leaseNumber}`,
-    now: options.now ?? (() => NOW)
+    now: options.now ?? (() => NOW),
+    ...(options.sensitiveValues === undefined ? {} : { sensitiveValues: options.sensitiveValues })
   });
   const registry = new HandlerRegistry();
   const errors: Array<{ name: string; message: string; retryable: boolean }> = [];
@@ -70,6 +73,7 @@ const harness = async (options: { now?: () => string; maxAttempts?: number } = {
     leaseDurationMs: 1_000,
     pollIntervalMs: 100,
     retryAt: () => LATER,
+    ...(options.sensitiveValues === undefined ? {} : { sensitiveValues: options.sensitiveValues }),
     reportError: (error: SanitizedWorkflowError) => {
       errors.push(error);
     }
@@ -126,7 +130,12 @@ describe("local workflow executor cycles", () => {
         .get()
     ).toEqual({ status: "queued", availableAt: LATER });
     expect(errors).toEqual([
-      { name: "RetryableJobError", message: "provider unavailable", retryable: true }
+      {
+        code: "workflow_handler_failed",
+        name: "RetryableJobError",
+        message: "provider unavailable",
+        retryable: true
+      }
     ]);
     await store.close();
   });
@@ -146,12 +155,39 @@ describe("local workflow executor cycles", () => {
       .get() as { status: string; lastError: string };
     expect(row.status).toBe("failed");
     expect(JSON.parse(row.lastError)).toEqual({
+      code: "workflow_handler_failed",
       name: "Error",
       message: "unsafe failure",
       retryable: false
     });
     expect(row.lastError).not.toContain("at ");
     expect(errors).toHaveLength(1);
+    await store.close();
+  });
+
+  it("redacts configured and known credentials before persistence and reporting", async () => {
+    const configuredSecret = "configured-secret-0123456789abcdef";
+    const knownCredential = "ghp_0123456789abcdefghijklmnop";
+    const { database, store, registry, executor, enqueue, errors } = await harness({
+      maxAttempts: 1,
+      sensitiveValues: [configuredSecret]
+    });
+    registry.register("test.handler", z.object({ task: z.string() }), async () => {
+      throw new Error(`provider rejected ${configuredSecret} ${knownCredential}`);
+    });
+    await enqueue();
+
+    await expect(executor.runOnce()).resolves.toBe("failed");
+    const row = database.connection
+      .prepare("SELECT last_error_json AS lastError FROM workflow_jobs")
+      .get() as { lastError: string };
+    const allOutput = JSON.stringify({ persisted: row.lastError, reported: errors });
+    expect(allOutput).not.toContain(configuredSecret);
+    expect(allOutput).not.toContain(knownCredential);
+    expect(JSON.parse(row.lastError)).toMatchObject({
+      code: "workflow_handler_failed",
+      message: "provider rejected [REDACTED] [REDACTED]"
+    });
     await store.close();
   });
 
@@ -177,11 +213,26 @@ describe("local workflow executor cycles", () => {
     await expect(executor.runOnce()).resolves.toBe("failed");
     expect(errors).toEqual([
       {
+        code: "workflow_handler_invalid_error",
         name: "UnknownWorkflowError",
         message: "Workflow handler failed with a non-error value.",
         retryable: false
       }
     ]);
+    await store.close();
+  });
+
+  it("uses stable fallback fields for an Error with empty name and message", async () => {
+    const { store, registry, executor, enqueue, errors } = await harness({ maxAttempts: 1 });
+    registry.register("test.handler", z.object({ task: z.string() }), async () => {
+      const error = new Error("");
+      error.name = "";
+      throw error;
+    });
+    await enqueue();
+
+    await expect(executor.runOnce()).resolves.toBe("failed");
+    expect(errors[0]).toMatchObject({ name: "Error", message: "Workflow handler failed." });
     await store.close();
   });
 

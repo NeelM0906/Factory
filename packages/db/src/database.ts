@@ -1,5 +1,6 @@
-import { mkdirSync } from "node:fs";
-import { dirname, resolve } from "node:path";
+import { chmodSync, existsSync, lstatSync, mkdirSync } from "node:fs";
+import { homedir, tmpdir } from "node:os";
+import { dirname, isAbsolute, join, parse, relative, resolve, sep } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 
 import type { StoreHealth } from "@autostack/domain";
@@ -42,6 +43,28 @@ export class AutoStackDatabase {
   }
 }
 
+const containsPath = (base: string, candidate: string): boolean => {
+  const pathFromBase = relative(base, candidate);
+  return (
+    pathFromBase === "" ||
+    (!isAbsolute(pathFromBase) && pathFromBase !== ".." && !pathFromBase.startsWith(`..${sep}`))
+  );
+};
+
+const assertNoSymlinkComponents = (stateDirectory: string): void => {
+  const trustedBoundary = [resolve(process.cwd()), resolve(tmpdir()), resolve(homedir())]
+    .filter((candidate) => containsPath(candidate, stateDirectory))
+    .sort((left, right) => right.length - left.length)[0];
+  let current = trustedBoundary ?? parse(stateDirectory).root;
+  const pathFromBoundary = relative(current, stateDirectory);
+  for (const component of pathFromBoundary.split(sep).filter(Boolean)) {
+    current = join(current, component);
+    if (existsSync(current) && lstatSync(current).isSymbolicLink()) {
+      throw new TypeError("The database state path must not contain a symbolic link.");
+    }
+  }
+};
+
 export function openDatabase(options: OpenDatabaseOptions): AutoStackDatabase {
   const busyTimeoutMs = options.busyTimeoutMs ?? 5_000;
   if (!Number.isSafeInteger(busyTimeoutMs) || busyTimeoutMs < 0 || busyTimeoutMs > 60_000) {
@@ -49,13 +72,24 @@ export function openDatabase(options: OpenDatabaseOptions): AutoStackDatabase {
   }
 
   const filePath = resolve(options.filePath);
-  mkdirSync(dirname(filePath), { recursive: true });
+  const stateDirectory = dirname(filePath);
+  assertNoSymlinkComponents(stateDirectory);
+  mkdirSync(stateDirectory, { recursive: true, mode: 0o700 });
+  assertNoSymlinkComponents(stateDirectory);
+  chmodSync(stateDirectory, 0o700);
+  if (existsSync(filePath) && lstatSync(filePath).isSymbolicLink()) {
+    throw new TypeError("The database file must not be a symbolic link.");
+  }
   const connection = new DatabaseSync(filePath);
 
   try {
+    chmodSync(filePath, 0o600);
     connection.exec(`PRAGMA busy_timeout = ${busyTimeoutMs}`);
     connection.exec("PRAGMA foreign_keys = ON");
     connection.exec("PRAGMA journal_mode = WAL");
+    for (const sidecar of [`${filePath}-wal`, `${filePath}-shm`]) {
+      if (existsSync(sidecar)) chmodSync(sidecar, 0o600);
+    }
     applyMigrations(connection);
     return new AutoStackDatabase(connection);
   } catch (error) {

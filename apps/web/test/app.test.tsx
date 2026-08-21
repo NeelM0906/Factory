@@ -159,4 +159,19 @@ describe("AutoStack factory console", () => {
     fireEvent.click(screen.getByRole("button", { name: "Retry" }));
     expect(await screen.findByText("No runs yet")).toBeVisible();
   });
+
+  it("does not refresh while initially hidden and refreshes when visible", async () => {
+    let visibility: DocumentVisibilityState = "hidden";
+    vi.spyOn(document, "visibilityState", "get").mockImplementation(() => visibility);
+    const client = makeClient();
+    render(<App client={client} />);
+
+    await Promise.resolve();
+    expect(client.health).not.toHaveBeenCalled();
+    visibility = "visible";
+    fireEvent(document, new Event("visibilitychange"));
+
+    expect(await screen.findByText("No runs yet")).toBeVisible();
+    expect(client.health).toHaveBeenCalledTimes(1);
+  });
 });

@@ -10,6 +10,7 @@ import {
   type ListEventsResponse,
   type ListRunsResponse,
   type RunId,
+  type StoredDomainEvent,
   type WorkspaceId
 } from "@autostack/contracts";
 import { createManualRun, projectRunSummaries, type DurableStore } from "@autostack/domain";
@@ -70,24 +71,56 @@ export class RunService {
   }
 
   async list(): Promise<ListRunsResponse> {
-    const events = await this.#dependencies.store.readAll({
-      workspaceId: this.#dependencies.workspaceId,
-      limit: 500
-    });
+    const { events } = await this.#readAllWorkspaceEvents(0);
     return ListRunsResponseSchema.parse({ items: projectRunSummaries(events) });
   }
 
   async events(runIdInput: string, afterSequence: number): Promise<ListEventsResponse> {
     const runId: RunId = RunIdSchema.parse(runIdInput);
-    const events = await this.#dependencies.store.readStream({
+    const existing = await this.#dependencies.store.readStream({
       stream: { kind: "run", id: runId },
-      afterVersion: afterSequence
+      afterVersion: 0
     });
-    if (events.length === 0 && afterSequence === 0) throw new RunNotFoundError(runId);
+    if (
+      !existing.some(
+        (event) =>
+          event.type === "run.created" &&
+          event.workspaceId === this.#dependencies.workspaceId &&
+          event.payload.run.workspaceId === this.#dependencies.workspaceId
+      )
+    ) {
+      throw new RunNotFoundError(runId);
+    }
+    const page = await this.#readAllWorkspaceEvents(afterSequence);
+    const events = page.events.filter(
+      (event) => event.stream.kind === "run" && event.stream.id === runId
+    );
 
     return ListEventsResponseSchema.parse({
       events,
-      nextSequence: events.at(-1)?.streamVersion ?? afterSequence
+      nextSequence: page.nextSequence
     });
+  }
+
+  async #readAllWorkspaceEvents(afterGlobalSequence: number): Promise<{
+    readonly events: readonly StoredDomainEvent[];
+    readonly nextSequence: number;
+  }> {
+    const events: StoredDomainEvent[] = [];
+    let cursor = afterGlobalSequence;
+    while (true) {
+      const page = await this.#dependencies.store.readAll({
+        workspaceId: this.#dependencies.workspaceId,
+        afterGlobalSequence: cursor,
+        limit: 500
+      });
+      events.push(...page);
+      const next = page.at(-1)?.globalSequence;
+      if (next === undefined) break;
+      if (next <= cursor) throw new Error("The event store returned a non-advancing cursor.");
+      cursor = next;
+      if (page.length < 500) break;
+    }
+    return { events, nextSequence: cursor };
   }
 }

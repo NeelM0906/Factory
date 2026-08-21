@@ -83,7 +83,7 @@ export function useFactory(
       return;
     }
 
-    void refresh();
+    if (document.visibilityState === "visible") void refresh();
     const poll = (): void => {
       if (document.visibilityState === "visible") void refresh();
     };

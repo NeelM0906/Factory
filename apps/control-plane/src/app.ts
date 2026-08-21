@@ -25,10 +25,11 @@ export interface CreateAppDependencies {
 }
 
 class HttpProblem extends Error {
-  readonly status: 400 | 401 | 404 | 409 | 500;
+  readonly status: 400 | 401 | 404 | 409 | 413 | 500;
   readonly code:
     | "unauthorized"
     | "invalid_request"
+    | "request_too_large"
     | "missing_idempotency_key"
     | "run_not_found"
     | "version_conflict"
@@ -42,10 +43,47 @@ class HttpProblem extends Error {
   }
 }
 
+const MAX_REQUEST_BYTES = 128 * 1_024;
+const CURRENT_STORAGE_SCHEMA_VERSION = 2;
+
+const readJsonBody = async (request: Request): Promise<unknown> => {
+  const declaredLength = request.headers.get("content-length");
+  if (declaredLength !== null && Number(declaredLength) > MAX_REQUEST_BYTES) {
+    throw new HttpProblem(413, "request_too_large", "The request body is too large.");
+  }
+  const reader = request.body?.getReader();
+  if (reader === undefined)
+    throw new HttpProblem(400, "invalid_request", "A JSON body is required.");
+  const decoder = new TextDecoder();
+  let text = "";
+  let total = 0;
+  while (true) {
+    const chunk = await reader.read();
+    if (chunk.done) break;
+    total += chunk.value.byteLength;
+    if (total > MAX_REQUEST_BYTES) {
+      await reader.cancel();
+      throw new HttpProblem(413, "request_too_large", "The request body is too large.");
+    }
+    text += decoder.decode(chunk.value, { stream: true });
+  }
+  text += decoder.decode();
+  try {
+    return JSON.parse(text) as unknown;
+  } catch {
+    throw new HttpProblem(400, "invalid_request", "The request body is invalid JSON.");
+  }
+};
+
 export function createApp(dependencies: CreateAppDependencies): Hono {
   const app = new Hono();
   const service = new RunService(dependencies);
   const auth = createBearerAuth(dependencies.token);
+
+  app.use("/v1/*", async (context, next) => {
+    if (context.req.path === "/v1/health") return next();
+    return auth(context, next);
+  });
 
   app.get("/v1/health", async (context) => {
     try {
@@ -64,16 +102,17 @@ export function createApp(dependencies: CreateAppDependencies): Hono {
           service: "autostack-control-plane",
           version: "0.1.0",
           status: "degraded",
-          storage: { status: "degraded", journalMode: "wal", schemaVersion: 1 },
+          storage: {
+            status: "degraded",
+            journalMode: "wal",
+            schemaVersion: CURRENT_STORAGE_SCHEMA_VERSION
+          },
           executor: { status: dependencies.executor.getStatus() }
         }),
         503
       );
     }
   });
-
-  app.use("/v1/runs", auth);
-  app.use("/v1/runs/*", auth);
 
   app.post("/v1/runs", async (context) => {
     const idempotencyKey = context.req.header("Idempotency-Key")?.trim();
@@ -84,12 +123,7 @@ export function createApp(dependencies: CreateAppDependencies): Hono {
         "A valid Idempotency-Key header is required."
       );
     }
-    let rawBody: unknown;
-    try {
-      rawBody = await context.req.json();
-    } catch {
-      throw new HttpProblem(400, "invalid_request", "The request body is invalid JSON.");
-    }
+    const rawBody = await readJsonBody(context.req.raw);
     const body = CreateRunRequestSchema.parse(rawBody);
     const response = await service.create(body, idempotencyKey);
     return context.json(response, response.replayed ? 200 : 201);

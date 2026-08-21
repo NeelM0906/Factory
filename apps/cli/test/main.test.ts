@@ -7,7 +7,7 @@ const TOKEN = "0123456789abcdef0123456789abcdef";
 const makeDependencies = () => {
   let stdout = "";
   let stderr = "";
-  const fetch = vi.fn(async (input: string | URL | Request) =>
+  const fetch = vi.fn(async (input: string | URL | Request, _init?: RequestInit) =>
     String(input).endsWith("/v1/health")
       ? Response.json({
           service: "autostack-control-plane",
@@ -49,6 +49,39 @@ describe("AutoStack CLI", () => {
 
     expect(await runCli(["doctor"], harness.dependencies)).toBe(0);
     expect(harness.values().stdout).toContain("API: healthy");
+  });
+
+  it("prefers the environment token and safely warns when --token is used", async () => {
+    const harness = makeDependencies();
+    harness.dependencies.environment = {
+      AUTOSTACK_URL: "http://127.0.0.1:4318",
+      AUTOSTACK_LOCAL_API_TOKEN: TOKEN
+    };
+
+    expect(
+      await runCli(["doctor", "--token", "flag-token-that-must-not-win"], harness.dependencies)
+    ).toBe(0);
+    const authenticatedCall = harness.dependencies.fetch.mock.calls.find(([input]) =>
+      String(input).endsWith("/v1/runs")
+    );
+    expect(new Headers(authenticatedCall?.[1]?.headers).get("Authorization")).toBe(
+      `Bearer ${TOKEN}`
+    );
+    expect(harness.values().stderr).toContain("deprecated");
+    expect(JSON.stringify(harness.values())).not.toContain(TOKEN);
+    expect(JSON.stringify(harness.values())).not.toContain("flag-token-that-must-not-win");
+  });
+
+  it("rejects plaintext HTTP for non-loopback hosts", async () => {
+    const harness = makeDependencies();
+
+    expect(
+      await runCli(
+        ["doctor", "--url", "http://example.com", "--token", TOKEN],
+        harness.dependencies
+      )
+    ).toBe(1);
+    expect(harness.dependencies.fetch).not.toHaveBeenCalled();
   });
 
   it.each([["unknown"], ["doctor", "extra"], ["doctor", "--token", ""]])(

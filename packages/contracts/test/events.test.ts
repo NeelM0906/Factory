@@ -77,7 +77,12 @@ const eventBodies = [
       runId: RUN_ID,
       stage: "triage",
       jobId: JOB_ID,
-      error: { name: "ProviderError", message: "temporarily unavailable", retryable: true }
+      error: {
+        code: "provider_unavailable",
+        name: "ProviderError",
+        message: "temporarily unavailable",
+        retryable: true
+      }
     }
   },
   { type: "approval.requested", payload: { approval } },

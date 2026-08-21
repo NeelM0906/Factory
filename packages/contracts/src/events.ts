@@ -15,6 +15,7 @@ import {
   RunIdSchema,
   WorkspaceIdSchema
 } from "./ids.js";
+import { WorkflowFailureSchema } from "./workflow-failure.js";
 
 export const EVENT_TYPES = [
   "work_item.created",
@@ -99,13 +100,7 @@ const DomainEventBodySchema = z.discriminatedUnion("type", [
       payload: z
         .object({
           ...StageIdentityShape,
-          error: z
-            .object({
-              name: z.string().min(1),
-              message: z.string().min(1).max(2_000),
-              retryable: z.boolean()
-            })
-            .strict()
+          error: WorkflowFailureSchema
         })
         .strict()
     })
@@ -147,8 +142,52 @@ const StoredEventMetadataSchema = z.object({
 });
 
 export const PendingDomainEventSchema = EventContextSchema.and(DomainEventBodySchema);
-export const StoredDomainEventSchema = PendingDomainEventSchema.and(StoredEventMetadataSchema);
-
 export type PendingDomainEvent = z.infer<typeof PendingDomainEventSchema>;
+
+export const domainEventIdentity = (event: PendingDomainEvent) => {
+  switch (event.type) {
+    case "work_item.created":
+      return {
+        kind: "work_item" as const,
+        id: event.payload.workItem.id,
+        workspaceId: event.payload.workItem.workspaceId
+      };
+    case "run.created":
+      return {
+        kind: "run" as const,
+        id: event.payload.run.id,
+        workspaceId: event.payload.run.workspaceId
+      };
+    case "approval.requested":
+      return {
+        kind: "run" as const,
+        id: event.payload.approval.runId,
+        workspaceId: event.payload.approval.workspaceId
+      };
+    default:
+      return { kind: "run" as const, id: event.payload.runId, workspaceId: event.workspaceId };
+  }
+};
+
+export const StoredDomainEventSchema = PendingDomainEventSchema.and(
+  StoredEventMetadataSchema
+).superRefine((event, context) => {
+  const identity = domainEventIdentity(event);
+  if (event.stream.kind !== identity.kind || event.stream.id !== identity.id) {
+    context.addIssue({
+      code: "custom",
+      path: ["stream"],
+      message: "Event stream identity is invalid."
+    });
+  }
+  if (event.workspaceId !== identity.workspaceId) {
+    context.addIssue({
+      code: "custom",
+      path: ["workspaceId"],
+      message: "Event workspace is invalid."
+    });
+  }
+});
+
 export type StoredDomainEvent = z.infer<typeof StoredDomainEventSchema>;
 export type DomainEventType = (typeof EVENT_TYPES)[number];

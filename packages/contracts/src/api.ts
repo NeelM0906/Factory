@@ -24,9 +24,22 @@ export const CreateRunRequestSchema = z
   .object({
     title: z.string().trim().min(1).max(240),
     description: z.string().max(100_000).default(""),
-    acceptanceContext: z.array(z.string().trim().min(1).max(2_000)).default([])
+    acceptanceContext: z.array(z.string().trim().min(1).max(2_000)).max(50).default([])
   })
-  .strict();
+  .strict()
+  .superRefine((value, context) => {
+    const bytes = value.acceptanceContext.reduce(
+      (total, item) => total + new TextEncoder().encode(item).byteLength,
+      0
+    );
+    if (bytes > 20_000) {
+      context.addIssue({
+        code: "custom",
+        path: ["acceptanceContext"],
+        message: "Acceptance context exceeds the aggregate size limit."
+      });
+    }
+  });
 
 export const CreateRunResponseSchema = z
   .object({
@@ -71,6 +84,7 @@ export const ApiErrorSchema = z
         code: z.enum([
           "unauthorized",
           "invalid_request",
+          "request_too_large",
           "missing_idempotency_key",
           "run_not_found",
           "version_conflict",

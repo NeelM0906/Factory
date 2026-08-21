@@ -18,7 +18,7 @@ Generate at least 32 bytes of entropy for the local bearer token:
 openssl rand -hex 32
 ```
 
-Copy `.env.example` to `.env`, replace its deliberately invalid placeholder, and load it into each development shell:
+Copy `.env.example` to `.env` and replace its deliberately invalid placeholder. Load it only into the control-plane and CLI shells that require the bearer credential:
 
 ```bash
 set -a
@@ -43,6 +43,8 @@ Terminal two—web control room:
 ```bash
 pnpm --filter @autostack/web dev
 ```
+
+Do not load `.env` in the web terminal or in a shell that runs repository scripts, coding agents, or unrelated tools. The renderer receives the token only through the explicit connection form and keeps it in session storage. The CLI prefers `AUTOSTACK_LOCAL_API_TOKEN`; its `--token` compatibility flag is deprecated because process arguments may be observable.
 
 Terminal three—diagnostics:
 

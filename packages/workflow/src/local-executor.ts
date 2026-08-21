@@ -1,3 +1,4 @@
+import { redactSensitiveText, type WorkflowFailure } from "@autostack/contracts";
 import type { DurableStore, LeasedWorkflowJob } from "@autostack/domain";
 
 import { RetryableJobError } from "./errors.js";
@@ -6,11 +7,7 @@ import { HandlerRegistry } from "./handler-registry.js";
 export type ExecutorStatus = "stopped" | "idle" | "working";
 export type RunCycleResult = "idle" | "completed" | "retried" | "failed" | "interrupted";
 
-export interface SanitizedWorkflowError {
-  readonly name: string;
-  readonly message: string;
-  readonly retryable: boolean;
-}
+export type SanitizedWorkflowError = WorkflowFailure;
 
 export interface LocalWorkflowExecutorOptions {
   readonly store: DurableStore;
@@ -20,6 +17,7 @@ export interface LocalWorkflowExecutorOptions {
   readonly leaseDurationMs: number;
   readonly pollIntervalMs: number;
   readonly retryAt: (error: RetryableJobError, job: LeasedWorkflowJob, now: string) => string;
+  readonly sensitiveValues?: readonly string[];
   readonly reportError?: (
     error: SanitizedWorkflowError,
     job?: LeasedWorkflowJob
@@ -30,16 +28,24 @@ export interface StopExecutorOptions {
   readonly abortCurrent?: boolean;
 }
 
-const sanitizeError = (error: unknown): SanitizedWorkflowError => {
+const sanitizeError = (
+  error: unknown,
+  sensitiveValues: readonly string[]
+): SanitizedWorkflowError => {
   const retryable = error instanceof RetryableJobError;
   if (error instanceof Error) {
     return {
-      name: error.name || "Error",
-      message: (error.message || "Workflow handler failed.").slice(0, 2_000),
+      code: "workflow_handler_failed",
+      name: redactSensitiveText(error.name || "Error", sensitiveValues).slice(0, 160),
+      message: redactSensitiveText(
+        error.message || "Workflow handler failed.",
+        sensitiveValues
+      ).slice(0, 2_000),
       retryable
     };
   }
   return {
+    code: "workflow_handler_invalid_error",
     name: "UnknownWorkflowError",
     message: "Workflow handler failed with a non-error value.",
     retryable: false
@@ -132,7 +138,7 @@ export class LocalWorkflowExecutor {
         return "completed";
       } catch (error) {
         if (abort.signal.aborted && !this.#running) return "interrupted";
-        const sanitized = sanitizeError(error);
+        const sanitized = sanitizeError(error, this.#options.sensitiveValues ?? []);
         await this.#report(sanitized, leased);
         const retryable = error instanceof RetryableJobError;
         const now = this.#options.now();
@@ -166,7 +172,7 @@ export class LocalWorkflowExecutor {
           leaseDurationMs: this.#options.leaseDurationMs
         });
       } catch (error) {
-        await this.#report(sanitizeError(error), job);
+        await this.#report(sanitizeError(error, this.#options.sensitiveValues ?? []), job);
         abort.abort();
         return;
       }
@@ -192,7 +198,7 @@ export class LocalWorkflowExecutor {
     try {
       await this.runOnce();
     } catch (error) {
-      await this.#report(sanitizeError(error));
+      await this.#report(sanitizeError(error, this.#options.sensitiveValues ?? []));
     }
     if (this.#running) this.#schedulePoll(this.#options.pollIntervalMs);
   }

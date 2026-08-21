@@ -1,3 +1,4 @@
+import { WorkflowHandlerResultSchema, assertSafeJson } from "@autostack/contracts";
 import type { LeasedWorkflowJob, NewWorkflowJob, StreamAppend } from "@autostack/domain";
 import type { z } from "zod";
 
@@ -24,6 +25,11 @@ interface RegisteredHandler {
 
 export class HandlerRegistry {
   readonly #handlers = new Map<string, RegisteredHandler>();
+  readonly #sensitiveValues: readonly string[];
+
+  constructor(options: { readonly sensitiveValues?: readonly string[] } = {}) {
+    this.#sensitiveValues = options.sensitiveValues ?? [];
+  }
 
   register<T>(name: string, schema: z.ZodType<T>, handler: WorkflowHandler<T>): void {
     if (this.#handlers.has(name)) throw new DuplicateWorkflowHandlerError(name);
@@ -39,6 +45,22 @@ export class HandlerRegistry {
   ): Promise<WorkflowHandlerResult> {
     const registered = this.#handlers.get(name);
     if (registered === undefined) throw new UnknownWorkflowHandlerError(name);
-    return registered.execute(payload, context);
+    const result = await registered.execute(payload, context);
+    assertSafeJson(result, this.#sensitiveValues);
+    const validated = WorkflowHandlerResultSchema.parse(result);
+    for (const append of validated.appends) {
+      if (append.stream.kind === "run" && append.stream.id !== context.job.runId) {
+        throw new TypeError("A handler append must match its leased run.");
+      }
+      if (append.events.some((event) => event.workspaceId !== context.job.workspaceId)) {
+        throw new TypeError("A handler append must match its leased workspace.");
+      }
+    }
+    for (const job of validated.jobs) {
+      if (job.workspaceId !== context.job.workspaceId || job.runId !== context.job.runId) {
+        throw new TypeError("A child workflow job must match its parent workspace and run.");
+      }
+    }
+    return validated;
   }
 }

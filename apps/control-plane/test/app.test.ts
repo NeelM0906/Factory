@@ -10,10 +10,13 @@ import {
   HealthResponseSchema,
   ListEventsResponseSchema,
   ListRunsResponseSchema,
+  PendingDomainEventSchema,
+  RunIdSchema,
   WorkspaceIdSchema,
   createIdFactory
 } from "@autostack/contracts";
 import { SqliteDurableStore, openDatabase } from "@autostack/db";
+import { createManualRun } from "@autostack/domain";
 
 import { createApp } from "../src/app.js";
 
@@ -78,7 +81,7 @@ describe("control-plane health", () => {
       service: "autostack-control-plane",
       version: "0.1.0",
       status: "ok",
-      storage: { status: "ok", journalMode: "wal", schemaVersion: 1 },
+      storage: { status: "ok", journalMode: "wal", schemaVersion: 2 },
       executor: { status: "idle" }
     });
     expect(JSON.stringify(health)).not.toContain("sqlite");
@@ -110,6 +113,16 @@ describe("manual run API", () => {
     await store.close();
   });
 
+  it("authenticates unknown and future v1 routes except exactly health", async () => {
+    const { app, store } = await makeHarness();
+
+    expect((await app.request("/v1")).status).toBe(401);
+    expect((await app.request("/v1/future-route")).status).toBe(401);
+    expect((await app.request("/v1/health/extra")).status).toBe(401);
+    expect((await app.request("/v1/health")).status).toBe(200);
+    await store.close();
+  });
+
   it("requires an idempotency key and a valid body", async () => {
     const { authenticated, store } = await makeHarness();
     const missingKey = await authenticated("/v1/runs", {
@@ -129,6 +142,19 @@ describe("manual run API", () => {
     });
     expect(invalidBody.status).toBe(400);
     expect(await invalidBody.json()).toMatchObject({ error: { code: "invalid_request" } });
+    await store.close();
+  });
+
+  it("rejects a request body over the byte limit before JSON parsing", async () => {
+    const { authenticated, store } = await makeHarness();
+    const response = await authenticated("/v1/runs", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "Idempotency-Key": "oversized" },
+      body: JSON.stringify({ title: "Oversized", description: "x".repeat(140_000) })
+    });
+
+    expect(response.status).toBe(413);
+    expect(await response.json()).toMatchObject({ error: { code: "request_too_large" } });
     await store.close();
   });
 
@@ -197,6 +223,116 @@ describe("manual run API", () => {
     expect(response.status).toBe(404);
     expect(body).toContain("run_not_found");
     expect(body).not.toContain("at ");
+    await store.close();
+  });
+
+  it("returns run_not_found for every cursor and uses global event cursors", async () => {
+    const { authenticated, store } = await makeHarness();
+    const create = async (key: string, title: string) =>
+      CreateRunResponseSchema.parse(
+        await (
+          await authenticated("/v1/runs", {
+            method: "POST",
+            headers: { "Content-Type": "application/json", "Idempotency-Key": key },
+            body: JSON.stringify({ title })
+          })
+        ).json()
+      );
+    const first = await create("cursor-1", "First run");
+    await create("cursor-2", "Interleaved run");
+
+    const events = ListEventsResponseSchema.parse(
+      await (await authenticated(`/v1/runs/${first.run.id}/events?after=0`)).json()
+    );
+    expect(events.events.map((event) => event.globalSequence)).toEqual([2]);
+    expect(events.nextSequence).toBe(4);
+    const exhausted = ListEventsResponseSchema.parse(
+      await (await authenticated(`/v1/runs/${first.run.id}/events?after=4`)).json()
+    );
+    expect(exhausted).toEqual({ events: [], nextSequence: 4 });
+
+    const missing = await authenticated(
+      "/v1/runs/run_123e4567-e89b-42d3-a456-426614174099/events?after=999"
+    );
+    expect(missing.status).toBe(404);
+    expect(await missing.json()).toMatchObject({ error: { code: "run_not_found" } });
+    await store.close();
+  });
+
+  it("does not expose a run that belongs to another workspace", async () => {
+    const { authenticated, store } = await makeHarness();
+    const foreign = createManualRun(
+      { title: "Foreign workspace run" },
+      {
+        workspaceId: WorkspaceIdSchema.parse("ws_123e4567-e89b-42d3-a456-426614174099"),
+        actor: { kind: "user", id: "foreign-user" },
+        correlationId: "123e4567-e89b-42d3-a456-426614174099"
+      },
+      {
+        now: () => NOW,
+        ids: createIdFactory(() => "123e4567-e89b-42d3-a456-426614174099")
+      }
+    );
+    await store.commit({
+      idempotency: { scope: "test:foreign-run", key: "request" },
+      appends: foreign.appends,
+      jobs: []
+    });
+
+    const response = await authenticated(`/v1/runs/${foreign.run.id}/events?after=0`);
+    expect(response.status).toBe(404);
+    expect(await response.json()).toMatchObject({ error: { code: "run_not_found" } });
+    await store.close();
+  });
+
+  it("requires a current-workspace run creation event for existence", async () => {
+    const { authenticated, store } = await makeHarness();
+    const orphanRunId = RunIdSchema.parse("run_123e4567-e89b-42d3-a456-426614174097");
+    await store.commit({
+      idempotency: { scope: "test:orphan-run", key: "request" },
+      appends: [
+        {
+          stream: { kind: "run", id: orphanRunId },
+          expectedVersion: 0,
+          events: [
+            PendingDomainEventSchema.parse({
+              workspaceId: WORKSPACE_ID,
+              actor: { kind: "system", id: "autostack" },
+              correlationId: "123e4567-e89b-42d3-a456-426614174097",
+              occurredAt: NOW,
+              type: "run.transitioned",
+              payload: {
+                runId: orphanRunId,
+                from: "queued",
+                to: "triaging",
+                reason: "orphan transition"
+              }
+            })
+          ]
+        }
+      ],
+      jobs: []
+    });
+
+    const response = await authenticated(`/v1/runs/${orphanRunId}/events?after=0`);
+    expect(response.status).toBe(404);
+    await store.close();
+  });
+
+  it("projects every run after the event log exceeds one read page", async () => {
+    const { authenticated, store } = await makeHarness();
+    for (let index = 0; index < 251; index += 1) {
+      const response = await authenticated("/v1/runs", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", "Idempotency-Key": `page-${index}` },
+        body: JSON.stringify({ title: `Run ${index}` })
+      });
+      expect(response.status).toBe(201);
+    }
+
+    const list = ListRunsResponseSchema.parse(await (await authenticated("/v1/runs")).json());
+    expect(list.items).toHaveLength(251);
+    expect(list.items[0]?.title).toBe("Run 250");
     await store.close();
   });
 });

@@ -75,6 +75,18 @@ describe("SQLite row codecs", () => {
     );
   });
 
+  it("rejects a stored event whose stream identity conflicts with its payload", () => {
+    expect(() =>
+      decodeEventRow({ ...eventRow, stream_id: WORK_ITEM_ID, stream_kind: "run" })
+    ).toThrow(CorruptStoreRecordError);
+    expect(() =>
+      decodeEventRow({
+        ...eventRow,
+        workspace_id: "ws_123e4567-e89b-42d3-a456-426614174099"
+      })
+    ).toThrow(CorruptStoreRecordError);
+  });
+
   it("decodes a leased job and rejects a non-object job payload", () => {
     expect(decodeJobRow(jobRow)).toMatchObject({
       jobId: jobRow.job_id,

@@ -1,4 +1,4 @@
-import { existsSync, mkdtempSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -69,6 +69,91 @@ describe("control-plane server composition", () => {
 
     expect(log).toHaveBeenCalledWith(expect.stringContaining("control_plane_started"));
     expect(JSON.stringify(log.mock.calls)).not.toContain(TOKEN);
+    await runtime.close();
+  });
+
+  it("keeps workspace identity and idempotency stable across API token rotation", async () => {
+    const dataDirectory = mkdtempSync(join(tmpdir(), "autostack-control-plane-"));
+    temporaryDirectories.push(dataDirectory);
+    const server = {
+      close: (callback?: (error?: Error) => void) => callback?.()
+    } as unknown as ServerType;
+    const serveImplementation = vi.fn(() => server) as unknown as typeof serve;
+    const firstToken = TOKEN;
+    const secondToken = "fedcba9876543210fedcba9876543210";
+    const first = startControlPlane({
+      config: { dataDirectory, token: firstToken, host: "127.0.0.1", port: 4318 },
+      serve: serveImplementation,
+      installSignalHandlers: false,
+      log: vi.fn()
+    });
+    const createRequest = {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${firstToken}`,
+        "Content-Type": "application/json",
+        "Idempotency-Key": "token-rotation"
+      },
+      body: JSON.stringify({ title: "Survive token rotation" })
+    };
+    const created = await first.app.request("/v1/runs", createRequest);
+    expect(created.status).toBe(201);
+    await first.close();
+
+    const second = startControlPlane({
+      config: { dataDirectory, token: secondToken, host: "127.0.0.1", port: 4318 },
+      serve: serveImplementation,
+      installSignalHandlers: false,
+      log: vi.fn()
+    });
+    const list = await second.app.request("/v1/runs", {
+      headers: { Authorization: `Bearer ${secondToken}` }
+    });
+    expect((await list.json()) as { items: unknown[] }).toMatchObject({ items: [{}] });
+    const replay = await second.app.request("/v1/runs", {
+      ...createRequest,
+      headers: { ...createRequest.headers, Authorization: `Bearer ${secondToken}` }
+    });
+    expect(replay.status).toBe(200);
+    expect(await replay.json()).toMatchObject({ replayed: true });
+
+    const installationPath = join(dataDirectory, "installation.json");
+    expect(JSON.parse(readFileSync(installationPath, "utf8"))).toMatchObject({
+      schemaVersion: 1,
+      workspaceId: expect.stringMatching(/^ws_/)
+    });
+    expect(statSync(installationPath).mode & 0o777).toBe(0o600);
+    await second.close();
+  });
+
+  it("rejects the configured API token before it can enter durable run data", async () => {
+    const dataDirectory = mkdtempSync(join(tmpdir(), "autostack-control-plane-"));
+    temporaryDirectories.push(dataDirectory);
+    const server = {
+      close: (callback?: (error?: Error) => void) => callback?.()
+    } as unknown as ServerType;
+    const runtime = startControlPlane({
+      config: { dataDirectory, token: TOKEN, host: "127.0.0.1", port: 4318 },
+      serve: vi.fn(() => server) as unknown as typeof serve,
+      installSignalHandlers: false,
+      log: vi.fn()
+    });
+
+    const response = await runtime.app.request("/v1/runs", {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${TOKEN}`,
+        "Content-Type": "application/json",
+        "Idempotency-Key": "secret-payload"
+      },
+      body: JSON.stringify({ title: `Never persist ${TOKEN}` })
+    });
+    expect(response.status).toBe(500);
+    expect(await response.text()).not.toContain(TOKEN);
+    const list = await runtime.app.request("/v1/runs", {
+      headers: { Authorization: `Bearer ${TOKEN}` }
+    });
+    expect(await list.json()).toEqual({ items: [] });
     await runtime.close();
   });
 

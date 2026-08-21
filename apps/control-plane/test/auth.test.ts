@@ -1,8 +1,10 @@
+import { readFileSync } from "node:fs";
+
 import { describe, expect, it } from "vitest";
 import { Hono } from "hono";
 
 import { createBearerAuth } from "../src/auth.js";
-import { deriveLocalWorkspaceId, loadConfig } from "../src/config.js";
+import { loadConfig } from "../src/config.js";
 
 const TOKEN = "0123456789abcdef0123456789abcdef";
 
@@ -53,6 +55,16 @@ describe("control-plane configuration", () => {
     ).toThrow(/non-loopback/i);
   });
 
+  it("rejects the committed example token and common sentinel values", () => {
+    const example = readFileSync(new URL("../../../.env.example", import.meta.url), "utf8");
+    const token = /^AUTOSTACK_LOCAL_API_TOKEN=(.*)$/m.exec(example)?.[1];
+    expect(token).toBeDefined();
+    expect(() => loadConfig({ AUTOSTACK_LOCAL_API_TOKEN: token })).toThrow(/placeholder|example/i);
+    expect(() => loadConfig({ AUTOSTACK_LOCAL_API_TOKEN: "x".repeat(32) })).toThrow(
+      /placeholder|example/i
+    );
+  });
+
   it("allows an explicit non-loopback development override", () => {
     expect(
       loadConfig({
@@ -67,13 +79,5 @@ describe("control-plane configuration", () => {
     expect(() => loadConfig({ AUTOSTACK_LOCAL_API_TOKEN: TOKEN, AUTOSTACK_PORT: port })).toThrow(
       /port/i
     );
-  });
-
-  it("derives a stable valid local workspace ID from the installation token", () => {
-    const workspaceId = deriveLocalWorkspaceId(TOKEN);
-
-    expect(workspaceId).toMatch(/^ws_[0-9a-f-]{36}$/);
-    expect(deriveLocalWorkspaceId(TOKEN)).toBe(workspaceId);
-    expect(deriveLocalWorkspaceId(`${TOKEN}different`)).not.toBe(workspaceId);
   });
 });

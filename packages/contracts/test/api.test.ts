@@ -33,6 +33,21 @@ describe("HTTP contracts", () => {
     expect(() => CreateRunRequestSchema.parse({ title: "   " })).toThrow();
   });
 
+  it("bounds acceptance context count and aggregate size", () => {
+    expect(() =>
+      CreateRunRequestSchema.parse({
+        title: "Too many acceptance items",
+        acceptanceContext: Array.from({ length: 51 }, (_, index) => `item-${index}`)
+      })
+    ).toThrow();
+    expect(() =>
+      CreateRunRequestSchema.parse({
+        title: "Too much aggregate context",
+        acceptanceContext: Array.from({ length: 11 }, () => "x".repeat(2_000))
+      })
+    ).toThrow();
+  });
+
   it("validates health without exposing paths or credentials", () => {
     const health = HealthResponseSchema.parse({
       service: "autostack-control-plane",

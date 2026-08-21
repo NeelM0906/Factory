@@ -45,7 +45,7 @@ pnpm install --frozen-lockfile
 cp .env.example .env
 ```
 
-Replace the placeholder token in `.env` with the output of `openssl rand -hex 32`, then export the file in each terminal:
+Replace the deliberately invalid placeholder token in `.env` with the output of `openssl rand -hex 32`. Load that file only in the control-plane and CLI terminals that need the bearer credential:
 
 ```bash
 set -a
@@ -59,18 +59,20 @@ Start the local API:
 pnpm --filter @autostack/control-plane dev
 ```
 
-In a second terminal, start the control room:
+In a second terminal, start the control room without exporting `.env` to it:
 
 ```bash
 pnpm --filter @autostack/web dev
 ```
 
-Open `http://127.0.0.1:5173`, choose **Connect**, and enter the same local token. The browser keeps it in `sessionStorage`, not durable browser storage. Verify the running system from another terminal:
+Open `http://127.0.0.1:5173`, choose **Connect**, and enter the same local token. The browser keeps it in `sessionStorage`, not durable browser storage. Verify the running system from another terminal after loading `.env` there:
 
 ```bash
 pnpm --filter @autostack/cli build
 node apps/cli/dist/main.js doctor
 ```
+
+Do not export the local API token into terminals that run repository scripts, coding agents, or other development tooling. `--token` remains temporarily compatible but is deprecated because command-line arguments can be exposed by process inspection.
 
 See [Foundation development and operation](docs/development/foundation.md) for curl examples, storage details, invariants, test commands, and the next implementation boundary.
 

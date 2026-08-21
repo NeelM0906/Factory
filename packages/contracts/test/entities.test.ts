@@ -180,7 +180,7 @@ describe("entity contracts", () => {
         workspaceId: IDS.workspace,
         provider: "github",
         store: "macos_keychain",
-        locator: "autostack/github/default",
+        locator: { service: "autostack.github", account: "default" },
         metadata: { label: "GitHub", scopes: ["contents:write"] },
         secret: "ghp_not_allowed",
         createdAt: NOW,
@@ -188,6 +188,32 @@ describe("entity contracts", () => {
       })
     ).toThrow();
   });
+
+  it.each(["label", "account", "scope", "locator"])(
+    "rejects a raw credential embedded in credential %s metadata",
+    (field) => {
+      const token = "ghp_0123456789abcdefghijklmnop";
+      const credential = {
+        schemaVersion: 1,
+        id: IDS.credential,
+        workspaceId: IDS.workspace,
+        provider: "github",
+        store: "macos_keychain",
+        locator: {
+          service: field === "locator" ? token : "autostack.github",
+          account: field === "account" ? token : "default"
+        },
+        metadata: {
+          label: field === "label" ? token : "GitHub",
+          scopes: [field === "scope" ? token : "contents:write"]
+        },
+        createdAt: NOW,
+        updatedAt: NOW
+      };
+
+      expect(() => CredentialRefSchema.parse(credential)).toThrow();
+    }
+  );
 
   it("keeps executable stages separate from factory lanes", () => {
     expect(RunStageSchema.parse("verify")).toBe("verify");

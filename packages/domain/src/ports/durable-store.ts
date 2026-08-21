@@ -7,6 +7,7 @@ import type {
   RunId,
   RunStage,
   StoredDomainEvent,
+  WorkflowFailure,
   WorkspaceId
 } from "@autostack/contracts";
 
@@ -91,7 +92,7 @@ export interface FailJobRequest {
   readonly jobId: JobId;
   readonly leaseToken: string;
   readonly now: string;
-  readonly error: { readonly name: string; readonly message: string; readonly retryable: boolean };
+  readonly error: WorkflowFailure;
   readonly nextAvailableAt?: string;
 }
 
