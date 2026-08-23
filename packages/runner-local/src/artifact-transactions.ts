@@ -8,7 +8,7 @@ import {
   decodeArtifactIdFilenameComponent,
   encodeArtifactIdFilenameComponent
 } from "./artifact-id-filename.js";
-import { writeAll } from "./artifact-io.js";
+import { syncArtifactFile, writeAll } from "./artifact-io.js";
 import {
   ArtifactStoreError,
   normalizeArtifactError,
@@ -19,6 +19,17 @@ import { closeFileHandleAfterFailure, usingFileHandle } from "./file-handle-life
 
 const SHA256_PATTERN = /^[0-9a-f]{64}$/;
 const ATTEMPT_PATTERN = /^[0-9a-f]{32}$/;
+// One terminal command may own one artifact. Each artifact namespace may contain a canonical
+// entry plus one crash alias, while tmp may retain one in-progress stream per admitted command.
+const MAXIMUM_LIFECYCLE_ARTIFACTS = 10_000;
+const MAXIMUM_RECOVERY_DIRECTORY_ENTRIES = MAXIMUM_LIFECYCLE_ARTIFACTS * 2;
+const MAXIMUM_DIGEST_PREFIX_DIRECTORIES = 256;
+const MAXIMUM_RECOVERY_ENTRIES =
+  MAXIMUM_LIFECYCLE_ARTIFACTS * 7 + MAXIMUM_DIGEST_PREFIX_DIRECTORIES;
+
+interface ArtifactRecoveryBudget {
+  remainingEntries: number;
+}
 
 export interface ArtifactAttempt {
   readonly artifactId: ArtifactId;
@@ -49,7 +60,7 @@ export class ArtifactTransactions {
       "transaction.creation-parent-synced"
     );
     await usingFileHandle(handle, async () => {
-      await handle.sync();
+      await syncArtifactFile(handle);
     });
     await this.#boundary("transaction.file-synced");
     await this.#files.syncDirectory("artifacts/transactions");
@@ -72,7 +83,7 @@ export class ArtifactTransactions {
     );
     await usingFileHandle(handle, async () => {
       await writeAll(handle, Buffer.from(`${metadataHash}\n`), 0);
-      await handle.sync();
+      await syncArtifactFile(handle);
     });
     await this.#boundary("transaction.committed-file-synced");
     const linked = await this.#files.linkNoReplace(tempRelative, canonicalRelative);
@@ -149,10 +160,11 @@ export class ArtifactTransactions {
 
   async recover(verifier: ArtifactRecoveryVerifier): Promise<void> {
     const committed = new Set<ArtifactId>();
-    await this.#recoverTransactionDirectory(committed);
-    await this.#recoverMetadataDirectory();
-    await this.#recoverBlobDirectories();
-    await this.#validateStreamTemps();
+    const budget = { remainingEntries: MAXIMUM_RECOVERY_ENTRIES };
+    await this.#recoverTransactionDirectory(committed, budget);
+    await this.#recoverMetadataDirectory(budget);
+    await this.#recoverBlobDirectories(budget);
+    await this.#validateStreamTemps(budget);
     for (const artifactId of committed) {
       await verifier.verifyCommitted(artifactId, await this.readCommittedMetadataHash(artifactId));
     }
@@ -224,8 +236,11 @@ export class ArtifactTransactions {
     throw normalizeArtifactError(lastError, "unsafe_state");
   }
 
-  async #recoverTransactionDirectory(committed: Set<ArtifactId>): Promise<void> {
-    const entries = await this.#readDirectory("artifacts/transactions");
+  async #recoverTransactionDirectory(
+    committed: Set<ArtifactId>,
+    budget: ArtifactRecoveryBudget
+  ): Promise<void> {
+    const entries = await this.#readDirectory("artifacts/transactions", budget);
     const commitTemps: Array<{ alias: string; canonical: string; artifactId: ArtifactId }> = [];
     const aliasPairs: Array<readonly [string, string]> = [];
     for (const entry of entries) {
@@ -262,8 +277,8 @@ export class ArtifactTransactions {
     }
   }
 
-  async #recoverMetadataDirectory(): Promise<void> {
-    const entries = await this.#readDirectory("artifacts/metadata");
+  async #recoverMetadataDirectory(budget: ArtifactRecoveryBudget): Promise<void> {
+    const entries = await this.#readDirectory("artifacts/metadata", budget);
     const aliases: Array<{ entry: ConfinedDirectoryEntry; artifactId: ArtifactId }> = [];
     const aliasPairs: Array<readonly [string, string]> = [];
     for (const entry of entries) {
@@ -291,14 +306,14 @@ export class ArtifactTransactions {
     }
   }
 
-  async #recoverBlobDirectories(): Promise<void> {
-    const prefixes = await this.#readDirectory("artifacts/sha256");
+  async #recoverBlobDirectories(budget: ArtifactRecoveryBudget): Promise<void> {
+    const prefixes = await this.#readDirectory("artifacts/sha256", budget);
     for (const prefixEntry of prefixes) {
       const prefix = prefixEntry.name;
       if (prefixEntry.type !== "directory" || !/^[0-9a-f]{2}$/.test(prefix)) {
         throw new ArtifactStoreError("unsafe_state", "Unexpected digest state is present.");
       }
-      const entries = await this.#readDirectory(`artifacts/sha256/${prefix}`);
+      const entries = await this.#readDirectory(`artifacts/sha256/${prefix}`, budget);
       const aliases: Array<{ entry: ConfinedDirectoryEntry; digest: string }> = [];
       const aliasPairs: Array<readonly [string, string]> = [];
       for (const entry of entries) {
@@ -323,8 +338,8 @@ export class ArtifactTransactions {
     }
   }
 
-  async #validateStreamTemps(): Promise<void> {
-    const entries = await this.#readDirectory("artifacts/tmp");
+  async #validateStreamTemps(budget: ArtifactRecoveryBudget): Promise<void> {
+    const entries = await this.#readDirectory("artifacts/tmp", budget);
     for (const entry of entries) {
       const streamTemp = this.#attemptWithSuffix(entry.name, ".blob.tmp");
       if (entry.type !== "file" || entry.identity.nlink !== 1 || streamTemp === undefined) {
@@ -385,9 +400,16 @@ export class ArtifactTransactions {
     return artifactId === undefined ? undefined : { artifactId, attemptId };
   }
 
-  async #readDirectory(relativePath: string): Promise<readonly ConfinedDirectoryEntry[]> {
+  async #readDirectory(
+    relativePath: string,
+    budget: ArtifactRecoveryBudget
+  ): Promise<readonly ConfinedDirectoryEntry[]> {
     try {
-      return await this.#files.listDirectory(relativePath);
+      const maximum = Math.min(MAXIMUM_RECOVERY_DIRECTORY_ENTRIES, budget.remainingEntries);
+      const entries = await this.#files.listExistingDirectory(relativePath, maximum);
+      if (entries === undefined) throw new TypeError();
+      budget.remainingEntries -= entries.length;
+      return entries;
     } catch {
       throw new ArtifactStoreError("unsafe_state", "Artifact transaction state is unavailable.");
     }

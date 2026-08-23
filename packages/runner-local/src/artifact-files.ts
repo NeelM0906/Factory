@@ -1,6 +1,10 @@
 import type { FileHandle } from "node:fs/promises";
 
 import {
+  artifactMutationIsGuarded,
+  assertArtifactMutationAuthorized
+} from "./artifact-mutation-authority.js";
+import {
   assertPrivateArtifactStatus,
   sameFileIdentity,
   snapshotFileIdentity,
@@ -30,7 +34,8 @@ export class ArtifactFiles {
   async create(relativePath: string): Promise<FileHandle> {
     return this.#serialized(async () => {
       await this.#refreshParent(relativePath);
-      return this.#paths.openFile(relativePath, "wx");
+      assertArtifactMutationAuthorized();
+      return this.#paths.openFile(relativePath, "wx", true);
     });
   }
 
@@ -38,7 +43,7 @@ export class ArtifactFiles {
     try {
       return await this.#serialized(async () => {
         await this.#refreshParent(relativePath);
-        return this.#paths.openFile(relativePath, "r");
+        return this.#paths.openFile(relativePath, "r", !artifactMutationIsGuarded());
       });
     } catch (error) {
       throw normalizeArtifactError(error, fallbackCode);
@@ -49,7 +54,7 @@ export class ArtifactFiles {
     try {
       return await this.#serialized(async () => {
         await this.#refreshParent(relativePath);
-        return this.#paths.fileExists(relativePath);
+        return this.#paths.fileExists(relativePath, !artifactMutationIsGuarded());
       });
     } catch (error) {
       throw normalizeArtifactError(error, "unsafe_state");
@@ -60,7 +65,8 @@ export class ArtifactFiles {
     try {
       await this.#serialized(async () => {
         await this.#refreshParent(relativePath);
-        await this.#paths.unlinkFile(relativePath);
+        assertArtifactMutationAuthorized();
+        await this.#paths.unlinkFile(relativePath, !artifactMutationIsGuarded());
       });
     } catch (error) {
       throw normalizeArtifactError(error, "unsafe_state");
@@ -75,7 +81,12 @@ export class ArtifactFiles {
       return await this.#serialized(async () => {
         await this.#refreshParent(sourceRelativePath);
         await this.#refreshParent(destinationRelativePath);
-        return this.#paths.linkFileNoReplace(sourceRelativePath, destinationRelativePath);
+        assertArtifactMutationAuthorized();
+        return this.#paths.linkFileNoReplace(
+          sourceRelativePath,
+          destinationRelativePath,
+          !artifactMutationIsGuarded()
+        );
       });
     } catch (error) {
       throw normalizeArtifactError(error, "unsafe_state");
@@ -93,6 +104,7 @@ export class ArtifactFiles {
       return await this.#serialized(async () => {
         await this.#refreshParent(aliasRelativePath);
         await this.#refreshParent(canonicalRelativePath);
+        assertArtifactMutationAuthorized();
         return this.#paths.healLinkedAlias(
           aliasRelativePath,
           canonicalRelativePath,
@@ -101,12 +113,14 @@ export class ArtifactFiles {
             : async () => {
                 try {
                   await afterUnlink();
+                  assertArtifactMutationAuthorized();
                 } catch (error) {
                   boundaryFailed = true;
                   boundaryError = error;
                   throw error;
                 }
-              }
+              },
+          !artifactMutationIsGuarded()
         );
       });
     } catch (error) {
@@ -119,7 +133,8 @@ export class ArtifactFiles {
     try {
       await this.#serialized(async () => {
         await this.#paths.refreshDirectoryChainAfterConcurrentEntryChange(relativePath);
-        await this.#paths.syncDirectory(relativePath);
+        assertArtifactMutationAuthorized();
+        await this.#paths.syncDirectory(relativePath, !artifactMutationIsGuarded());
       });
     } catch (error) {
       throw normalizeArtifactError(error, "unsafe_state");
@@ -130,6 +145,7 @@ export class ArtifactFiles {
     try {
       await this.#serialized(async () => {
         await this.#paths.refreshDirectoryChainAfterConcurrentEntryChange(relativePath);
+        assertArtifactMutationAuthorized();
         await this.#paths.ensureDirectory(relativePath);
       });
     } catch (error) {
@@ -137,11 +153,13 @@ export class ArtifactFiles {
     }
   }
 
-  async listDirectory(relativePath: string): Promise<readonly ConfinedDirectoryEntry[]> {
+  async listExistingDirectory(
+    relativePath: string,
+    maximumEntries: number
+  ): Promise<readonly ConfinedDirectoryEntry[] | undefined> {
     try {
       return await this.#serialized(async () => {
-        await this.#paths.refreshDirectoryChainAfterConcurrentEntryChange(relativePath);
-        return this.#paths.listDirectory(relativePath);
+        return await this.#paths.listExistingDirectory(relativePath, maximumEntries);
       });
     } catch (error) {
       throw normalizeArtifactError(error, "unsafe_state");

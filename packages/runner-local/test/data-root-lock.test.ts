@@ -22,9 +22,10 @@ import { afterEach, describe, expect, it } from "vitest";
 import {
   acquireCommandGuardianLease,
   acquireDataRootLock,
+  assertLiveCommandGuardianLease,
+  CommandGuardianLease,
   DataRootLockError,
   guardianLeaseRelativePath,
-  type CommandGuardianLease,
   type DataRootLock
 } from "../src/data-root-lock.js";
 
@@ -305,6 +306,43 @@ describe("data-root ownership", () => {
 });
 
 describe("guardian lease preflight", () => {
+  it("authenticates only the exact live root-bound guardian lease", async () => {
+    const dataRoot = await temporaryRoot();
+    const otherRoot = await temporaryRoot();
+    const guardian = await acquireCommandGuardianLease(dataRoot, COMMAND_ID);
+    const otherGuardian = await acquireCommandGuardianLease(otherRoot, COMMAND_ID);
+    locks.push(guardian, otherGuardian);
+    const canonicalRoot = await realpath(dataRoot);
+
+    expect(() => assertLiveCommandGuardianLease(guardian, canonicalRoot, COMMAND_ID)).not.toThrow();
+    expect(() => assertLiveCommandGuardianLease(otherGuardian, canonicalRoot, COMMAND_ID)).toThrow(
+      new DataRootLockError("unsafe_state")
+    );
+    expect(() =>
+      assertLiveCommandGuardianLease(
+        Object.assign(Object.create(CommandGuardianLease.prototype), { commandId: COMMAND_ID }),
+        canonicalRoot,
+        COMMAND_ID
+      )
+    ).toThrow(new DataRootLockError("unsafe_state"));
+    class ForgedGuardianLease extends CommandGuardianLease {
+      constructor() {
+        super(COMMAND_ID);
+      }
+    }
+    expect(() =>
+      assertLiveCommandGuardianLease(new ForgedGuardianLease(), canonicalRoot, COMMAND_ID)
+    ).toThrow(new DataRootLockError("unsafe_state"));
+    expect(() => assertLiveCommandGuardianLease(guardian, canonicalRoot, commandIdFor(99))).toThrow(
+      new DataRootLockError("unsafe_state")
+    );
+
+    guardian.close();
+    expect(() => assertLiveCommandGuardianLease(guardian, canonicalRoot, COMMAND_ID)).toThrow(
+      new DataRootLockError("unsafe_state")
+    );
+  });
+
   it("freezes guardian handles while private close state remains mutable and idempotent", async () => {
     const dataRoot = await temporaryRoot();
     const guardian = await acquireCommandGuardianLease(dataRoot, COMMAND_ID);

@@ -1,6 +1,5 @@
 import { createHash } from "node:crypto";
 import type { FileHandle } from "node:fs/promises";
-import { types as utilTypes } from "node:util";
 
 import {
   ArtifactDescriptorSchema,
@@ -10,12 +9,18 @@ import {
 } from "@autostack/contracts";
 
 import { ArtifactFiles } from "./artifact-files.js";
+import { initializeOrAdmitArtifactTopology } from "./artifact-recovery-topology.js";
+import {
+  assertArtifactMutationAuthorized,
+  brandArtifactStoreRoot
+} from "./artifact-mutation-authority.js";
 import {
   ARTIFACT_STREAM_BUFFER_BYTES,
   artifactHandlesHaveEqualBytes,
   inspectArtifactHandle,
   sameFileIdentity,
   snapshotFileIdentity,
+  syncArtifactFile,
   writeAll,
   type FileIdentitySnapshot
 } from "./artifact-io.js";
@@ -37,6 +42,7 @@ import {
   type WriteArtifactRequest
 } from "./artifact-types.js";
 import { closeFileHandleAfterFailure, usingFileHandle } from "./file-handle-lifecycle.js";
+import { isByteSnapshotLimitError, snapshotBytes } from "./command-guardian-bounds.js";
 import { KeyedLock } from "./keyed-lock.js";
 import { DataPathPolicy } from "./path-policy.js";
 import { StreamingSensitiveScanner, redactCompleteText } from "./redacted-transcript.js";
@@ -59,10 +65,6 @@ interface StreamedArtifact {
 
 const MAX_METADATA_BYTES = 64 * 1_024;
 const MAX_READ_BYTES = 1_048_576;
-const typedArrayByteLength = Object.getOwnPropertyDescriptor(
-  Object.getPrototypeOf(Uint8Array.prototype) as object,
-  "byteLength"
-)?.get;
 
 /** Immutable content-addressed evidence storage for AutoStack-owned operations. */
 export class ArtifactStore {
@@ -89,12 +91,9 @@ export class ArtifactStore {
     }
     try {
       const paths = await DataPathPolicy.create(dataRoot);
-      await paths.ensureDirectory("artifacts");
-      await paths.ensureDirectory("artifacts/sha256");
-      await paths.ensureDirectory("artifacts/metadata");
-      await paths.ensureDirectory("artifacts/tmp");
-      await paths.ensureDirectory("artifacts/transactions");
+      await initializeOrAdmitArtifactTopology(paths);
       const store = new ArtifactStore(new ArtifactFiles(paths), onBoundary);
+      await brandArtifactStoreRoot(store, paths.root, dataRoot);
       await store.#transactions.recover({
         verifyCommitted: async (artifactId, metadataHash) => {
           const record = await store.#readDescriptorRecord(artifactId);
@@ -243,7 +242,7 @@ export class ArtifactStore {
         scanner.write(chunk);
         byteSize = await writeAll(handle, chunk, byteSize);
       });
-      await handle.sync();
+      await syncArtifactFile(handle);
     });
     await this.#boundary("blob.file-synced");
     await this.#files.syncDirectory("artifacts/tmp");
@@ -313,7 +312,7 @@ export class ArtifactStore {
         if (scanner.finalize()) {
           throw new ArtifactStoreError("sensitive_artifact", "Credential material is forbidden.");
         }
-        await destination.sync();
+        await syncArtifactFile(destination);
       });
     });
     await this.#boundary("transaction.publishing-file-synced");
@@ -379,7 +378,7 @@ export class ArtifactStore {
     );
     await usingFileHandle(handle, async () => {
       await writeAll(handle, metadataBytes, 0);
-      await handle.sync();
+      await syncArtifactFile(handle);
     });
     await this.#boundary("metadata.file-synced");
     await this.#files.syncDirectory("artifacts/metadata");
@@ -481,7 +480,7 @@ export class ArtifactStore {
   async #forEachContentChunk(
     content: AsyncIterable<Uint8Array>,
     maximumBytes: number,
-    visit: (chunk: Buffer) => Promise<void>
+    visit: (chunk: Uint8Array) => Promise<void>
   ): Promise<void> {
     let iterator: AsyncIterator<Uint8Array>;
     let admittedBytes = 0;
@@ -513,24 +512,16 @@ export class ArtifactStore {
         } catch {
           throw new ArtifactStoreError("filesystem_error", "Artifact content iteration failed.");
         }
-        let byteLength: number;
+        let chunk: Uint8Array;
         try {
-          if (!utilTypes.isUint8Array(value)) throw new TypeError();
-          if (typedArrayByteLength === undefined) throw new TypeError();
-          byteLength = typedArrayByteLength.call(value) as number;
-        } catch {
+          chunk = snapshotBytes(value, { maximumBytes: maximumBytes - admittedBytes });
+        } catch (error) {
+          if (isByteSnapshotLimitError(error)) {
+            throw new ArtifactStoreError("artifact_too_large", "Artifact byte limit exceeded.");
+          }
           throw new ArtifactStoreError("filesystem_error", "Artifact content must be byte chunks.");
         }
-        if (byteLength > maximumBytes - admittedBytes) {
-          throw new ArtifactStoreError("artifact_too_large", "Artifact byte limit exceeded.");
-        }
-        admittedBytes += byteLength;
-        let chunk: Buffer;
-        try {
-          chunk = Buffer.from(value);
-        } catch {
-          throw new ArtifactStoreError("filesystem_error", "Artifact content must be byte chunks.");
-        }
+        admittedBytes += chunk.byteLength;
         await visit(chunk);
       }
     } catch (error) {
@@ -685,9 +676,10 @@ export class ArtifactStore {
   }
 
   async #boundary(boundary: ArtifactWriteBoundary): Promise<void> {
-    if (this.#onBoundary === undefined) return;
     try {
-      await this.#onBoundary(boundary);
+      assertArtifactMutationAuthorized();
+      await this.#onBoundary?.(boundary);
+      assertArtifactMutationAuthorized();
     } catch {
       throw new ArtifactStoreError("filesystem_error", "An artifact durability boundary failed.");
     }

@@ -1,17 +1,13 @@
 import type { Stats } from "node:fs";
 import type { FileHandle } from "node:fs/promises";
 import { link, lstat, mkdir, open, realpath, rmdir, unlink } from "node:fs/promises";
-import { isAbsolute, resolve } from "node:path";
+import { resolve } from "node:path";
 
 import {
-  assertNoUserSymlinkComponents,
   assertPrivateDirectory,
   assertPrivateFile,
   assertPrivateFileLinkCount,
-  createMissingRoot,
-  existingNearestAncestor,
   identityOf,
-  invokePathHook,
   isNodeError,
   isWithin,
   privateOpenFlags,
@@ -20,10 +16,12 @@ import {
   sameObject,
   samePinnedIdentity,
   snapshotStringInput,
-  verifyDarwinOpenCapabilities,
   type PathIdentity
 } from "./path-security.js";
 import { readConfinedDirectory, type ConfinedDirectoryEntry } from "./confined-directory.js";
+import { pinExistingDirectory, readExistingDirectory } from "./existing-directory.js";
+import { admitDirectoryCreation, invokePathHook } from "./path-policy-hooks.js";
+import { admitDataPathRoot } from "./data-path-policy-root.js";
 import { PinnedDirectories } from "./pinned-directories.js";
 import {
   AUTOSTACK_NAMESPACE_MUTATION_PROTECTION,
@@ -51,40 +49,7 @@ export {
 export { RepositoryInspectionPathPolicy } from "./repository-path-policy.js";
 export type { ConfinedDirectoryEntry } from "./confined-directory.js";
 
-const snapshotHooks = (hooks: DataPathPolicyHooks): DataPathPolicyHooks => {
-  const beforeRootCreate = hooks.beforeRootCreate;
-  const beforeRootDirectoryCreate = hooks.beforeRootDirectoryCreate;
-  const beforeDirectoryCreate = hooks.beforeDirectoryCreate;
-  const beforeFileOpen = hooks.beforeFileOpen;
-  const onDarwinCapabilityVerified = hooks.onDarwinCapabilityVerified;
-  if (
-    [
-      beforeRootCreate,
-      beforeRootDirectoryCreate,
-      beforeDirectoryCreate,
-      beforeFileOpen,
-      onDarwinCapabilityVerified
-    ].some((hook) => hook !== undefined && typeof hook !== "function")
-  ) {
-    throw new PathPolicyError("filesystem_error", "Path-policy hooks are unavailable.");
-  }
-  return Object.freeze({
-    ...(beforeRootCreate === undefined ? {} : { beforeRootCreate }),
-    ...(beforeRootDirectoryCreate === undefined ? {} : { beforeRootDirectoryCreate }),
-    ...(beforeDirectoryCreate === undefined ? {} : { beforeDirectoryCreate }),
-    ...(beforeFileOpen === undefined ? {} : { beforeFileOpen }),
-    ...(onDarwinCapabilityVerified === undefined ? {} : { onDarwinCapabilityVerified })
-  });
-};
-
-/**
- * Confines AutoStack's own state reads and writes to a private data root.
- * It is not child-process isolation. Darwin additionally rejects symlinks in
- * every open-path component. Standard Node has no descriptor-relative mkdir or
- * unlink, so a malicious same-UID process can still race a concurrent rename;
- * identity revalidation and exact-inode rollback reduce exposure but namespace
- * mutation protection against that continuously malicious actor is advisory.
- */
+/** Confines product state; same-UID namespace-race protection remains advisory. */
 export class DataPathPolicy {
   readonly enforcementScope: AutoStackPathEnforcementScope = AUTOSTACK_PATH_ENFORCEMENT_SCOPE;
   readonly namespaceMutationProtection: AutoStackNamespaceMutationProtection =
@@ -98,48 +63,27 @@ export class DataPathPolicy {
     this.#directories = new PinnedDirectories(root, rootIdentity);
     this.#hooks = hooks;
   }
-
   static async create(rootInput: string, hooks: DataPathPolicyHooks = {}): Promise<DataPathPolicy> {
     try {
-      const admittedHooks = snapshotHooks(hooks);
-      const root = snapshotStringInput(
-        rootInput,
-        "state_root_invalid",
-        "An absolute state root is required."
-      );
-      if (!isAbsolute(root) || root.includes("\0")) {
-        throw new PathPolicyError("state_root_invalid", "An absolute state root is required.");
-      }
-      const absoluteRoot = resolve(root);
-      await assertNoUserSymlinkComponents(absoluteRoot);
-      const nearest = await existingNearestAncestor(absoluteRoot);
-      let canonicalRoot: string;
-      try {
-        const existing = await lstat(absoluteRoot);
-        assertPrivateDirectory(existing, "state_root_invalid");
-        canonicalRoot = await realpath(absoluteRoot);
-      } catch (error) {
-        if (!isNodeError(error) || error.code !== "ENOENT") throw error;
-        canonicalRoot = await createMissingRoot(
-          absoluteRoot,
-          nearest,
-          admittedHooks.beforeRootCreate,
-          admittedHooks.beforeRootDirectoryCreate
-        );
-      }
-      await verifyDarwinOpenCapabilities(canonicalRoot, admittedHooks.onDarwinCapabilityVerified);
-      const rootStatus = await lstat(canonicalRoot);
-      assertPrivateDirectory(rootStatus, "state_root_invalid");
-      if ((await realpath(canonicalRoot)) !== canonicalRoot) {
-        throw new PathPolicyError("state_root_invalid", "The state root is not canonical.");
-      }
-      return new DataPathPolicy(canonicalRoot, identityOf(rootStatus), admittedHooks);
+      const admitted = await admitDataPathRoot(rootInput, hooks, true);
+      return new DataPathPolicy(admitted.root, admitted.identity, admitted.hooks);
     } catch (error) {
       if (isPathPolicyError(error)) throw error;
       throw new PathPolicyError("filesystem_error", "The private state root is unavailable.");
     }
   }
-
+  static async openExisting(
+    rootInput: string,
+    hooks: DataPathPolicyHooks = {}
+  ): Promise<DataPathPolicy> {
+    try {
+      const admitted = await admitDataPathRoot(rootInput, hooks, false);
+      return new DataPathPolicy(admitted.root, admitted.identity, admitted.hooks);
+    } catch (error) {
+      if (isPathPolicyError(error)) throw error;
+      throw new PathPolicyError("filesystem_error", "The private state root is unavailable.");
+    }
+  }
   async ensureDirectory(relativePath: string): Promise<string> {
     try {
       const relative = snapshotStringInput(
@@ -243,31 +187,41 @@ export class DataPathPolicy {
       throw new PathPolicyError("filesystem_error", "The private state directory is unavailable.");
     }
   }
-
-  async fileExists(relativePathInput: string): Promise<boolean> {
+  async #directory(relativePath: string, createMissing: boolean): Promise<string | undefined> {
+    return createMissing
+      ? await this.ensureDirectory(relativePath)
+      : await pinExistingDirectory({
+          root: this.root,
+          directories: this.#directories,
+          relativePathInput: relativePath
+        });
+  }
+  async fileExists(relativePathInput: string, createMissingParents = true): Promise<boolean> {
     try {
+      createMissingParents = admitDirectoryCreation(createMissingParents);
       const relativePath = snapshotStringInput(
         relativePathInput,
         "invalid_relative_path",
         "A relative state-file path is required."
       );
-      return await this.#fileExists(relativePath);
+      return await this.#fileExists(relativePath, createMissingParents);
     } catch (error) {
       if (isPathPolicyError(error)) throw error;
       throw new PathPolicyError("filesystem_error", "The private state file is unavailable.");
     }
   }
-
-  async #fileExists(relativePath: string): Promise<boolean> {
+  async #fileExists(relativePath: string, createMissingParents: boolean): Promise<boolean> {
     const segments = rejectInvalidRelativePath(relativePath, false);
     const fileName = segments.at(-1);
     if (fileName === undefined) {
       throw new PathPolicyError("invalid_relative_path", "A file path is required.");
     }
     const parentSegments = segments.slice(0, -1);
-    const parent = await this.ensureDirectory(
-      parentSegments.length === 0 ? "." : parentSegments.join("/")
+    const parent = await this.#directory(
+      parentSegments.length === 0 ? "." : parentSegments.join("/"),
+      createMissingParents
     );
+    if (parent === undefined) return false;
     const absolutePath = resolve(parent, fileName);
     try {
       const firstStatus = await lstat(absolutePath);
@@ -288,31 +242,32 @@ export class DataPathPolicy {
       throw new PathPolicyError("filesystem_error", "The private state file is unavailable.");
     }
   }
-
-  async unlinkFile(relativePathInput: string): Promise<boolean> {
+  async unlinkFile(relativePathInput: string, createMissingParents = true): Promise<boolean> {
     try {
+      createMissingParents = admitDirectoryCreation(createMissingParents);
       const relativePath = snapshotStringInput(
         relativePathInput,
         "invalid_relative_path",
         "A relative state-file path is required."
       );
-      return await this.#unlinkFile(relativePath);
+      return await this.#unlinkFile(relativePath, createMissingParents);
     } catch (error) {
       if (isPathPolicyError(error)) throw error;
       throw new PathPolicyError("filesystem_error", "The private state file could not be removed.");
     }
   }
-
-  async #unlinkFile(relativePath: string): Promise<boolean> {
+  async #unlinkFile(relativePath: string, createMissingParents: boolean): Promise<boolean> {
     const segments = rejectInvalidRelativePath(relativePath, false);
     const fileName = segments.at(-1);
     if (fileName === undefined) {
       throw new PathPolicyError("invalid_relative_path", "A file path is required.");
     }
     const parentSegments = segments.slice(0, -1);
-    const parent = await this.ensureDirectory(
-      parentSegments.length === 0 ? "." : parentSegments.join("/")
+    const parent = await this.#directory(
+      parentSegments.length === 0 ? "." : parentSegments.join("/"),
+      createMissingParents
     );
+    if (parent === undefined) return false;
     const absolutePath = resolve(parent, fileName);
     try {
       const status = await lstat(absolutePath);
@@ -339,12 +294,13 @@ export class DataPathPolicy {
       throw new PathPolicyError("filesystem_error", "The private state file could not be removed.");
     }
   }
-
   async linkFileNoReplace(
     sourceRelativePath: string,
-    destinationRelativePath: string
+    destinationRelativePath: string,
+    createMissingParents = true
   ): Promise<boolean> {
     try {
+      createMissingParents = admitDirectoryCreation(createMissingParents);
       const sourceRelative = snapshotStringInput(
         sourceRelativePath,
         "invalid_relative_path",
@@ -364,12 +320,15 @@ export class DataPathPolicy {
       }
       const sourceParentSegments = sourceSegments.slice(0, -1);
       const destinationParentSegments = destinationSegments.slice(0, -1);
-      const sourceParent = await this.ensureDirectory(
-        sourceParentSegments.length === 0 ? "." : sourceParentSegments.join("/")
+      const sourceParent = await this.#directory(
+        sourceParentSegments.length === 0 ? "." : sourceParentSegments.join("/"),
+        createMissingParents
       );
-      const destinationParent = await this.ensureDirectory(
-        destinationParentSegments.length === 0 ? "." : destinationParentSegments.join("/")
+      const destinationParent = await this.#directory(
+        destinationParentSegments.length === 0 ? "." : destinationParentSegments.join("/"),
+        createMissingParents
       );
+      if (sourceParent === undefined || destinationParent === undefined) return false;
       const source = resolve(sourceParent, sourceName);
       const destination = resolve(destinationParent, destinationName);
       const sourceStatus = await lstat(source);
@@ -413,13 +372,14 @@ export class DataPathPolicy {
       throw new PathPolicyError("filesystem_error", "A private state link could not be published.");
     }
   }
-
   async healLinkedAlias(
     aliasRelativePath: string,
     canonicalRelativePath: string,
-    afterUnlink?: () => Promise<void>
+    afterUnlink?: () => Promise<void>,
+    createMissingParents = true
   ): Promise<boolean> {
     try {
+      createMissingParents = admitDirectoryCreation(createMissingParents);
       const aliasRelative = snapshotStringInput(
         aliasRelativePath,
         "invalid_relative_path",
@@ -439,12 +399,15 @@ export class DataPathPolicy {
       }
       const aliasParentSegments = aliasSegments.slice(0, -1);
       const canonicalParentSegments = canonicalSegments.slice(0, -1);
-      const aliasParent = await this.ensureDirectory(
-        aliasParentSegments.length === 0 ? "." : aliasParentSegments.join("/")
+      const aliasParent = await this.#directory(
+        aliasParentSegments.length === 0 ? "." : aliasParentSegments.join("/"),
+        createMissingParents
       );
-      const canonicalParent = await this.ensureDirectory(
-        canonicalParentSegments.length === 0 ? "." : canonicalParentSegments.join("/")
+      const canonicalParent = await this.#directory(
+        canonicalParentSegments.length === 0 ? "." : canonicalParentSegments.join("/"),
+        createMissingParents
       );
+      if (aliasParent === undefined || canonicalParent === undefined) return false;
       const alias = resolve(aliasParent, aliasName);
       const canonical = resolve(canonicalParent, canonicalName);
       let aliasStatus: Stats;
@@ -485,22 +448,27 @@ export class DataPathPolicy {
       throw new PathPolicyError("filesystem_error", "A private state link could not be healed.");
     }
   }
-
-  async syncDirectory(relativePathInput: string): Promise<void> {
+  async syncDirectory(relativePathInput: string, createMissing = true): Promise<void> {
     try {
+      createMissing = admitDirectoryCreation(createMissing);
       const relativePath = snapshotStringInput(
         relativePathInput,
         "invalid_relative_path",
         "A relative state-directory path is required."
       );
-      const directory = await this.ensureDirectory(relativePath);
+      const directory = await this.#directory(relativePath, createMissing);
+      if (directory === undefined) {
+        throw new PathPolicyError(
+          "filesystem_error",
+          "The private state directory is unavailable."
+        );
+      }
       await this.#directories.syncAllowingConcurrentEntries(directory);
     } catch (error) {
       if (isPathPolicyError(error)) throw error;
       throw new PathPolicyError("filesystem_error", "The private state directory is unavailable.");
     }
   }
-
   async listDirectory(relativePathInput: string): Promise<readonly ConfinedDirectoryEntry[]> {
     try {
       const relativePath = snapshotStringInput(
@@ -519,6 +487,18 @@ export class DataPathPolicy {
       if (isPathPolicyError(error)) throw error;
       throw new PathPolicyError("filesystem_error", "A private recovery directory is unavailable.");
     }
+  }
+  /** Enumerates only an already-existing private directory and never creates recovery state. */
+  async listExistingDirectory(
+    relativePathInput: string,
+    maximumEntries: number
+  ): Promise<readonly ConfinedDirectoryEntry[] | undefined> {
+    return await readExistingDirectory({
+      root: this.root,
+      directories: this.#directories,
+      relativePathInput,
+      maximumEntries
+    });
   }
 
   /**
@@ -541,7 +521,6 @@ export class DataPathPolicy {
       throw new PathPolicyError("filesystem_error", "A publication directory is unavailable.");
     }
   }
-
   async #refreshDirectoryChainAfterConcurrentEntryChange(relativePath: string): Promise<boolean> {
     const segments = rejectInvalidRelativePath(relativePath, true);
     let current = this.root;
@@ -571,21 +550,30 @@ export class DataPathPolicy {
     return true;
   }
 
-  async openFile(relativePathInput: string, mode: PrivateFileOpenMode): Promise<FileHandle> {
+  async openFile(
+    relativePathInput: string,
+    mode: PrivateFileOpenMode,
+    createMissingParents = true
+  ): Promise<FileHandle> {
     try {
+      createMissingParents = admitDirectoryCreation(createMissingParents);
       const relativePath = snapshotStringInput(
         relativePathInput,
         "invalid_relative_path",
         "A relative state-file path is required."
       );
-      return await this.#openFile(relativePath, mode);
+      return await this.#openFile(relativePath, mode, createMissingParents);
     } catch (error) {
       if (isPathPolicyError(error)) throw error;
       throw new PathPolicyError("filesystem_error", "The private state file could not be opened.");
     }
   }
 
-  async #openFile(relativePath: string, mode: PrivateFileOpenMode): Promise<FileHandle> {
+  async #openFile(
+    relativePath: string,
+    mode: PrivateFileOpenMode,
+    createMissingParents: boolean
+  ): Promise<FileHandle> {
     if (mode !== "r" && mode !== "wx") {
       throw new PathPolicyError(
         "invalid_open_mode",
@@ -598,9 +586,13 @@ export class DataPathPolicy {
       throw new PathPolicyError("invalid_relative_path", "A file path is required.");
     }
     const parentSegments = segments.slice(0, -1);
-    const parent = await this.ensureDirectory(
-      parentSegments.length === 0 ? "." : parentSegments.join("/")
+    const parent = await this.#directory(
+      parentSegments.length === 0 ? "." : parentSegments.join("/"),
+      createMissingParents
     );
+    if (parent === undefined) {
+      throw new PathPolicyError("filesystem_error", "The state-file parent is unavailable.");
+    }
     const absolutePath = resolve(parent, fileName);
     if (!isWithin(this.root, absolutePath)) {
       throw new PathPolicyError("path_escape", "The requested state file escaped its root.");

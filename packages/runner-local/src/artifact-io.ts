@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import type { Stats } from "node:fs";
 import type { FileHandle } from "node:fs/promises";
 
+import { assertArtifactMutationAuthorized } from "./artifact-mutation-authority.js";
 import { StreamingSensitiveScanner } from "./redacted-transcript.js";
 
 export const ARTIFACT_STREAM_BUFFER_BYTES = 64 * 1_024;
@@ -56,6 +57,7 @@ export const writeAll = async (
 ): Promise<number> => {
   let written = 0;
   while (written < chunk.byteLength) {
+    assertArtifactMutationAuthorized();
     const result = await handle.write(
       chunk,
       written,
@@ -66,6 +68,11 @@ export const writeAll = async (
     written += result.bytesWritten;
   }
   return position + written;
+};
+
+export const syncArtifactFile = async (handle: FileHandle): Promise<void> => {
+  assertArtifactMutationAuthorized();
+  await handle.sync();
 };
 
 export const inspectArtifactHandle = async (

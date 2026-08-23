@@ -6,6 +6,7 @@ import {
   mkdtemp,
   mkdir,
   readFile,
+  readdir,
   realpath,
   rename,
   symlink,
@@ -404,6 +405,32 @@ describe("DataPathPolicy", () => {
     } as never);
 
     expect(verified).toEqual(process.platform === "darwin" ? ["nofollow_any", "unique_link"] : []);
+  });
+
+  it("opens a replacement root read-only without a Darwin capability-probe boundary", async () => {
+    const parent = await temporaryRoot();
+    const root = join(parent, "state");
+    await DataPathPolicy.create(root);
+    await rename(root, join(parent, "displaced-state"));
+    await mkdir(root, { mode: 0o700 });
+    await writeFile(join(root, "marker"), "replacement", { mode: 0o600 });
+    const before = await readdir(root);
+    let boundaryCalls = 0;
+    let transientEntries: readonly string[] = [];
+
+    await expect(
+      DataPathPolicy.openExisting(root, {
+        onDarwinCapabilityVerified: async () => {
+          boundaryCalls += 1;
+          transientEntries = await readdir(root);
+          throw new Error("simulated crash boundary");
+        }
+      })
+    ).resolves.toBeInstanceOf(DataPathPolicy);
+
+    expect(boundaryCalls).toBe(0);
+    expect(transientEntries).toEqual([]);
+    expect(await readdir(root)).toEqual(before);
   });
 
   it("sanitizes root and directory hook failures", async () => {

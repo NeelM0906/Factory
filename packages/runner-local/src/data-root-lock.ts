@@ -1,6 +1,6 @@
 import { lstatSync, type Stats } from "node:fs";
 import { opendir, lstat, open, realpath } from "node:fs/promises";
-import { resolve } from "node:path";
+import { dirname, resolve } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 
 import { CommandIdSchema, type CommandId } from "@autostack/contracts";
@@ -510,29 +510,91 @@ class OwnedDataRootLock extends DataRootLock {
   }
 }
 
+interface CommandGuardianLeaseState {
+  readonly admittedRoot: string;
+  readonly root: string;
+  readonly rootIdentity: PathIdentity;
+  readonly commandId: CommandId;
+  readonly commandDirectoryIdentity: PathIdentity;
+  readonly leaseFileIdentity: PathIdentity;
+  readonly connection: DatabaseSync;
+  active: boolean;
+}
+
+const commandGuardianLeaseStates = new WeakMap<CommandGuardianLease, CommandGuardianLeaseState>();
+
 export class CommandGuardianLease {
   readonly commandId: CommandId;
-  #connection: DatabaseSync | undefined;
 
-  protected constructor(commandId: CommandId, connection: DatabaseSync) {
+  protected constructor(commandId: CommandId) {
     this.commandId = commandId;
-    this.#connection = connection;
     Object.freeze(this);
   }
 
   close(): void {
-    const connection = this.#connection;
-    if (connection === undefined) return;
-    this.#connection = undefined;
-    closeConnection(connection, true);
+    const state = commandGuardianLeaseStates.get(this);
+    if (state === undefined) throw failure("unsafe_state");
+    if (!state.active) return;
+    state.active = false;
+    closeConnection(state.connection, true);
   }
 }
 
 class OwnedCommandGuardianLease extends CommandGuardianLease {
-  constructor(commandId: CommandId, connection: DatabaseSync) {
-    super(commandId, connection);
+  constructor(commandId: CommandId) {
+    super(commandId);
   }
 }
+
+/** Package-internal capability check for an exact, currently owned guardian lease. */
+export function assertLiveCommandGuardianLease(
+  candidate: unknown,
+  canonicalRoot: string,
+  commandId: CommandId
+): asserts candidate is CommandGuardianLease {
+  const state =
+    (typeof candidate === "object" && candidate !== null) || typeof candidate === "function"
+      ? commandGuardianLeaseStates.get(candidate as CommandGuardianLease)
+      : undefined;
+  if (
+    state === undefined ||
+    !state.active ||
+    (state.root !== canonicalRoot && state.admittedRoot !== resolve(canonicalRoot)) ||
+    state.commandId !== commandId
+  ) {
+    throw failure("unsafe_state");
+  }
+}
+
+/** Package-internal namespace proof for a live lease and its exact recovery paths. */
+export const assertCommandGuardianLeaseFilesystemIdentity = async (
+  candidate: unknown,
+  policy: DataPathPolicy,
+  commandId: CommandId
+): Promise<void> => {
+  assertLiveCommandGuardianLease(candidate, policy.root, commandId);
+  const state = commandGuardianLeaseStates.get(candidate);
+  if (state === undefined) throw failure("unsafe_state");
+  try {
+    const leasePath = absolutePathFor(policy, guardianLeaseRelativePath(commandId));
+    const rootStatus = await lstat(policy.root);
+    const commandDirectoryStatus = await lstat(dirname(leasePath));
+    const leaseFileStatus = await lstat(leasePath);
+    assertPrivateDirectory(rootStatus);
+    assertPrivateDirectory(commandDirectoryStatus);
+    assertPrivateFile(leaseFileStatus);
+    if (
+      !sameIdentityExceptLinkCount(state.rootIdentity, identityOf(rootStatus)) ||
+      !samePinnedIdentity(state.commandDirectoryIdentity, identityOf(commandDirectoryStatus)) ||
+      !samePinnedIdentity(state.leaseFileIdentity, identityOf(leaseFileStatus))
+    ) {
+      throw new TypeError();
+    }
+    assertLiveCommandGuardianLease(candidate, policy.root, commandId);
+  } catch {
+    throw failure("unsafe_state");
+  }
+};
 
 export const acquireDataRootLock = async (
   dataRoot: string,
@@ -591,7 +653,23 @@ export const acquireCommandGuardianLease = async (
       if (isSqliteBusy(error)) throw failure("root_busy");
       throw error;
     }
-    const lease = new OwnedCommandGuardianLease(commandId, connection);
+    const lease = new OwnedCommandGuardianLease(commandId);
+    const rootStatus = await lstat(policy.root);
+    const commandDirectoryStatus = await lstat(dirname(file.absolutePath));
+    const leaseFileStatus = await lstat(file.absolutePath);
+    assertPrivateDirectory(rootStatus);
+    assertPrivateDirectory(commandDirectoryStatus);
+    assertPrivateFile(leaseFileStatus);
+    commandGuardianLeaseStates.set(lease, {
+      admittedRoot: resolve(dataRoot),
+      root: policy.root,
+      rootIdentity: identityOf(rootStatus),
+      commandId,
+      commandDirectoryIdentity: identityOf(commandDirectoryStatus),
+      leaseFileIdentity: identityOf(leaseFileStatus),
+      connection,
+      active: true
+    });
     connection = undefined;
     transactionOpen = false;
     return lease;

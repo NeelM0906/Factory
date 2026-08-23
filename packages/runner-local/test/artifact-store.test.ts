@@ -28,6 +28,7 @@ import {
   type ArtifactWriteMetadata
 } from "../src/artifact-store.js";
 import { inspectArtifactHandle } from "../src/artifact-io.js";
+import { ArtifactTransactions } from "../src/artifact-transactions.js";
 import { normalizeArtifactError, STATIC_ERROR_MESSAGES } from "../src/artifact-types.js";
 import { DataPathPolicy, PathPolicyError } from "../src/path-policy.js";
 
@@ -147,6 +148,55 @@ afterEach(async () => {
 });
 
 describe("ArtifactStore", () => {
+  it("does not create missing artifact directories while admitting recovery topology", async () => {
+    const dataRoot = await temporaryRoot();
+    await mkdir(join(dataRoot, "artifacts/transactions"), { recursive: true, mode: 0o700 });
+
+    await expect(ArtifactStore.create({ dataRoot })).rejects.toMatchObject({
+      code: "unsafe_state"
+    });
+    expect(await readdir(join(dataRoot, "artifacts"))).toEqual(["transactions"]);
+  });
+
+  it("recovers more than 512 legitimate pending entries without namespace mutation", async () => {
+    const dataRoot = await temporaryRoot();
+    await ArtifactStore.create({ dataRoot });
+    const transactions = join(dataRoot, "artifacts/transactions");
+    const artifactComponent = artifactIdFilenameComponent(metadata.artifactId);
+    await Promise.all(
+      Array.from({ length: 513 }, async (_, index) => {
+        const attemptId = index.toString(16).padStart(32, "0");
+        await writeFile(join(transactions, `${artifactComponent}.${attemptId}.pending`), "", {
+          mode: 0o600
+        });
+      })
+    );
+    const before = await readdir(transactions);
+
+    await expect(ArtifactStore.create({ dataRoot })).resolves.toBeInstanceOf(ArtifactStore);
+    expect(await readdir(transactions)).toEqual(before);
+  });
+
+  it("requests a lifecycle-aligned bound and rejects its synthetic max-plus-one", async () => {
+    const requestedBounds: number[] = [];
+    const syntheticEntryCount = 20_001;
+    const files = {
+      async listExistingDirectory(_relativePath: string, maximumEntries: number) {
+        requestedBounds.push(maximumEntries);
+        if (syntheticEntryCount > maximumEntries) {
+          throw new ArtifactStoreError("unsafe_state", "Synthetic enumeration overflow.");
+        }
+        return [];
+      }
+    };
+    const transactions = new ArtifactTransactions(files as never, async () => undefined);
+
+    await expect(transactions.recover({ async verifyCommitted() {} })).rejects.toMatchObject({
+      code: "unsafe_state"
+    });
+    expect(requestedBounds).toEqual([20_000]);
+  });
+
   it("keeps exported error messages and write boundaries immutable at runtime", () => {
     const secret = "runtime-mutation-secret";
     expect(Object.isFrozen(STATIC_ERROR_MESSAGES)).toBe(true);
@@ -352,6 +402,61 @@ describe("ArtifactStore", () => {
     await expect(
       store.writeArtifact({ metadata, content: content(), maximumBytes: 16 })
     ).resolves.toMatchObject({ byteSize: 5 });
+  });
+
+  it("copies artifact bytes without reading an own valueOf accessor or substituting content", async () => {
+    const dataRoot = await temporaryRoot();
+    const store = await ArtifactStore.create({ dataRoot });
+    const source = new Uint8Array([0x61]);
+    let valueOfReads = 0;
+    Object.defineProperty(source, "valueOf", {
+      configurable: true,
+      get() {
+        valueOfReads += 1;
+        return () => new Uint8Array(100).fill(0x62);
+      }
+    });
+
+    const descriptor = await store.writeArtifact({
+      metadata,
+      content: (async function* () {
+        yield source;
+      })(),
+      maximumBytes: 1
+    });
+
+    expect(valueOfReads).toBe(0);
+    expect(descriptor.byteSize).toBe(1);
+    await expect(
+      store.readArtifact(metadata.artifactId, { offset: 0, length: 1 })
+    ).resolves.toMatchObject({ bytes: Buffer.from([0x61]), done: true });
+  });
+
+  it("accounts the intrinsic artifact length without reading an own length getter", async () => {
+    const store = await ArtifactStore.create({ dataRoot: await temporaryRoot() });
+    const source = new Uint8Array([0x61]);
+    let lengthReads = 0;
+    Object.defineProperties(source, {
+      valueOf: { configurable: true, value: () => source },
+      length: {
+        configurable: true,
+        get() {
+          lengthReads += 1;
+          return 100;
+        }
+      }
+    });
+
+    await expect(
+      store.writeArtifact({
+        metadata,
+        content: (async function* () {
+          yield source;
+        })(),
+        maximumBytes: 1
+      })
+    ).resolves.toMatchObject({ byteSize: 1 });
+    expect(lengthReads).toBe(0);
   });
 
   it("does not read a terminal iterator value or call return after natural exhaustion", async () => {

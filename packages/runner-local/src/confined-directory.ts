@@ -1,5 +1,5 @@
 import { constants as fsConstants } from "node:fs";
-import { lstat, open, readdir } from "node:fs/promises";
+import { lstat, open, opendir, readdir } from "node:fs/promises";
 import { resolve } from "node:path";
 
 import {
@@ -22,7 +22,8 @@ export interface ConfinedDirectoryEntry {
 /** Takes a stable, no-follow snapshot of one already-pinned recovery directory. */
 export const readConfinedDirectory = async (
   directory: string,
-  expected: PathIdentity
+  expected: PathIdentity,
+  maximumEntries?: number
 ): Promise<readonly ConfinedDirectoryEntry[]> => {
   const handle = await open(
     directory,
@@ -37,7 +38,29 @@ export const readConfinedDirectory = async (
         "A recovery directory changed while opening."
       );
     }
-    const firstNames = (await readdir(directory)).sort();
+    const readNames = async (): Promise<string[]> => {
+      if (maximumEntries === undefined) return (await readdir(directory)).sort();
+      if (!Number.isSafeInteger(maximumEntries) || maximumEntries < 0) {
+        throw new PathPolicyError("filesystem_error", "A recovery directory bound is invalid.");
+      }
+      const names: string[] = [];
+      const stream = await opendir(directory);
+      try {
+        for await (const entry of stream) {
+          names.push(entry.name);
+          if (names.length > maximumEntries) {
+            throw new PathPolicyError(
+              "filesystem_error",
+              "A recovery directory exceeds its admitted bound."
+            );
+          }
+        }
+      } finally {
+        await stream.close().catch(() => undefined);
+      }
+      return names.sort();
+    };
+    const firstNames = await readNames();
     const entries: ConfinedDirectoryEntry[] = [];
     for (const name of firstNames) {
       const entryPath = resolve(directory, name);
@@ -64,7 +87,7 @@ export const readConfinedDirectory = async (
         "A recovery entry is not a private regular file or directory."
       );
     }
-    const secondNames = (await readdir(directory)).sort();
+    const secondNames = await readNames();
     if (
       firstNames.length !== secondNames.length ||
       firstNames.some((name, index) => name !== secondNames[index])
