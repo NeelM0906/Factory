@@ -247,7 +247,7 @@ export class CommandExecutor {
           Date.parse(environmentAuthorization.createdAt) ||
         Date.parse(request.authorization.expiresAt) > Date.parse(environmentAuthorization.expiresAt)
       ) {
-        throw createCommandExecutorError("invalid_request");
+        throw createCommandExecutorError("authorization_stale");
       }
       const cwd = await pinCommandCwd(prepared.managedPath, request.command.cwd);
       const commandBaseEnvironment = planCommandPrivateBaseEnvironment(
@@ -276,18 +276,23 @@ export class CommandExecutor {
           )
         ].sort()
       );
-      const credentials = snapshotCommandCredentials(
-        await this.#dependencies.wait(
-          this.#options.resolveCredentials({
-            workspaceId: request.workspaceId,
-            runId: request.runId,
-            environmentId: request.environmentId,
-            commandId: request.commandId,
-            credentialRefIds
-          })
-        ),
-        credentialRefIds
-      );
+      let credentials: ReturnType<typeof snapshotCommandCredentials>;
+      try {
+        credentials = snapshotCommandCredentials(
+          await this.#dependencies.wait(
+            this.#options.resolveCredentials({
+              workspaceId: request.workspaceId,
+              runId: request.runId,
+              environmentId: request.environmentId,
+              commandId: request.commandId,
+              credentialRefIds
+            })
+          ),
+          credentialRefIds
+        );
+      } catch {
+        throw createCommandExecutorError("missing_credential");
+      }
       const environment = materializeCommandEnvironment(
         commandBaseEnvironment,
         request,
@@ -315,7 +320,7 @@ export class CommandExecutor {
       for (const entry of request.command.environment) {
         if (entry.kind !== "credential_ref") continue;
         const secret = credentials.get(entry.credentialRefId);
-        if (secret === undefined) throw createCommandExecutorError("execution_unavailable");
+        if (secret === undefined) throw createCommandExecutorError("missing_credential");
         sensitiveValues.push(secret);
       }
       const envelope = Object.freeze({
@@ -460,7 +465,7 @@ export class CommandExecutor {
         }
       }
       if (isTrustedCommandActivityError(error) && error.code === "environment_active") {
-        throw createCommandExecutorError("execution_unavailable");
+        throw createCommandExecutorError("active_command");
       }
       throw mapCommandRegistryError(error);
     }

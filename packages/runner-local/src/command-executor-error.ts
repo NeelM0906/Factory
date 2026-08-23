@@ -3,6 +3,10 @@ export type CommandExecutorErrorCode =
   | "command_conflict"
   | "environment_conflict"
   | "execution_unavailable"
+  | "missing_credential"
+  | "authorization_stale"
+  | "active_command"
+  | "command_not_found"
   | "closed"
   | "maintenance_required"
   | "unsafe_state";
@@ -12,6 +16,10 @@ const ERROR_MESSAGES = Object.freeze({
   command_conflict: "The command conflicts with immutable command state.",
   environment_conflict: "The prepared environment conflicts with the command request.",
   execution_unavailable: "The command could not be started safely.",
+  missing_credential: "A required command credential is unavailable.",
+  authorization_stale: "The command authorization is stale.",
+  active_command: "The environment already has an active command.",
+  command_not_found: "The command is unavailable.",
   closed: "The command executor is closed.",
   maintenance_required: "The command state requires maintenance.",
   unsafe_state: "The command executor failed closed."
@@ -73,6 +81,7 @@ export const mapCommandRegistryError = (error: unknown): CommandExecutorError =>
     if (error.code === "invalid_request" || error.code === "cursor_invalid") {
       return createCommandExecutorError("invalid_request");
     }
+    if (error.code === "command_not_found") return createCommandExecutorError("command_not_found");
     if (error.code === "closed") return createCommandExecutorError("closed");
   }
   return createCommandExecutorError("unsafe_state");

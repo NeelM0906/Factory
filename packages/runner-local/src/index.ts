@@ -59,3 +59,11 @@ export {
   type WorktreeManagerErrorCode,
   type WorktreeManagerOptions
 } from "./worktree-manager.js";
+export {
+  LocalRunnerProvider,
+  LocalRunnerProviderError,
+  localRunnerHostControl,
+  type LocalRunnerHostControl,
+  type LocalRunnerProviderErrorCode,
+  type LocalRunnerProviderOptions
+} from "./local-runner-provider.js";
