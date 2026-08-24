@@ -1,4 +1,6 @@
-import { access, mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { spawn } from "node:child_process";
+import { once } from "node:events";
+import { access, lstat, mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -43,6 +45,8 @@ import { LocalRunnerProvider, localRunnerHostControl } from "../src/local-runner
 import { createLocalRunnerProviderForTesting } from "../src/local-runner-provider-testing.js";
 import { DataPathPolicy } from "../src/path-policy.js";
 import { WorktreeManager } from "../src/worktree-manager.js";
+import { guardianLeaseRelativePath } from "../src/data-root-lock.js";
+import { bindLocalRunnerProvider } from "../../../apps/host-daemon/src/server.js";
 import {
   captureSourceCheckoutInvariant,
   createGitRepository,
@@ -413,6 +417,136 @@ describe("LocalRunnerProvider real composition", () => {
       replayed: false
     });
     expect(await captureSourceCheckoutInvariant(fixture.repository)).toEqual(sourceBefore);
+  });
+
+  it("recovers a terminal command and artifact through the production host binding after a crash journal", async () => {
+    const fixture = await composeReal();
+    const prepared = await fixture.provider.prepareEnvironment(fixture.prepare);
+    await fixture.provider.startCommand(fixture.start);
+    const eventRequest: ReadCommandEventsRequest = {
+      workspaceId: fixture.start.workspaceId,
+      runId: fixture.start.runId,
+      environmentId: fixture.start.environmentId,
+      commandId: fixture.start.commandId,
+      environmentAuthorizationId: fixture.start.environmentAuthorizationId,
+      environmentAuthorizationDigest: fixture.start.environmentAuthorizationDigest,
+      commandAuthorizationId: fixture.start.authorization.id,
+      commandAuthorizationDigest: fixture.start.authorization.digest,
+      after: 0
+    };
+    fixture.processTree.actualExit = { exitCode: 0, signal: null };
+    fixture.pty.session.emitData(Buffer.from("verified\n"));
+    fixture.pty.session.emitEof();
+    fixture.pty.session.emitExit({ exitCode: 0, signal: null });
+    const events = [];
+    for await (const item of fixture.provider.readCommandEvents(eventRequest)) events.push(item);
+    const terminal = events.findLast(
+      (item) => item.type === "runner.event" && item.event.type === "command.completed"
+    );
+    if (terminal?.type !== "runner.event" || terminal.event.type !== "command.completed") {
+      throw new TypeError("Missing terminal command evidence.");
+    }
+    const transcript = terminal.event.transcript;
+    await fixture.provider.interruptAndDrain();
+    await fixture.provider.close();
+
+    const leaseDatabase = join(
+      fixture.dataRoot,
+      ...guardianLeaseRelativePath(fixture.start.commandId).split("/")
+    );
+    const owner = spawn(
+      process.execPath,
+      [
+        "--input-type=module",
+        "-e",
+        `import { DatabaseSync } from "node:sqlite";
+const database = new DatabaseSync(process.argv[1]);
+database.exec("PRAGMA busy_timeout = 0");
+database.exec("BEGIN EXCLUSIVE");
+process.stdout.write("ready\\n");
+setInterval(() => {}, 60_000);`,
+        leaseDatabase
+      ],
+      { stdio: ["ignore", "pipe", "pipe"] }
+    );
+    if (owner.stdout === null) throw new TypeError("Missing crash-owner stdout.");
+    const [ready] = (await once(owner.stdout, "data")) as [Buffer];
+    expect(ready.toString("utf8").trim()).toBe("ready");
+    owner.kill("SIGKILL");
+    await once(owner, "exit");
+    expect((await lstat(`${leaseDatabase}-journal`)).size).toBe(512);
+
+    const restarted = await LocalRunnerProvider.create({
+      dataRoot: fixture.dataRoot,
+      guardianLauncher: {
+        async launch() {
+          throw new TypeError("recovery must not launch a command");
+        }
+      },
+      async resolveCredentials() {
+        return [];
+      },
+      executableResolver: {
+        async resolve() {
+          return {
+            canonicalPath: "/bin/echo",
+            identityDigest: hex("e"),
+            async revalidate() {
+              return true;
+            }
+          };
+        }
+      },
+      trustedBaseEnvironment: [
+        { name: "PATH", value: "/usr/bin:/bin" },
+        { name: "HOME", value: `${fixture.dataRoot}/runtime/home` },
+        { name: "TMPDIR", value: `${fixture.dataRoot}/runtime/tmp` },
+        { name: "LANG", value: "C" },
+        { name: "LC_ALL", value: "C" },
+        { name: "TERM", value: "xterm-256color" }
+      ],
+      limits: {
+        eventBytes: 65_536,
+        replayBytes: 1_048_576,
+        transcriptBytes: 1_048_576,
+        artifactBytes: 1_048_576,
+        cancellationGraceMs: 10,
+        eofSettleMs: 10,
+        subscriberQueueFrames: 64,
+        subscriberQueueBytes: 1_048_576
+      },
+      now: () => NOW,
+      monotonicNowMs: () => 100,
+      createArtifactId: () => transcript.artifactId,
+      createGuardianSession: () => ({
+        sessionId: "provider-recovery",
+        secret: Uint8Array.from({ length: 32 }, (_value, index) => index + 1),
+        bindingDigest: hex("f")
+      }),
+      verifyTerminalEvidence: async () => false,
+      trustedGitExecutable: "/usr/bin/git"
+    });
+    providers.push(restarted);
+    const host = bindLocalRunnerProvider(restarted);
+
+    await expect(host.runner.capabilities()).resolves.toMatchObject({
+      runnerId: "autostack-local"
+    });
+    await expect(host.runner.listEnvironments()).resolves.toEqual([prepared]);
+    const { after: _after, ...artifactOwnership } = eventRequest;
+    void _after;
+    const recoveredArtifact = await host.runner.readArtifactChunk({
+      ...artifactOwnership,
+      artifactId: transcript.artifactId,
+      offset: 0,
+      length: transcript.byteSize
+    });
+    expect(Buffer.from(recoveredArtifact.bytes, "base64").toString("utf8")).toBe("verified\n");
+    await host.lifecycle.quiesce();
+    await expect(host.lifecycle.interruptAndDrain()).resolves.toMatchObject({
+      remainingGuardianLeaseCount: 0
+    });
+    await expect(host.lifecycle.close()).resolves.toBeUndefined();
   });
 
   it("retains a dirty managed worktree when disposal evidence is otherwise valid", async () => {

@@ -201,6 +201,7 @@ const createGuardianFixture = async (
     cancellationGraceMs?: number;
     onGuardianPayload?: (payload: unknown) => void;
     acknowledgeFramesReentrantly?: boolean;
+    monotonicNowMs?: () => number;
     failRunningPublication?: () => Promise<void>;
     failRejectedRunningAt?: ReplaySpoolPublicationStage;
     onSpoolPublication?: (
@@ -308,10 +309,12 @@ const createGuardianFixture = async (
     cancellationGraceMs: runtime.cancellationGraceMs ?? 1,
     eofSettleMs: runtime.eofSettleMs ?? 1,
     now: () => new Date(clockOrigin + instant++ * 1_000).toISOString(),
-    monotonicNowMs: (() => {
-      let now = 100;
-      return () => now++;
-    })(),
+    monotonicNowMs:
+      runtime.monotonicNowMs ??
+      (() => {
+        let now = 100;
+        return () => now++;
+      })(),
     observer: {
       onDurableFrame(frame: DurableRunnerFrame) {
         events.push(frame.event);
@@ -1178,6 +1181,21 @@ describe("CommandGuardian", () => {
 
     fixture.pty.session.emitExit({ exitCode: 0, signal: null });
     await fixture.session.closed;
+  });
+
+  it("normalizes a fractional monotonic duration before publishing terminal evidence", async () => {
+    const readings = [100.25, 223.875];
+    const fixture = await createGuardianFixture([], undefined, {
+      monotonicNowMs: () => readings.shift() ?? 223.875
+    });
+
+    fixture.pty.session.emitExit({ exitCode: 0, signal: null });
+    await fixture.session.closed;
+
+    expect(fixture.events.at(-1)).toMatchObject({
+      type: "command.completed",
+      durationMs: 123
+    });
   });
 
   it("rejects a bootstrap envelope that is not bound to the durable request", async () => {

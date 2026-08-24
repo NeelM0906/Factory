@@ -5,24 +5,43 @@ import {
   ApiErrorSchema,
   CreateRunRequestSchema,
   HealthResponseSchema,
+  LocalArtifactReadRequestSchema,
+  LocalArtifactReadResponseSchema,
+  LocalCancelRequestSchema,
+  LocalCancelResponseSchema,
+  LocalDisposeRequestSchema,
+  LocalDisposeResponseSchema,
+  LocalEventsRequestSchema,
+  LocalInspectRequestSchema,
+  LocalInspectResponseSchema,
+  LocalListEnvironmentsResponseSchema,
+  LocalPrepareRequestSchema,
+  LocalPrepareResponseSchema,
+  LocalStartRequestSchema,
+  LocalStartResponseSchema,
   type WorkspaceId
 } from "@autostack/contracts";
 import { OptimisticConcurrencyError, type DurableStore } from "@autostack/domain";
 import type { ExecutorStatus } from "@autostack/workflow";
 
-import { createBearerAuth } from "./auth.js";
+import { createBearerAuth, createBearerAuthDigest } from "./auth.js";
+import { LocalExecutionService, LocalRunnerUnavailableError } from "./local-execution-service.js";
 import { IdempotencyConflictError, RunNotFoundError, RunService } from "./run-service.js";
 
 export interface CreateAppDependencies {
   readonly store: DurableStore;
   readonly executor: { getStatus(): ExecutorStatus };
-  readonly token: string;
+  readonly token?: string;
+  readonly tokenDigest?: string;
   readonly workspaceId: WorkspaceId;
   readonly now: () => string;
+  readonly mode?: "local" | "hosted";
+  readonly localExecution?: LocalExecutionService;
+  readonly ingress?: { readonly isOpen: () => boolean };
 }
 
 class HttpProblem extends Error {
-  readonly status: 400 | 401 | 404 | 409 | 413 | 500;
+  readonly status: 400 | 401 | 403 | 404 | 409 | 413 | 416 | 422 | 500 | 503;
   readonly code:
     | "unauthorized"
     | "invalid_request"
@@ -31,6 +50,11 @@ class HttpProblem extends Error {
     | "run_not_found"
     | "idempotency_conflict"
     | "version_conflict"
+    | "scope_mismatch"
+    | "authorization_invalid"
+    | "authorization_expired"
+    | "unsupported_policy"
+    | "local_runner_unavailable"
     | "internal_error";
 
   constructor(status: HttpProblem["status"], code: HttpProblem["code"], message: string) {
@@ -74,13 +98,31 @@ const readJsonBody = async (request: Request): Promise<unknown> => {
 };
 
 export function createApp(dependencies: CreateAppDependencies): Hono {
+  const mode = dependencies.mode ?? "hosted";
+  if ((dependencies.token === undefined) === (dependencies.tokenDigest === undefined))
+    throw new TypeError("Exactly one bearer token authority is required.");
+  if ((mode === "local") !== (dependencies.localExecution !== undefined)) {
+    throw new TypeError("Local mode and local execution service must be configured together.");
+  }
   const app = new Hono();
   const service = new RunService(dependencies);
-  const auth = createBearerAuth(dependencies.token);
+  const auth =
+    dependencies.token === undefined
+      ? createBearerAuthDigest(dependencies.tokenDigest!)
+      : createBearerAuth(dependencies.token);
 
   app.use("/v1/*", async (context, next) => {
     if (context.req.path === "/v1/health") return next();
     return auth(context, next);
+  });
+  app.use("/v1/*", async (context, next) => {
+    if (context.req.path !== "/v1/health" && dependencies.ingress?.isOpen() === false)
+      throw new HttpProblem(
+        503,
+        "local_runner_unavailable",
+        "The local runner generation is unavailable."
+      );
+    return next();
   });
 
   app.get("/v1/health", async (context) => {
@@ -145,6 +187,95 @@ export function createApp(dependencies: CreateAppDependencies): Hono {
     return context.json(await service.events(context.req.param("runId"), after));
   });
 
+  if (mode === "local") {
+    const local = dependencies.localExecution!;
+    const idempotencyKey = (context: { req: { header(name: string): string | undefined } }) => {
+      const key = context.req.header("Idempotency-Key")?.trim();
+      if (key === undefined || key === "" || key.length > 128)
+        throw new HttpProblem(
+          400,
+          "missing_idempotency_key",
+          "A valid Idempotency-Key header is required."
+        );
+      return key;
+    };
+    app.post("/v1/local/repositories/inspect", async (context) =>
+      context.json(
+        LocalInspectResponseSchema.parse(
+          await local.inspect(LocalInspectRequestSchema.parse(await readJsonBody(context.req.raw)))
+        )
+      )
+    );
+    app.get("/v1/local/environments", async (context) =>
+      context.json(LocalListEnvironmentsResponseSchema.parse(await local.list()))
+    );
+    app.post("/v1/local/environments", async (context) => {
+      const result = await local.prepare(
+        LocalPrepareRequestSchema.parse(await readJsonBody(context.req.raw)),
+        idempotencyKey(context)
+      );
+      return context.json(LocalPrepareResponseSchema.parse(result), result.replayed ? 200 : 202);
+    });
+    app.post("/v1/local/environments/:environmentId/commands", async (context) => {
+      const body = LocalStartRequestSchema.parse(await readJsonBody(context.req.raw));
+      if (body.environmentId !== context.req.param("environmentId"))
+        throw new HttpProblem(400, "invalid_request", "Route and body identities differ.");
+      const result = await local.start(body, idempotencyKey(context));
+      return context.json(LocalStartResponseSchema.parse(result), result.replayed ? 200 : 202);
+    });
+    app.get("/v1/local/environments/:environmentId/commands/:commandId/events", async (context) => {
+      const request = LocalEventsRequestSchema.parse({
+        environmentId: context.req.param("environmentId"),
+        commandId: context.req.param("commandId"),
+        after: Number(context.req.query("after") ?? "0")
+      });
+      const iterator = await local.events(request);
+      const encoder = new TextEncoder();
+      const stream = new ReadableStream({
+        async start(controller) {
+          try {
+            for await (const item of iterator)
+              controller.enqueue(encoder.encode(`${JSON.stringify(item)}\n`));
+            controller.close();
+          } catch (error) {
+            controller.error(error);
+          }
+        }
+      });
+      return new Response(stream, {
+        headers: { "Content-Type": "application/x-ndjson", "Cache-Control": "no-store" }
+      });
+    });
+    app.post(
+      "/v1/local/environments/:environmentId/commands/:commandId/cancel",
+      async (context) => {
+        const body = LocalCancelRequestSchema.parse(await readJsonBody(context.req.raw));
+        if (
+          body.environmentId !== context.req.param("environmentId") ||
+          body.commandId !== context.req.param("commandId")
+        )
+          throw new HttpProblem(400, "invalid_request", "Route and body identities differ.");
+        return context.json(LocalCancelResponseSchema.parse(await local.cancel(body)));
+      }
+    );
+    app.get("/v1/local/artifacts/:artifactId/content", async (context) => {
+      const result = await local.readArtifact(
+        LocalArtifactReadRequestSchema.parse({
+          artifactId: context.req.param("artifactId"),
+          offset: Number(context.req.query("offset") ?? "0"),
+          length: Number(context.req.query("length") ?? "1048576")
+        })
+      );
+      return context.json(LocalArtifactReadResponseSchema.parse(result));
+    });
+    app.delete("/v1/local/environments/:environmentId", async (context) => {
+      const body = LocalDisposeRequestSchema.parse(await readJsonBody(context.req.raw));
+      if (body.environmentId !== context.req.param("environmentId"))
+        throw new HttpProblem(400, "invalid_request", "Route and body identities differ.");
+      return context.json(LocalDisposeResponseSchema.parse(await local.dispose(body)));
+    });
+  }
+
   app.notFound((context) =>
     context.json(
       ApiErrorSchema.parse({
@@ -174,7 +305,13 @@ export function createApp(dependencies: CreateAppDependencies): Hono {
                     "version_conflict",
                     "The run changed before the command completed."
                   )
-                : new HttpProblem(500, "internal_error", "The request could not be completed.");
+                : error instanceof LocalRunnerUnavailableError
+                  ? new HttpProblem(
+                      503,
+                      "local_runner_unavailable",
+                      "The local runner is unavailable."
+                    )
+                  : new HttpProblem(500, "internal_error", "The request could not be completed.");
 
     return context.json(
       ApiErrorSchema.parse({ error: { code: problem.code, message: problem.message } }),

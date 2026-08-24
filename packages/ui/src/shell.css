@@ -243,7 +243,7 @@ body {
 .as-status[data-tone="active"],
 .as-status[data-tone="waiting"] {
   border-color: var(--as-signal);
-  color: var(--as-signal);
+  color: var(--as-signal-text);
 }
 
 .as-status[data-tone="success"] {

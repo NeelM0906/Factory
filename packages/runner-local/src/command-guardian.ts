@@ -540,7 +540,7 @@ export class GuardianRuntime implements GuardianHostSession {
       if (this.#timeout !== undefined) clearTimeout(this.#timeout);
       if (this.#eofTimer !== undefined) clearTimeout(this.#eofTimer);
       await this.#outputTail;
-      const durationMs = Math.max(0, this.#options.monotonicNowMs() - this.#startMs);
+      const durationMs = Math.max(0, Math.floor(this.#options.monotonicNowMs() - this.#startMs));
       const completion = await completeGuardianCommand({
         artifactStore: this.#options.artifactStore,
         spool: this.#options.spool,
@@ -554,7 +554,7 @@ export class GuardianRuntime implements GuardianHostSession {
         observedExitConflict: this.#exitAuthority.conflict,
         sensitiveValues: this.#options.sensitiveValues,
         initialEvidence: evidence,
-        emittedOutputBytes: this.#emittedOutputBytes,
+        readEmittedOutputBytes: () => this.#emittedOutputBytes,
         durationMs,
         acceptReplayText: async (output, flush) => await this.#acceptReplayText(output, flush),
         admitAuthoritativeProof: (proof) => this.#sealAuthoritativeProof(proof) !== undefined,

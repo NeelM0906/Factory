@@ -6,6 +6,7 @@ import {
   mkdtemp,
   mkdir,
   readdir,
+  rename,
   writeFile,
   realpath,
   rm,
@@ -594,5 +595,39 @@ describe.each(["root", "guardian"] as const)("%s SQLite snapshot races", (kind) 
     const successor = await contender;
     locks.push(successor);
     expect(hookCallCount).toBe(2);
+  });
+});
+
+describe("guardian crash-journal recovery", () => {
+  it("reclaims an exact retained lock-only journal only after exclusive ownership", async () => {
+    const dataRoot = await temporaryRoot();
+    const databasePath = await establishLeaseDatabase(dataRoot, "guardian");
+    const child = spawnSqliteOwner(databasePath);
+    expect(await waitForLine(child)).toBe("ready");
+    child.kill("SIGKILL");
+    await once(child, "exit");
+
+    const journalPath = `${databasePath}-journal`;
+    const retainedPath = `${databasePath}-retained-journal`;
+    const retainedIdentity = (await lstat(journalPath)).ino;
+    let validationCount = 0;
+    const lease = await acquireCommandGuardianLease(dataRoot, COMMAND_ID, {
+      afterSidecarValidationBeforeOpen: async () => {
+        validationCount += 1;
+        await rename(journalPath, retainedPath);
+      },
+      afterRecoveryReadBeforePostcheck: async () => {
+        await rename(retainedPath, journalPath);
+        expect((await lstat(journalPath)).ino).toBe(retainedIdentity);
+      }
+    });
+    locks.push(lease);
+
+    expect(validationCount).toBe(1);
+    await expect(acquireCommandGuardianLease(dataRoot, COMMAND_ID)).rejects.toMatchObject({
+      code: "root_busy"
+    });
+    lease.close();
+    await expect(lstat(journalPath)).rejects.toMatchObject({ code: "ENOENT" });
   });
 });

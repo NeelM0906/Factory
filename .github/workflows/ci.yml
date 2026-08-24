@@ -60,3 +60,51 @@ jobs:
           path: "**/coverage/**"
           if-no-files-found: warn
           retention-days: 7
+
+  local-execution-macos:
+    runs-on: macos-15
+    timeout-minutes: 60
+    env:
+      CI: "true"
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+
+      - name: Use Node.js 24
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: 24
+
+      - name: Enable pnpm 10 through Corepack
+        run: |
+          corepack enable
+          corepack install --global pnpm@10.27.0
+
+      - name: Require native Apple Silicon
+        run: |
+          test "$(uname -m)" = arm64
+          test "$(node -p process.arch)" = arm64
+
+      - name: Install locked dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Build Electron and native runtime
+        run: pnpm desktop:build
+
+      - name: Verify real local execution composition
+        run: node scripts/verify-local-execution.mjs
+
+      - name: Verify Electron UI, restart, and accessibility
+        run: pnpm desktop:e2e
+
+      - name: Upload sanitized Electron evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: local-execution-electron
+          path: |
+            apps/desktop/dist/playwright-report/**
+            apps/desktop/dist/e2e-results/**/*.png
+            apps/desktop/dist/e2e-results/**/*.zip
+          if-no-files-found: error
+          retention-days: 7

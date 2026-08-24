@@ -31,6 +31,7 @@ export type DataRootLockErrorCode = "root_busy" | "unsafe_state";
 export interface DataRootLockHooks {
   readonly afterRecoveryReadBeforePostcheck?: () => Promise<void> | void;
   readonly afterSidecarSnapshotBeforeOpen?: () => Promise<void> | void;
+  readonly afterSidecarValidationBeforeOpen?: () => Promise<void> | void;
 }
 
 const ERROR_MESSAGES: Readonly<Record<DataRootLockErrorCode, string>> = Object.freeze({
@@ -71,17 +72,21 @@ const normalizeFailure = (error: unknown): DataRootLockError =>
 const snapshotHooks = (hooks: DataRootLockHooks): Readonly<DataRootLockHooks> => {
   const afterRecoveryReadBeforePostcheck = hooks.afterRecoveryReadBeforePostcheck;
   const afterSidecarSnapshotBeforeOpen = hooks.afterSidecarSnapshotBeforeOpen;
+  const afterSidecarValidationBeforeOpen = hooks.afterSidecarValidationBeforeOpen;
   if (
     (afterRecoveryReadBeforePostcheck !== undefined &&
       typeof afterRecoveryReadBeforePostcheck !== "function") ||
     (afterSidecarSnapshotBeforeOpen !== undefined &&
-      typeof afterSidecarSnapshotBeforeOpen !== "function")
+      typeof afterSidecarSnapshotBeforeOpen !== "function") ||
+    (afterSidecarValidationBeforeOpen !== undefined &&
+      typeof afterSidecarValidationBeforeOpen !== "function")
   ) {
     throw failure("unsafe_state");
   }
   return Object.freeze({
     ...(afterRecoveryReadBeforePostcheck === undefined ? {} : { afterRecoveryReadBeforePostcheck }),
-    ...(afterSidecarSnapshotBeforeOpen === undefined ? {} : { afterSidecarSnapshotBeforeOpen })
+    ...(afterSidecarSnapshotBeforeOpen === undefined ? {} : { afterSidecarSnapshotBeforeOpen }),
+    ...(afterSidecarValidationBeforeOpen === undefined ? {} : { afterSidecarValidationBeforeOpen })
   });
 };
 
@@ -367,18 +372,58 @@ const assertSnapshotStillCurrent = (
   }
 };
 
-const assertSqliteSidecarsAbsentAfterRecovery = (file: PrivateSqliteFile): void => {
+const recoverRetainedRollbackJournal = async (
+  connection: DatabaseSync,
+  policy: DataPathPolicy,
+  file: PrivateSqliteFile,
+  snapshot: SqliteSidecarSnapshot
+): Promise<void> => {
   assertForbiddenSidecarsAbsent(file);
-  const journal = lstatIfPresent(`${file.absolutePath}-journal`);
-  if (journal === undefined) return;
-  assertPrivateFile(journal);
+  const retained = await inspectRollbackJournal(file);
+  if (retained === undefined) return;
+  const expected = snapshot.rollbackJournal;
   if (
-    journal.size < MINIMUM_ROLLBACK_JOURNAL_BYTES ||
-    journal.size > MAXIMUM_ROLLBACK_JOURNAL_BYTES
+    expected === undefined ||
+    retained.size !== expected.size ||
+    !samePinnedIdentity(expected.identity, retained.identity)
   ) {
-    throw failure("unsafe_state");
+    throw RETRY_SIDECAR_SNAPSHOT;
   }
-  throw RETRY_SIDECAR_SNAPSHOT;
+
+  let transactionOpen = false;
+  try {
+    connection.exec("PRAGMA locking_mode = EXCLUSIVE");
+    beginExclusive(connection);
+    transactionOpen = true;
+    const exclusivelyOwnedJournal = await inspectRollbackJournal(file);
+    const current = lstatIfPresent(`${file.absolutePath}-journal`);
+    if (
+      exclusivelyOwnedJournal === undefined ||
+      current === undefined ||
+      !samePinnedIdentity(exclusivelyOwnedJournal.identity, identityOf(current)) ||
+      !(await policy.unlinkFile(`${file.relativePath}-journal`, false))
+    ) {
+      throw RETRY_SIDECAR_SNAPSHOT;
+    }
+    connection.exec("ROLLBACK");
+    transactionOpen = false;
+  } catch (error) {
+    if (isSqliteBusy(error)) throw failure("root_busy");
+    throw error;
+  } finally {
+    if (transactionOpen) {
+      try {
+        connection.exec("ROLLBACK");
+      } catch {
+        throw failure("unsafe_state");
+      }
+    }
+  }
+  assertMainFileUnchanged(file);
+  assertForbiddenSidecarsAbsent(file);
+  if (lstatIfPresent(`${file.absolutePath}-journal`) !== undefined) {
+    throw RETRY_SIDECAR_SNAPSHOT;
+  }
 };
 
 const openVerifiedConnection = async (
@@ -393,6 +438,7 @@ const openVerifiedConnection = async (
       const snapshot = await inspectSqliteSidecarsBeforeOpen(attemptPolicy, file);
       await hooks.afterSidecarSnapshotBeforeOpen?.();
       assertSnapshotStillCurrent(file, snapshot);
+      await hooks.afterSidecarValidationBeforeOpen?.();
       connection = new DatabaseSync(file.absolutePath);
       try {
         connection.prepare("PRAGMA schema_version").get();
@@ -402,7 +448,7 @@ const openVerifiedConnection = async (
       }
       await hooks.afterRecoveryReadBeforePostcheck?.();
       assertMainFileUnchanged(file);
-      assertSqliteSidecarsAbsentAfterRecovery(file);
+      await recoverRetainedRollbackJournal(connection, attemptPolicy, file, snapshot);
       return connection;
     } catch (error) {
       let closeFailed = false;

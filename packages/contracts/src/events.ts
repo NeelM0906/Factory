@@ -291,6 +291,7 @@ const DomainEventBodySchema = z.discriminatedUnion("type", [
           runId: RunIdSchema,
           environmentId: EnvironmentIdSchema,
           commandId: CommandIdSchema,
+          hostSequence: z.number().int().positive().optional(),
           startedAt: z.iso.datetime(),
           phaseKey: PhaseKeySchema,
           phaseDigest: PhaseDigestSchema
@@ -324,6 +325,7 @@ const DomainEventBodySchema = z.discriminatedUnion("type", [
           runId: RunIdSchema,
           environmentId: EnvironmentIdSchema,
           commandId: CommandIdSchema,
+          hostSequence: z.number().int().positive().optional(),
           artifact: ArtifactDescriptorSchema,
           phaseKey: PhaseKeySchema,
           phaseDigest: PhaseDigestSchema

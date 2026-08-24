@@ -89,6 +89,11 @@ export const ApiErrorSchema = z
           "run_not_found",
           "idempotency_conflict",
           "version_conflict",
+          "scope_mismatch",
+          "authorization_invalid",
+          "authorization_expired",
+          "unsupported_policy",
+          "local_runner_unavailable",
           "internal_error"
         ]),
         message: z.string().min(1),

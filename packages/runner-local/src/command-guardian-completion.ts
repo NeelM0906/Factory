@@ -24,7 +24,7 @@ export const completeGuardianCommand = async (input: {
   readonly observedExitConflict: boolean;
   readonly sensitiveValues: readonly string[];
   readonly initialEvidence: GuardianTerminalEvidence;
-  readonly emittedOutputBytes: number;
+  readonly readEmittedOutputBytes: () => number;
   readonly durationMs: number;
   readonly acceptReplayText: (output: string, flush: boolean) => Promise<void>;
   readonly admitAuthoritativeProof: (proof: ProcessTreeExitProof) => boolean;
@@ -74,7 +74,7 @@ export const completeGuardianCommand = async (input: {
   for (const output of final.replayOutput) await input.acceptReplayText(output, false);
   if (!transcriptFailed) await input.acceptReplayText("", true);
   const recovered = await input.spool.recover();
-  const droppedBytes = Math.max(0, recovered.transcriptByteSize - input.emittedOutputBytes);
+  const droppedBytes = Math.max(0, recovered.transcriptByteSize - input.readEmittedOutputBytes());
   if (droppedBytes > 0) {
     await input.recorder.appendEvent({ type: "terminal.truncated", stream: "pty", droppedBytes });
   }

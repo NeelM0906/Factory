@@ -4,7 +4,7 @@ import "@testing-library/jest-dom/vitest";
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import type { ListRunsResponse, RunSummary } from "@autostack/contracts";
+import type { DesktopRuntimeStatus, ListRunsResponse, RunSummary } from "@autostack/contracts";
 
 import { App } from "../src/app.js";
 import type { AutoStackApiClient } from "../src/api-client.js";
@@ -55,6 +55,45 @@ afterEach(() => {
 });
 
 describe("AutoStack factory console", () => {
+  it("discloses desktop host authority before every writable control", async () => {
+    render(<App client={makeClient()} executionAuthorityDisclosure />);
+
+    const warning = await screen.findByRole("alert");
+    expect(warning).toHaveTextContent(
+      "Local commands run with your desktop user's host filesystem and network authority. AutoStack path checks protect AutoStack operations; they are not an operating-system sandbox."
+    );
+    const start = screen.getByRole("button", { name: "Start run" });
+    expect(warning.compareDocumentPosition(start) & Node.DOCUMENT_POSITION_FOLLOWING).not.toBe(0);
+  });
+
+  it("announces host loss, recovery, and restored desktop runtime readiness", async () => {
+    const listeners = new Set<(status: DesktopRuntimeStatus) => void>();
+    const runtimeBridge = {
+      runtimeStatus: vi.fn(async (): Promise<DesktopRuntimeStatus> => ({ status: "ready" })),
+      subscribeRuntimeStatus: vi.fn((listener: (status: DesktopRuntimeStatus) => void) => {
+        listeners.add(listener);
+        return () => listeners.delete(listener);
+      })
+    };
+    render(<App client={makeClient()} runtimeBridge={runtimeBridge} />);
+
+    expect(await screen.findByRole("status", { name: "Desktop runtime ready." })).toBeVisible();
+    act(() => {
+      for (const listener of listeners) {
+        listener({ status: "degraded", message: "Local runtime is restarting." });
+      }
+    });
+    expect(
+      screen.getByRole("alert", {
+        name: "Desktop runtime recovering. Local runtime is restarting."
+      })
+    ).toBeVisible();
+    act(() => {
+      for (const listener of listeners) listener({ status: "ready" });
+    });
+    expect(screen.getByRole("status", { name: "Desktop runtime ready." })).toBeVisible();
+  });
+
   it("shows eight lifecycle stages and health-derived run metrics", async () => {
     const client = makeClient([
       summary(1, "Implement agent adapter", "implementing", "implement"),

@@ -3,6 +3,9 @@ node_modules/
 dist/
 coverage/
 .turbo/
+apps/desktop/.e2e-dist/
+apps/desktop/.e2e-utility/
+apps/desktop/.e2e-utility-node/
 .env*
 !.env.example
 *.sqlite

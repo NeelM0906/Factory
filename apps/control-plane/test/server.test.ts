@@ -13,6 +13,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { EventEmitter } from "node:events";
 import { createServer as createNetServer } from "node:net";
+import { createHash } from "node:crypto";
 
 import { type ServerType, serve } from "@hono/node-server";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -26,7 +27,20 @@ import { loadOrCreateLocalWorkspaceId } from "../src/config.js";
 import { startControlPlane } from "../src/server.js";
 
 const TOKEN = "0123456789abcdef0123456789abcdef";
+const HOST_TOKEN = "abcdef0123456789abcdef0123456789";
 const temporaryDirectories: string[] = [];
+
+const bootstrap = (dataDirectory: string) => ({
+  schemaVersion: 1 as const,
+  type: "control-plane.bootstrap" as const,
+  instanceId: "runtime_123e4567-e89b-42d3-a456-426614174000",
+  apiTokenDigest: createHash("sha256").update(TOKEN).digest("hex"),
+  dataDirectory,
+  hostOrigin: "http://127.0.0.1:4444",
+  hostToken: HOST_TOKEN,
+  host: "127.0.0.1" as const,
+  port: 0 as const
+});
 
 afterEach(() => {
   vi.restoreAllMocks();
@@ -36,6 +50,67 @@ afterEach(() => {
 });
 
 describe("control-plane server composition", () => {
+  it("exposes an idempotent quiesce that blocks new local mutations without closing health", async () => {
+    const dataDirectory = mkdtempSync(join(tmpdir(), "autostack-control-plane-"));
+    temporaryDirectories.push(dataDirectory);
+    const server = {
+      close: (callback?: (error?: Error) => void) => callback?.()
+    } as unknown as ServerType;
+    const runtime = await startControlPlane({
+      bootstrap: bootstrap(dataDirectory),
+      hostFetch: async () => {
+        throw new Error("host must not be called");
+      },
+      serve: vi.fn(() => server) as unknown as typeof serve,
+      installSignalHandlers: false,
+      log: vi.fn()
+    });
+
+    const first = runtime.quiesce();
+    const second = runtime.quiesce();
+    expect(first).toBe(second);
+    await first;
+    const mutation = await runtime.app.request("/v1/local/environments", {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${TOKEN}`,
+        "Content-Type": "application/json",
+        "Idempotency-Key": "after-quiesce"
+      },
+      body: "{}"
+    });
+    expect(mutation.status).toBe(503);
+    expect(await runtime.app.request("/v1/health")).toMatchObject({ status: 200 });
+    await runtime.close();
+  });
+
+  it("exposes an idempotent drain that completes before close releases persistence", async () => {
+    const dataDirectory = mkdtempSync(join(tmpdir(), "autostack-control-plane-"));
+    temporaryDirectories.push(dataDirectory);
+    const opened = openDatabase({ filePath: join(dataDirectory, "autostack.sqlite") });
+    const server = {
+      close: (callback?: (error?: Error) => void) => callback?.()
+    } as unknown as ServerType;
+    const runtime = await startControlPlane({
+      bootstrap: bootstrap(dataDirectory),
+      openDatabase: () => opened,
+      hostFetch: async () => {
+        throw new Error("host must not be called");
+      },
+      serve: vi.fn(() => server) as unknown as typeof serve,
+      installSignalHandlers: false,
+      log: vi.fn()
+    });
+
+    const first = runtime.drain();
+    const second = runtime.drain();
+    expect(first).toBe(second);
+    await first;
+    expect(opened.connection.prepare("SELECT 1 AS value").get()).toEqual({ value: 1 });
+    await runtime.close();
+    expect(() => opened.connection.prepare("SELECT 1").get()).toThrow();
+  });
+
   it("creates an atomic private identity for an empty installation", () => {
     const dataDirectory = mkdtempSync(join(tmpdir(), "autostack-control-plane-"));
     temporaryDirectories.push(dataDirectory);

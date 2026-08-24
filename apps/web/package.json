@@ -11,6 +11,7 @@
     "test:coverage": "vitest run --coverage"
   },
   "dependencies": {
+    "@autostack/client-app": "workspace:*",
     "@autostack/contracts": "workspace:*",
     "@autostack/ui": "workspace:*",
     "react": "^19.1.1",

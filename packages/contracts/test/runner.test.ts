@@ -85,53 +85,53 @@ describe("local runner contracts", () => {
       void input;
       return new Promise(() => undefined);
     };
-    const statusRequest: DesktopApiOperationMap["runtime.status"]["request"] = {
-      operation: "runtime.status"
+    const healthRequest: DesktopApiOperationMap["factory.health"]["request"] = {
+      operation: "factory.health"
     };
     const listRequest: DesktopApiOperationMap["local.list"]["request"] = {
       operation: "local.list"
     };
-    const pickerRequest: DesktopApiOperationMap["repository.pick"]["request"] = {
-      operation: "repository.pick"
+    const runsRequest: DesktopApiOperationMap["factory.runs.list"]["request"] = {
+      operation: "factory.runs.list"
     };
-    void request(statusRequest);
+    void request(healthRequest);
     void request(listRequest);
-    void request(pickerRequest);
-    expect(DesktopApiOperationMapSchema.parse(statusRequest)).toMatchObject({
-      operation: "runtime.status"
+    void request(runsRequest);
+    expect(DesktopApiOperationMapSchema.parse(healthRequest)).toMatchObject({
+      operation: "factory.health"
     });
     expect(DesktopApiOperationMapSchema.parse(listRequest)).toMatchObject({
       operation: "local.list"
     });
     expect(() =>
       DesktopApiOperationMapSchema.parse({
-        operation: "runtime.status",
-        response: { status: "ready" }
+        operation: "runtime.status"
       })
     ).toThrow();
     expect(
       DesktopApiOperationMapSchema.parse({
         operation: "local.prepare",
-        workspaceId: ids.workspaceId,
         runId: ids.runId,
         environmentId: ids.environmentId,
-        approvalId: ids.approvalId,
         environmentAuthorizationId: ids.environmentAuthorizationId,
-        environmentAuthorizationDigest: DIGEST,
         inspectedSourceCapabilityId: "inspsrc_123e4567-e89b-42d3-a456-426614174000",
         idempotencyKey: "prepare"
       })
     ).toMatchObject({ operation: "local.prepare" });
     expect(() =>
       DesktopApiOperationMapSchema.parse({
-        operation: "repository.pick",
-        response: {
-          repository: {
-            id: `repocap_${UUID}`,
-            label: "/private/source",
-            expiresAt: "2026-08-21T13:00:00.000Z"
-          }
-        }
+        operation: "local.prepare",
+        runId: ids.runId,
+        environmentId: ids.environmentId,
+        approvalId: ids.approvalId,
+        environmentAuthorizationId: ids.environmentAuthorizationId,
+        inspectedSourceCapabilityId: "inspsrc_123e4567-e89b-42d3-a456-426614174000",
+        idempotencyKey: "prepare"
+      })
+    ).toThrow();
+    expect(() =>
+      DesktopApiOperationMapSchema.parse({
+        operation: "repository.pick"
       })
     ).toThrow();
   });

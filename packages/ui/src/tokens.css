@@ -14,6 +14,7 @@
   --as-paper: #f7f7f4;
   --as-white: #fff;
   --as-signal: #ff7a38;
+  --as-signal-text: #9b3f00;
   --as-signal-soft: #3a251d;
   --as-success: #7ee2bd;
   --as-success-soft: #193129;
@@ -58,6 +59,7 @@
     --as-text-muted: var(--as-graphite-400);
     --as-border: var(--as-graphite-800);
     --as-border-strong: var(--as-graphite-700);
+    --as-signal-text: #ff9a66;
   }
 }
 

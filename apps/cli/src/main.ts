@@ -3,6 +3,8 @@ import { parseArgs } from "node:util";
 import { fileURLToPath } from "node:url";
 
 import { type CliExitCode, runDoctor, type TextWriter } from "./doctor.js";
+import { AutoStackHttpClient } from "./http-client.js";
+import { runLocalCommand } from "./local.js";
 
 const VERSION = "0.1.0";
 const DEFAULT_URL = "http://127.0.0.1:4318";
@@ -10,6 +12,13 @@ const HELP = `AutoStack ${VERSION}
 
 Usage:
   autostack doctor [--url http://127.0.0.1:4318] [--json]
+  autostack local inspect --repo <path> --base <ref> [--json]
+  autostack local prepare --run <id> --approval <id> --environment-authorization <id> --environment-id <id> --repo <path> --base <ref> --slug <slug> --idempotency-key <key> [--json]
+  autostack local exec --run <id> --approval <id> --command-authorization <id> --environment <id> --command-id <id> --idempotency-key <key> -- <executable> [args...]
+  autostack local events --environment <id> --command <id> --after <sequence> [--json]
+  autostack local artifact --artifact <id> --output <explicit-path>
+  autostack local cancel --environment <id> --command <id> --command-authorization <id> --idempotency-key <key>
+  autostack local dispose --environment <id> --environment-authorization <id> --idempotency-key <key>
   autostack --help
   autostack --version
 `;
@@ -56,6 +65,17 @@ export async function runCli(
   arguments_: readonly string[],
   dependencies: CliDependencies
 ): Promise<CliExitCode> {
+  if (arguments_[0] === "local") {
+    const baseUrl = validatedBaseUrl(dependencies.environment.AUTOSTACK_URL ?? DEFAULT_URL);
+    const token = dependencies.environment.AUTOSTACK_LOCAL_API_TOKEN;
+    if (baseUrl === undefined || token === undefined || token.length === 0)
+      return usageError(dependencies.stderr);
+    return runLocalCommand(arguments_.slice(1), {
+      client: new AutoStackHttpClient({ baseUrl, token, fetch: dependencies.fetch }),
+      stdout: dependencies.stdout,
+      stderr: dependencies.stderr
+    });
+  }
   let parsed: ReturnType<typeof parseCliArguments>;
   try {
     parsed = parseCliArguments(arguments_);

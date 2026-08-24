@@ -4,7 +4,11 @@ import { join, resolve } from "node:path";
 
 import { serve as honoServe } from "@hono/node-server";
 
-import { createIdFactory } from "@autostack/contracts";
+import {
+  ControlPlaneBootstrapSchema,
+  createIdFactory,
+  type ControlPlaneBootstrap
+} from "@autostack/contracts";
 import { openDatabase, SqliteDurableStore } from "@autostack/db";
 import {
   HandlerRegistry,
@@ -13,7 +17,26 @@ import {
 } from "@autostack/workflow";
 
 import { createApp } from "./app.js";
+import { CommandReconciler } from "./command-reconciler.js";
+import {
+  createControlPlaneDesktopDispatcher,
+  type ControlPlaneDesktopDispatcher,
+  type ControlPlaneDesktopDispatcherDependencies
+} from "./desktop-dispatcher.js";
 import { loadConfig, loadOrCreateLocalWorkspaceId, type ControlPlaneConfig } from "./config.js";
+import { createHostDaemonClient } from "./host-daemon-client.js";
+import { LocalArtifactService } from "./local-artifact-service.js";
+import { LocalExecutionService } from "./local-execution-service.js";
+import { EventBackedLocalExecutionState } from "./local-execution-state.js";
+import { publishControlPlaneReadiness, type ReadinessWriter } from "./readiness.js";
+import { CommandReconciliationSupervisor } from "./reconciliation-supervisor.js";
+import { ControlPlaneShutdown } from "./shutdown.js";
+
+export { createControlPlaneDesktopDispatcher } from "./desktop-dispatcher.js";
+export type {
+  ControlPlaneDesktopDispatcher,
+  ControlPlaneDesktopDispatcherDependencies
+} from "./desktop-dispatcher.js";
 
 type ServeImplementation = typeof honoServe;
 type Server = ReturnType<ServeImplementation>;
@@ -25,11 +48,20 @@ export interface StartControlPlaneOptions {
   readonly installSignalHandlers?: boolean;
   readonly log?: (line: string) => void;
   readonly openDatabase?: typeof openDatabase;
+  readonly bootstrap?: ControlPlaneBootstrap;
+  readonly hostFetch?: typeof globalThis.fetch;
+  readonly readinessWriter?: ReadinessWriter;
+  readonly repositoryPaths?: ControlPlaneDesktopDispatcherDependencies["repositoryPaths"];
 }
 
 export interface ControlPlaneRuntime {
   readonly app: ReturnType<typeof createApp>;
   readonly executor: LocalWorkflowExecutor;
+  readonly localExecution?: LocalExecutionService;
+  readonly desktopDispatcher?: ControlPlaneDesktopDispatcher;
+  quiesce(): Promise<void>;
+  drain(): Promise<void>;
+  retireHostGeneration(): Promise<void>;
   close(): Promise<void>;
 }
 
@@ -68,22 +100,37 @@ const retryAt = (error: RetryableJobError, attempt: number, now: string): string
 export async function startControlPlane(
   options: StartControlPlaneOptions = {}
 ): Promise<ControlPlaneRuntime> {
-  const config = options.config ?? loadConfig(options.environment);
+  const bootstrap =
+    options.bootstrap === undefined
+      ? undefined
+      : ControlPlaneBootstrapSchema.parse(options.bootstrap);
+  const config =
+    bootstrap === undefined ? (options.config ?? loadConfig(options.environment)) : undefined;
+  const effectiveConfig =
+    bootstrap === undefined
+      ? config!
+      : {
+          dataDirectory: bootstrap.dataDirectory,
+          token: "",
+          host: "127.0.0.1",
+          port: 0
+        };
   const log = options.log ?? ((line: string) => console.log(line));
   const database = (options.openDatabase ?? openDatabase)({
-    filePath: join(config.dataDirectory, "autostack.sqlite")
+    filePath: join(effectiveConfig.dataDirectory, "autostack.sqlite")
   });
   const ids = createIdFactory();
   const now = () => new Date().toISOString();
   let executor: LocalWorkflowExecutor | undefined;
   let server: Server | undefined;
   let removeSignalHandlers = (): void => undefined;
+  let storeClosed = false;
   try {
     const workspaceRows = database.connection
       .prepare("SELECT DISTINCT workspace_id AS workspaceId FROM events LIMIT 2")
       .all() as Array<{ workspaceId: unknown }>;
     const workspaceId = loadOrCreateLocalWorkspaceId(
-      config.dataDirectory,
+      effectiveConfig.dataDirectory,
       ids.workspace,
       now,
       workspaceRows.map(({ workspaceId: existing }) => existing)
@@ -92,9 +139,11 @@ export async function startControlPlane(
       eventId: ids.event,
       leaseToken: randomUUID,
       now,
-      sensitiveValues: [config.token]
+      sensitiveValues: bootstrap === undefined ? [effectiveConfig.token] : [bootstrap.hostToken]
     });
-    const registry = new HandlerRegistry({ sensitiveValues: [config.token] });
+    const sensitiveValues =
+      bootstrap === undefined ? [effectiveConfig.token] : [bootstrap.hostToken];
+    const registry = new HandlerRegistry({ sensitiveValues });
     const runtimeExecutor = new LocalWorkflowExecutor({
       store,
       registry,
@@ -102,7 +151,7 @@ export async function startControlPlane(
       now,
       leaseDurationMs: 30_000,
       pollIntervalMs: 1_000,
-      sensitiveValues: [config.token],
+      sensitiveValues,
       retryAt: (error, job, timestamp) => retryAt(error, job.attempt, timestamp),
       reportError: (error, job) => {
         log(
@@ -116,24 +165,81 @@ export async function startControlPlane(
       }
     });
     executor = runtimeExecutor;
+    let ingressOpen = true;
+    const state = new EventBackedLocalExecutionState({ store, workspaceId, now });
+    const hostClient =
+      bootstrap === undefined
+        ? undefined
+        : createHostDaemonClient({
+            origin: bootstrap.hostOrigin,
+            token: bootstrap.hostToken,
+            fetch: options.hostFetch ?? globalThis.fetch
+          });
+    const artifacts = hostClient === undefined ? undefined : new LocalArtifactService(hostClient);
+    const reconciler =
+      hostClient === undefined || artifacts === undefined
+        ? undefined
+        : new CommandReconciler({ host: hostClient, artifacts, evidence: state });
+    const reconciliation =
+      hostClient === undefined || reconciler === undefined
+        ? undefined
+        : new CommandReconciliationSupervisor({
+            recovery: state,
+            host: hostClient,
+            reconciler
+          });
+    let closeLifecycle = async (): Promise<void> => {
+      throw new TypeError("Control-plane lifecycle is not ready.");
+    };
+    const localExecution =
+      hostClient === undefined
+        ? undefined
+        : new LocalExecutionService({
+            host: hostClient,
+            state,
+            ...(reconciliation === undefined ? {} : { reconciler: reconciliation }),
+            retirement: {
+              closeIngress: async () => void (ingressOpen = false),
+              stopReconciliation: async () => reconciliation?.stop(),
+              closePersistence: () => closeLifecycle()
+            }
+          });
     const app = createApp({
       store,
       executor: runtimeExecutor,
-      token: config.token,
+      ...(bootstrap === undefined
+        ? { token: effectiveConfig.token }
+        : { tokenDigest: bootstrap.apiTokenDigest }),
       workspaceId,
-      now
+      now,
+      mode: localExecution === undefined ? "hosted" : "local",
+      ...(localExecution === undefined ? {} : { localExecution }),
+      ingress: { isOpen: () => ingressOpen }
     });
+    const desktopDispatcher =
+      localExecution === undefined || options.repositoryPaths === undefined
+        ? undefined
+        : createControlPlaneDesktopDispatcher({
+            ids,
+            repositoryPaths: options.repositoryPaths,
+            authority: state,
+            local: localExecution
+          });
+
+    await reconciliation?.recover();
 
     server = (options.serve ?? honoServe)({
       fetch: app.fetch,
-      hostname: config.host,
-      port: config.port
+      hostname: effectiveConfig.host,
+      port: effectiveConfig.port
     });
     const listeningServer = server;
     await waitForListening(listeningServer);
+    if (options.readinessWriter !== undefined) {
+      publishControlPlaneReadiness(options.readinessWriter, listeningServer.address());
+    }
     runtimeExecutor.start();
 
-    let closePromise: Promise<void> | undefined;
     const signals: readonly NodeJS.Signals[] = ["SIGINT", "SIGTERM"];
     const signalHandler = (): void => {
       void close().catch((error: unknown) => {
@@ -148,34 +254,23 @@ export async function startControlPlane(
       });
     };
 
-    const close = (): Promise<void> => {
-      if (closePromise !== undefined) return closePromise;
-      closePromise = (async () => {
+    const shutdown = new ControlPlaneShutdown({
+      quiesceIngress: async () => {
         for (const signal of signals) process.removeListener(signal, signalHandler);
-        let serverError: unknown;
-        let executorError: unknown;
-        let storeError: unknown;
-        try {
-          await closeServer(listeningServer);
-        } catch (error) {
-          serverError = error;
-        }
-        try {
-          await runtimeExecutor.stop();
-        } catch (error) {
-          executorError = error;
-        }
-        try {
+        ingressOpen = false;
+      },
+      drainReconciliation: async () => reconciliation?.drain(),
+      closeListener: () => closeServer(listeningServer),
+      closeExecutor: () => runtimeExecutor.stop(),
+      closePersistence: async () => {
+        if (!storeClosed) {
           await store.close();
-        } catch (error) {
-          storeError = error;
+          storeClosed = true;
         }
-        if (serverError !== undefined) throw serverError;
-        if (executorError !== undefined) throw executorError;
-        if (storeError !== undefined) throw storeError;
-      })();
-      return closePromise;
-    };
+      }
+    });
+    const close = (): Promise<void> => shutdown.close();
+    closeLifecycle = close;
 
     if (options.installSignalHandlers ?? true) {
       for (const signal of signals) process.once(signal, signalHandler);
@@ -188,12 +283,22 @@ export async function startControlPlane(
       JSON.stringify({
         level: "info",
         event: "control_plane_started",
-        host: config.host,
-        port: config.port
+        host: effectiveConfig.host,
+        port: effectiveConfig.port
       })
     );
 
-    return { app, executor: runtimeExecutor, close };
+    return {
+      app,
+      executor: runtimeExecutor,
+      ...(localExecution === undefined ? {} : { localExecution }),
+      ...(desktopDispatcher === undefined ? {} : { desktopDispatcher }),
+      quiesce: () => shutdown.quiesce(),
+      drain: () => shutdown.drain(),
+      retireHostGeneration: () =>
+        localExecution === undefined ? Promise.resolve() : localExecution.retireHostGeneration(),
+      close
+    };
   } catch (error) {
     removeSignalHandlers();
     try {
