@@ -11,6 +11,11 @@ Wave 1 stream leads: read the **Additions** section for the new shapes you are e
 against, and the **Resolved escalations** section for the two ingress-enum changes the orchestrator
 approved after the first review pass.
 
+**Revision 3 (post Task 0.2):** building the shared fakes exercised these contracts against real
+consumers for the first time and surfaced two gaps the audit had missed. Both were escalated and
+approved before the change: `AgentHarnessPort` could not carry the detail events item 2 added
+(see item 2 below), and `ModelRouterPort` had no vocabulary for the failure it raises (new item 21).
+
 **Revision 2 (post-review):** adds the station-evidence digest contract (item 11), applies the two
 orchestrator-approved ingress-enum widenings (item 15 / E1 / E2, now resolved), and adds approval
 inbox paging (item 20).
@@ -39,6 +44,7 @@ inbox paging (item 20).
 | 18  | Slack approval interactivity (§4.3)                     | GAP — fixed                                            |
 | 19  | `WorkItem` intake with source references (§7)           | SUFFICIENT                                             |
 | 20  | Approval/steer/cancel HTTP schemas                      | GAP — fixed                                            |
+| 21  | Model routing failure taxonomy (§8.3, §10.1)            | GAP — fixed (revision 3)                               |
 
 ## Agent contract — spec §9.1–9.3, streams S1 and S2
 
@@ -75,6 +81,15 @@ every consumer, which is the opposite of normalization.
 in one sequence space. `AgentSessionStreamEventSchema` (`packages/contracts/src/agent.ts:351`) is the
 combined union adapters emit and clients consume. `file_change.path` reuses
 `RelativeWorkspacePathSchema`, so an agent cannot report a change outside the managed worktree.
+
+**Revision 3 — the port could not carry them.** Declaring the union was not enough.
+`AgentHarnessPort.start`/`resume` (`packages/contracts/src/agent.ts:401`) still returned
+`AsyncIterable<AgentSessionEvent>`, the narrower lifecycle union, and revision 1 deliberately left the
+port untouched. Async iterable element types are covariant, so `AsyncIterable<AgentSessionStreamEvent>`
+is not assignable to it: no adapter could emit a single detail event through the only boundary it has,
+which blocks S1's producer and every S6 pane that reads one. Both members now return
+`AsyncIterable<AgentSessionStreamEvent>`. This is a widening — existing producers stay assignable, and
+consumers that switch on `type` gain members to handle. No consumer existed when it landed.
 
 ### 3. Permission request/response round trip — GAP
 
@@ -160,6 +175,9 @@ S3's "fallback with route-event recording" had no shape.
 route+model targets, `failureCode`, `reason`, and attribution. A refinement rejects a "fallback" that
 changes neither route nor model, so the event cannot be recorded as a no-op.
 
+`failureCode` was a bare `StableRefSchema` in revisions 1 and 2 — the shape said a fallback has a
+reason without saying what the reasons are. Item 21 gives it a closed vocabulary to draw on.
+
 ### 10. Model policy — GAP (decision: it belongs in contracts)
 
 **Decision:** contracts, not S3-internal. Spec §4.1 lists policy in the workbench right inspector, so
@@ -172,6 +190,31 @@ ceilings. Two consumers outside S3 means it crosses a contract boundary.
 also an allowed route, so a policy cannot escape its own constraint. Data-handling requirements
 (zero-data-retention, approved provider lists) are **deferred**: §10.2 scopes them to team policy and
 no Milestone A stream reads them.
+
+### 21. Model routing failure taxonomy — GAP (revision 3)
+
+`ModelRouterPort.resolve` (`packages/contracts/src/model.ts:299`) either returns a
+`ModelRouteSelection` or raises, and nothing in contracts described the raise. Three streams have to
+agree on why a route could not be resolved: S3 raises it, S4 decides from it whether to retry the
+stage (§8.3 splits transient from deterministic failure), and S6 displays it. An adapter-local code
+enum would have become a de-facto cross-stream interface without ever being reviewed as one — which
+is exactly what the Task 0.2 fake did before this was added.
+
+**Addition:** `MODEL_ROUTING_FAILURE_CODES` and `ModelRoutingFailureSchema`
+(`packages/contracts/src/model.ts:240`) declare the shared vocabulary — `capability_unavailable`,
+`route_disabled`, `provider_error`, `rate_limited`, `budget_exceeded` — with secret-safe operator
+text, a `retryable` flag, and optional `routeRef`/`requestedModel` attribution.
+`ModelRoutingError` (`:295`) is the throwable form, and it admits its input in the constructor so an
+unmodelled code cannot reach a caller's retry decision.
+
+A refinement keeps §8.3's split structural rather than advisory. The three codes that describe the
+_request_ — `capability_unavailable`, `route_disabled`, `budget_exceeded` — cannot declare themselves
+retryable, because retrying the identical request cannot change the answer. `rate_limited` describes
+the _moment_ and must stay retryable. `provider_error` is deliberately either, since only the adapter
+knows whether a given provider fault was transient.
+
+This closes the gap for `ModelRouteFallbackSchema.failureCode` (item 9) as well: a recorded fallback
+now has a vocabulary to name its cause with.
 
 ## Pipeline contract — spec §8, stream S4
 
@@ -409,7 +452,8 @@ silently.
 
 ## Verification
 
-- `pnpm --filter @autostack/contracts test` — 282 passed (15 files).
+- `pnpm --filter @autostack/contracts test` — 287 passed (15 files) after revision 3; 282 at
+  revision 2.
 - `pnpm --filter @autostack/contracts test:coverage` — statements 90.6%, branches 82.5%,
   functions 93.8%, lines 92.2%; `station-evidence.ts` at 100%.
 - `pnpm check` — 12/12 tasks successful.
