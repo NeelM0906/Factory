@@ -6,7 +6,13 @@ import {
   PlanDocumentSchema,
   ReviewReportSchema,
   TriageReportSchema,
-  VerificationReportSchema
+  VerificationReportSchema,
+  admitPlanDocument,
+  admitReviewReport,
+  admitVerificationReport,
+  canonicalizePlanDocumentForDigest,
+  digestPlanDocument,
+  digestVerificationReport
 } from "../src/station-evidence.js";
 
 const identity = {
@@ -280,5 +286,93 @@ describe("clarification exchange", () => {
         answeredAt: "2026-08-23T12:02:00.000Z"
       })
     ).toThrow();
+  });
+});
+
+describe("station evidence digests", () => {
+  const sealedPlan = async () => {
+    const draft = planDocument();
+    return { ...draft, planDigest: await digestPlanDocument(draft) };
+  };
+  const sealedVerification = async (plan: { readonly planDigest: string }) => ({
+    ...verificationReport(),
+    planDigest: plan.planDigest
+  });
+
+  it("digests a plan document to its own planDigest", async () => {
+    const plan = await sealedPlan();
+    const admitted = await admitPlanDocument(plan);
+    expect(admitted.planDigest).toBe(plan.planDigest);
+    expect(await digestPlanDocument(admitted)).toBe(plan.planDigest);
+  });
+
+  it("rejects a plan document whose digest does not cover its content", async () => {
+    const plan = await sealedPlan();
+    await expect(
+      admitPlanDocument({ ...plan, summary: "A different plan entirely." })
+    ).rejects.toThrow(/digest/);
+    await expect(admitPlanDocument({ ...plan, planDigest: digest("e") })).rejects.toThrow(/digest/);
+  });
+
+  it("excludes the self digest and the production timestamp from the canonical form", async () => {
+    const plan = await sealedPlan();
+    const canonical = canonicalizePlanDocumentForDigest(PlanDocumentSchema.parse(plan));
+    expect(canonical).not.toHaveProperty("planDigest");
+    expect(canonical).not.toHaveProperty("producedAt");
+    expect(await digestPlanDocument({ ...plan, producedAt: "2027-01-01T00:00:00.000Z" })).toBe(
+      plan.planDigest
+    );
+  });
+
+  it("changes the plan digest when any approved field changes", async () => {
+    const plan = await sealedPlan();
+    const mutations = [
+      { acceptanceCriteria: ["Something else entirely."] },
+      { affectedAreas: ["apps/desktop"] },
+      { risks: [{ severity: "high" as const, summary: "Now risky." }] },
+      { verificationCommands: [verificationCommand({ args: ["lint"] })] },
+      { requiredPermissions: [{ kind: "network_egress" as const, detail: "Fetch packages." }] }
+    ];
+    for (const mutation of mutations) {
+      expect(await digestPlanDocument({ ...plan, ...mutation })).not.toBe(plan.planDigest);
+    }
+  });
+
+  it("binds a verification report to the plan it verified", async () => {
+    const plan = await sealedPlan();
+    const report = await sealedVerification(plan);
+    const admitted = await admitVerificationReport(report, plan);
+    expect(admitted.planDigest).toBe(plan.planDigest);
+    expect(await digestVerificationReport(admitted)).toMatch(/^[0-9a-f]{64}$/);
+
+    await expect(
+      admitVerificationReport({ ...report, planDigest: digest("e") }, plan)
+    ).rejects.toThrow(/not bound to this plan/);
+  });
+
+  it("binds a review report to the plan and verification evidence it read", async () => {
+    const plan = await sealedPlan();
+    const verification = await sealedVerification(plan);
+    const review = {
+      ...reviewReport(),
+      planDigest: plan.planDigest,
+      verificationReportDigest: await digestVerificationReport(verification)
+    };
+    const admitted = await admitReviewReport(review, plan, verification);
+    expect(admitted.verdict).toBe("changes_requested");
+
+    await expect(
+      admitReviewReport({ ...review, verificationReportDigest: digest("e") }, plan, verification)
+    ).rejects.toThrow(/verification/);
+    await expect(
+      admitReviewReport({ ...review, planDigest: digest("e") }, plan, verification)
+    ).rejects.toThrow(/not bound to this plan/);
+  });
+
+  it("refuses evidence that belongs to another run", async () => {
+    const plan = await sealedPlan();
+    const otherRunId = "run_123e4567-e89b-42d3-a456-426614174999";
+    const report = { ...(await sealedVerification(plan)), runId: otherRunId };
+    await expect(admitVerificationReport(report, plan)).rejects.toThrow(/run/);
   });
 });

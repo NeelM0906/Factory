@@ -2,7 +2,7 @@ import { z } from "zod";
 
 import { CredentialRefIdSchema, RunIdSchema, WorkItemIdSchema, WorkspaceIdSchema } from "./ids.js";
 import { PipelineStageSchema } from "./pipeline.js";
-import { RelativeWorkspacePathSchema } from "./runner.js";
+import { RelativeWorkspacePathSchema, digestVersionedValue } from "./runner.js";
 import { SafeMetadataStringSchema } from "./secret-safety.js";
 
 const VersionSchema = z.literal(1);
@@ -273,17 +273,141 @@ export const ClarificationResponseSchema = z
   })
   .strict();
 
+export type PlanDocument = z.infer<typeof PlanDocumentSchema>;
+export type VerificationReport = z.infer<typeof VerificationReportSchema>;
+export type ReviewReport = z.infer<typeof ReviewReportSchema>;
+
+/**
+ * The plan document's canonical form, mirroring `canonicalizePublishScopeForDigest`.
+ *
+ * Two fields are deliberately excluded. `planDigest` is the digest itself, and `producedAt` is
+ * record metadata rather than approved content: spec §14.2 invalidates an approval only when the
+ * plan changes *materially*, so re-planning byte-identical content must digest identically. Every
+ * remaining field is what a human approved and therefore what staleness is measured against.
+ *
+ * `canonicalJson` sorts object keys before hashing, so the key order written here does not affect
+ * the digest; array order does, which is correct for ordered acceptance criteria and commands.
+ */
+export const canonicalizePlanDocumentForDigest = (
+  document: PlanDocument
+): Readonly<Record<string, unknown>> => ({
+  schemaVersion: document.schemaVersion,
+  workspaceId: document.workspaceId,
+  workItemId: document.workItemId,
+  runId: document.runId,
+  summary: document.summary,
+  acceptanceCriteria: document.acceptanceCriteria,
+  affectedAreas: document.affectedAreas,
+  risks: document.risks,
+  verificationCommands: document.verificationCommands,
+  requiredPermissions: document.requiredPermissions,
+  requiredCredentialRefIds: document.requiredCredentialRefIds
+});
+
+export const digestPlanDocument = async (
+  input: z.input<typeof PlanDocumentSchema>
+): Promise<string> => {
+  const document = PlanDocumentSchema.parse(input);
+  return digestVersionedValue(
+    "autostack.plan-document",
+    canonicalizePlanDocumentForDigest(document)
+  );
+};
+
+/**
+ * The verification report's canonical form. Unlike the plan document it has no self-digest field to
+ * exclude, and every field — including `producedAt` and each result's `startedAt` and `durationMs` —
+ * is evidence of one specific execution rather than approved content, so all of it is covered.
+ */
+export const canonicalizeVerificationReportForDigest = (
+  report: VerificationReport
+): Readonly<Record<string, unknown>> => ({
+  schemaVersion: report.schemaVersion,
+  workspaceId: report.workspaceId,
+  workItemId: report.workItemId,
+  runId: report.runId,
+  planDigest: report.planDigest,
+  status: report.status,
+  results: report.results,
+  producedAt: report.producedAt
+});
+
+export const digestVerificationReport = async (
+  input: z.input<typeof VerificationReportSchema>
+): Promise<string> => {
+  const report = VerificationReportSchema.parse(input);
+  return digestVersionedValue(
+    "autostack.verification-report",
+    canonicalizeVerificationReportForDigest(report)
+  );
+};
+
+interface StationIdentity {
+  readonly workspaceId: string;
+  readonly workItemId: string;
+  readonly runId: string;
+}
+
+const assertSameRun = (left: StationIdentity, right: StationIdentity, subject: string): void => {
+  if (
+    left.workspaceId !== right.workspaceId ||
+    left.workItemId !== right.workItemId ||
+    left.runId !== right.runId
+  ) {
+    throw new TypeError(`${subject} belongs to a different run.`);
+  }
+};
+
+/** Admits a plan document only when its `planDigest` covers its own canonical content. */
+export const admitPlanDocument = async (input: unknown): Promise<PlanDocument> => {
+  const document = PlanDocumentSchema.parse(input);
+  if ((await digestPlanDocument(document)) !== document.planDigest) {
+    throw new TypeError("Plan document digest does not match its canonical fields.");
+  }
+  return document;
+};
+
+/** Admits a verification report only when it verifies the plan document it names. */
+export const admitVerificationReport = async (
+  input: unknown,
+  planDocumentInput: unknown
+): Promise<VerificationReport> => {
+  const plan = await admitPlanDocument(planDocumentInput);
+  const report = VerificationReportSchema.parse(input);
+  assertSameRun(report, plan, "Verification report");
+  if (report.planDigest !== plan.planDigest) {
+    throw new TypeError("Verification report is not bound to this plan document.");
+  }
+  return report;
+};
+
+/** Admits a review report only when it read this plan and this verification evidence. */
+export const admitReviewReport = async (
+  input: unknown,
+  planDocumentInput: unknown,
+  verificationReportInput: unknown
+): Promise<ReviewReport> => {
+  const plan = await admitPlanDocument(planDocumentInput);
+  const verification = await admitVerificationReport(verificationReportInput, plan);
+  const review = ReviewReportSchema.parse(input);
+  assertSameRun(review, plan, "Review report");
+  if (review.planDigest !== plan.planDigest) {
+    throw new TypeError("Review report is not bound to this plan document.");
+  }
+  if (review.verificationReportDigest !== (await digestVerificationReport(verification))) {
+    throw new TypeError("Review report is stale for this verification report.");
+  }
+  return review;
+};
+
 export type TriageTaskType = z.infer<typeof TriageTaskTypeSchema>;
 export type TriageComplexity = z.infer<typeof TriageComplexitySchema>;
 export type TriageDuplicate = z.infer<typeof TriageDuplicateSchema>;
 export type TriageReport = z.infer<typeof TriageReportSchema>;
 export type VerificationCommand = z.infer<typeof VerificationCommandSchema>;
 export type PlanPermissionKind = z.infer<typeof PlanPermissionKindSchema>;
-export type PlanDocument = z.infer<typeof PlanDocumentSchema>;
 export type VerificationResult = z.infer<typeof VerificationResultSchema>;
-export type VerificationReport = z.infer<typeof VerificationReportSchema>;
 export type ReviewFindingLocation = z.infer<typeof ReviewFindingLocationSchema>;
 export type ReviewFinding = z.infer<typeof ReviewFindingSchema>;
-export type ReviewReport = z.infer<typeof ReviewReportSchema>;
 export type ClarificationRequest = z.infer<typeof ClarificationRequestSchema>;
 export type ClarificationResponse = z.infer<typeof ClarificationResponseSchema>;
