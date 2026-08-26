@@ -167,6 +167,16 @@ describe("agent harness profile contracts", () => {
 
   it("keeps unsupported capabilities visibly unavailable", () => {
     const base = harnessProfile();
+    expect(
+      AgentHarnessProfileSchema.parse({
+        ...base,
+        descriptor: {
+          ...base.descriptor,
+          capabilities: { ...capabilities, permissions: false }
+        },
+        selection: { ...base.selection, permissionModes: [] }
+      }).selection.permissionModes
+    ).toEqual([]);
     expect(() =>
       AgentHarnessProfileSchema.parse({
         ...base,
@@ -176,6 +186,10 @@ describe("agent harness profile contracts", () => {
         }
       })
     ).toThrow();
+  });
+
+  it("rejects a duplicated permission mode", () => {
+    const base = harnessProfile();
     expect(() =>
       AgentHarnessProfileSchema.parse({
         ...base,

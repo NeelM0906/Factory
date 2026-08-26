@@ -197,6 +197,28 @@ describe("verification station report", () => {
       })
     ).toThrow();
   });
+
+  it("cannot report failure while every check passed", () => {
+    const report = verificationReport();
+    expect(() => VerificationReportSchema.parse({ ...report, status: "failed" })).toThrow();
+    expect(
+      VerificationReportSchema.parse({
+        ...report,
+        status: "failed",
+        results: [
+          report.results[0],
+          {
+            command: verificationCommand({ executable: "pnpm", args: ["lint"], required: false }),
+            status: "failed",
+            exitCode: 1,
+            durationMs: 900,
+            startedAt: "2026-08-23T12:05:20.000Z",
+            outputDigest: digest("c")
+          }
+        ]
+      }).status
+    ).toBe("failed");
+  });
 });
 
 describe("review station report", () => {

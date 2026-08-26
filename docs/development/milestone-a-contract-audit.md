@@ -196,7 +196,8 @@ address — `TriageReportSchema` (`:44`), `PlanDocumentSchema` (`:90`), `Verific
 - `VerificationCommandSchema` (`:72`) is executable + args with an explicit `usesShell` flag, so spec
   §14.4's "that fact is visible in the plan approval" is structural rather than conventional.
 - A verification report cannot claim `passed` while any required check failed **or was skipped**
-  (`:173`) — §8.2's "skipped required checks are failure, not success".
+  (`:173`) — §8.2's "skipped required checks are failure, not success" — and, symmetrically, cannot
+  claim `failed` while every recorded check passed (`:183`).
 - An executed check must record an exit code; a skipped one must not (`:151`).
 - A review report cannot be `approved` while a critical or high finding stands (`:237`), mirroring the
   existing `ReviewEvidenceSchema` rule.
@@ -354,8 +355,8 @@ the shortcut needs).
 
 ## Verification
 
-- `pnpm --filter @autostack/contracts test` — 265 passed (15 files).
-- `pnpm --filter @autostack/contracts test:coverage` — statements 90.4%, branches 82.3%,
+- `pnpm --filter @autostack/contracts test` — 268 passed (15 files).
+- `pnpm --filter @autostack/contracts test:coverage` — statements 90.5%, branches 82.3%,
   functions 93.5%, lines 92.0%; `station-evidence.ts` at 100%.
 - `pnpm check` — 12/12 tasks successful.
 - `pnpm test` (whole monorepo) — 21/21 tasks successful, run twice.

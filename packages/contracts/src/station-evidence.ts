@@ -164,15 +164,24 @@ export const VerificationReportSchema = z
   })
   .strict()
   .superRefine((value, context) => {
-    if (value.status !== "passed") return;
-    for (const [index, result] of value.results.entries()) {
-      if (result.command.required && result.status !== "passed") {
-        context.addIssue({
-          code: "custom",
-          path: ["results", index, "status"],
-          message: "A required check that did not pass makes verification fail."
-        });
+    if (value.status === "passed") {
+      for (const [index, result] of value.results.entries()) {
+        if (result.command.required && result.status !== "passed") {
+          context.addIssue({
+            code: "custom",
+            path: ["results", index, "status"],
+            message: "A required check that did not pass makes verification fail."
+          });
+        }
       }
+      return;
+    }
+    if (value.results.every((result) => result.status === "passed")) {
+      context.addIssue({
+        code: "custom",
+        path: ["status"],
+        message: "A failed verification must record a check that did not pass."
+      });
     }
   });
 

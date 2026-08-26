@@ -252,12 +252,21 @@ describe("model policy", () => {
         fallbackRouteRefs: ["route.direct.xai"]
       })
     ).toThrow();
+  });
+
+  it("requires a non-empty, duplicate-free allow list", () => {
+    expect(() => ModelPolicySchema.parse({ ...modelPolicy(), allowedRouteRefs: [] })).toThrow();
     expect(() =>
       ModelPolicySchema.parse({
         ...modelPolicy(),
         allowedRouteRefs: ["route.gateway.default", "route.gateway.default"]
       })
     ).toThrow();
-    expect(() => ModelPolicySchema.parse({ ...modelPolicy(), allowedRouteRefs: [] })).toThrow();
+    expect(() =>
+      ModelPolicySchema.parse({
+        ...modelPolicy(),
+        fallbackRouteRefs: ["route.openrouter.default", "route.openrouter.default"]
+      })
+    ).toThrow();
   });
 });

@@ -206,6 +206,22 @@ describe("approval and steering HTTP contracts", () => {
       SteerRunResponseSchema.parse({ runId: RUN_ID, accepted: true, acceptedAt: NOW }).accepted
     ).toBe(true);
     expect(() => SteerRunRequestSchema.parse({ instruction: "   " })).toThrow();
+    expect(() =>
+      SteerRunRequestSchema.parse({
+        instruction: "authenticate with ghp_abcdefghijklmnopqrstuvwxyz01"
+      })
+    ).toThrow();
+    expect(() =>
+      CancelRunRequestSchema.parse({ reason: "rotate ghp_abcdefghijklmnopqrstuvwxyz01" })
+    ).toThrow();
+    expect(() =>
+      ApprovalDecisionRequestSchema.parse({
+        decision: "approved",
+        evidenceDigest: DIGEST,
+        origin: "desktop",
+        note: "use ghp_abcdefghijklmnopqrstuvwxyz01"
+      })
+    ).toThrow();
     expect(CancelRunRequestSchema.parse({ reason: "No longer needed" }).reason).toBe(
       "No longer needed"
     );

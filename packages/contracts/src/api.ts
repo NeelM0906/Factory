@@ -3,6 +3,7 @@ import { z } from "zod";
 import { RunSchema, RunStageSchema, RunStatusSchema, WorkItemSchema } from "./entities.js";
 import { StoredDomainEventSchema } from "./events.js";
 import { ApprovalIdSchema, RunIdSchema, WorkItemIdSchema } from "./ids.js";
+import { SafeMetadataStringSchema } from "./secret-safety.js";
 
 export const HealthResponseSchema = z
   .object({
@@ -141,7 +142,7 @@ export const ApprovalDecisionRequestSchema = z
     decision: z.enum(["approved", "rejected"]),
     evidenceDigest: Sha256Schema,
     origin: ApprovalOriginSchema,
-    note: z.string().trim().min(1).max(2_000).optional()
+    note: SafeMetadataStringSchema.trim().min(1).max(2_000).optional()
   })
   .strict();
 
@@ -156,7 +157,7 @@ export const ApprovalDecisionResponseSchema = z
   .strict();
 
 export const SteerRunRequestSchema = z
-  .object({ instruction: z.string().trim().min(1).max(20_000) })
+  .object({ instruction: SafeMetadataStringSchema.trim().min(1).max(20_000) })
   .strict();
 
 export const SteerRunResponseSchema = z
@@ -164,7 +165,7 @@ export const SteerRunResponseSchema = z
   .strict();
 
 export const CancelRunRequestSchema = z
-  .object({ reason: z.string().trim().min(1).max(2_000) })
+  .object({ reason: SafeMetadataStringSchema.trim().min(1).max(2_000) })
   .strict();
 
 export const CancelRunResponseSchema = z
