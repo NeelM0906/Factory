@@ -4,8 +4,10 @@ import {
   ModelRouteSchema,
   ModelRouteSelectionSchema,
   ModelUsageRecordSchema,
+  ModelRoutingError,
   ModelUsageSchema,
   type ModelCatalogEntry,
+  type ModelRoutingFailure,
   type ModelRoute,
   type ModelRouteContext,
   type ModelRouteSelection,
@@ -37,6 +39,9 @@ export type FakeModelUsageTemplate = Omit<
   | "recordedAt"
 >;
 
+/** A declared routing failure; the fake supplies the schema version and raises it typed. */
+export type FakeModelRoutingFailureTemplate = Omit<ModelRoutingFailure, "schemaVersion">;
+
 export type FakeModelRouterOutcome =
   | {
       readonly kind: "selected";
@@ -44,30 +49,12 @@ export type FakeModelRouterOutcome =
       readonly reason: string;
       readonly usage?: FakeModelUsageTemplate;
     }
-  | {
-      readonly kind: "failure";
-      readonly code: string;
-      readonly message: string;
-      readonly retryable: boolean;
-    };
+  | { readonly kind: "failure"; readonly failure: FakeModelRoutingFailureTemplate };
 
 export interface FakeModelRouterOptions {
   readonly catalog: readonly FakeModelRouteDeclaration[];
   readonly outcomes: readonly FakeModelRouterOutcome[];
   readonly now: () => string;
-}
-
-/** A declared provider failure, carrying the taxonomy a caller needs to decide on a fallback. */
-export class FakeModelRouterFailure extends Error {
-  readonly code: string;
-  readonly retryable: boolean;
-
-  constructor(code: string, message: string, retryable: boolean) {
-    super(message);
-    this.name = "FakeModelRouterFailure";
-    this.code = code;
-    this.retryable = retryable;
-  }
 }
 
 export interface FakeModelRouter extends ModelRouterPort {
@@ -76,8 +63,6 @@ export interface FakeModelRouter extends ModelRouterPort {
   readonly usageRecords: readonly ModelUsageRecord[];
   readonly recordedUsage: readonly ModelUsage[];
 }
-
-const CAPABILITY_UNAVAILABLE = "model.capability_unavailable";
 
 const declaredCapabilities = (entry: ModelCatalogEntry): ReadonlySet<string> =>
   new Set<string>([...entry.inputModalities, ...entry.outputModalities, ...entry.features]);
@@ -99,29 +84,37 @@ export const createFakeModelRouter = (options: FakeModelRouterOptions): FakeMode
   const recordedUsage: ModelUsage[] = [];
   let cursor = 0;
 
-  const eligibleRouteRefs = (required: readonly string[]): ReadonlySet<string> =>
-    new Set(
-      catalog
-        .filter((declaration) => {
-          if (!declaration.route.enabled) return false;
-          const declared = declaredCapabilities(declaration.catalogEntry);
-          return required.every((capability) => declared.has(capability));
-        })
-        .map((declaration) => declaration.route.routeRef)
-    );
+  const eligibleRouteRefs = (required: readonly string[]): ReadonlySet<string> => {
+    const capable = catalog.filter((declaration) => {
+      const declared = declaredCapabilities(declaration.catalogEntry);
+      return required.every((capability) => declared.has(capability));
+    });
+    if (capable.length === 0) {
+      throw new ModelRoutingError({
+        schemaVersion: 1,
+        code: "capability_unavailable",
+        message: `No declared route offers every required capability: ${required.join(", ")}.`,
+        retryable: false
+      });
+    }
+    const enabled = capable.filter((declaration) => declaration.route.enabled);
+    if (enabled.length === 0) {
+      throw new ModelRoutingError({
+        schemaVersion: 1,
+        code: "route_disabled",
+        message: `Every route offering ${required.join(", ")} is disabled.`,
+        retryable: false,
+        routeRef: capable[0]?.route.routeRef
+      });
+    }
+    return new Set(enabled.map((declaration) => declaration.route.routeRef));
+  };
 
   const resolve = async (context: ModelRouteContext): Promise<ModelRouteSelection> => {
     const request = ModelRouteContextSchema.parse(context);
     requests.push(request);
 
     const eligible = eligibleRouteRefs(request.requiredCapabilities);
-    if (eligible.size === 0) {
-      throw new FakeModelRouterFailure(
-        CAPABILITY_UNAVAILABLE,
-        `No declared route offers every required capability: ${request.requiredCapabilities.join(", ")}.`,
-        false
-      );
-    }
 
     const outcome = options.outcomes[cursor];
     if (outcome === undefined) {
@@ -130,7 +123,7 @@ export const createFakeModelRouter = (options: FakeModelRouterOptions): FakeMode
     cursor += 1;
 
     if (outcome.kind === "failure") {
-      throw new FakeModelRouterFailure(outcome.code, outcome.message, outcome.retryable);
+      throw new ModelRoutingError({ ...outcome.failure, schemaVersion: 1 });
     }
     if (!eligible.has(outcome.routeRef)) {
       throw new TypeError(

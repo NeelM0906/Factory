@@ -1,15 +1,15 @@
-import type { AgentPermissionOption, AgentSessionEvent } from "@autostack/contracts";
+import type { AgentPermissionOption, AgentSessionStreamEvent } from "@autostack/contracts";
 
 /**
  * The event context (`schemaVersion`, `sessionId`, `sequence`, `occurredAt`) is owned by the fake so
  * that sequence numbers stay monotonic and timestamps come from the injected clock. A script only
- * declares the discriminated payload.
+ * declares the discriminated payload, of any lifecycle or normalized detail event the port carries.
  */
 type WithoutSessionContext<Event> = Event extends unknown
   ? Omit<Event, "schemaVersion" | "sessionId" | "sequence" | "occurredAt">
   : never;
 
-export type FakeHarnessEventTemplate = WithoutSessionContext<AgentSessionEvent>;
+export type FakeHarnessEventTemplate = WithoutSessionContext<AgentSessionStreamEvent>;
 
 /** The permission round trip a script step opens; the fake supplies session and timestamp. */
 export interface FakeHarnessPermissionTemplate {

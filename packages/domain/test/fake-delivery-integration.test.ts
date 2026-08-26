@@ -299,6 +299,47 @@ describe("fake delivery integration failure injection", () => {
     expect(integration.pullRequests).toHaveLength(1);
   });
 
+  it("replays a recorded pull request without consuming a queued failure", async () => {
+    const injected = new Error("The provider returned 502.");
+    const integration = createIntegration({ createDraftPullRequest: [undefined, injected] });
+    const request = await draftPullRequest();
+
+    const first = await integration.createDraftPullRequest(request);
+    const replay = await integration.createDraftPullRequest(request);
+
+    expect(replay).toEqual(first);
+    expect(integration.pullRequests).toHaveLength(1);
+
+    const secondScope = await draftPullRequestInput();
+    await expect(
+      integration.createDraftPullRequest({
+        ...secondScope,
+        idempotencyKey: "draft-pr:run:2"
+      } as unknown as DraftPullRequestRequest)
+    ).rejects.toBe(injected);
+  });
+
+  it("hands out copies so a consumer cannot mutate recorded state", async () => {
+    const integration = createIntegration();
+    await integration.postSlackProgress(progressComment);
+    await integration.upsertProgressComment(gitHubComment);
+    await integration.createDraftPullRequest(await draftPullRequest());
+
+    for (const view of [
+      integration.slackProgress,
+      integration.comments,
+      integration.pullRequests,
+      integration.branches
+    ]) {
+      expect(view).toHaveLength(1);
+      view.slice().pop();
+    }
+    expect(integration.slackProgress).toHaveLength(1);
+    expect(integration.comments).toHaveLength(1);
+    expect(integration.pullRequests).toHaveLength(1);
+    expect(integration.branches).not.toBe(integration.branches);
+  });
+
   it("injects failures independently per operation", async () => {
     const slackFailure = new Error("Slack rate limited the workspace.");
     const integration = createIntegration({ postSlackProgress: [slackFailure] });

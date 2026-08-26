@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import {
   ModelCatalogEntrySchema,
+  ModelRoutingError,
   ModelRouteContextSchema,
   ModelRouteSchema,
   ModelRouteSelectionSchema,
@@ -11,7 +12,6 @@ import {
 } from "@autostack/contracts";
 
 import {
-  FakeModelRouterFailure,
   createFakeModelRouter,
   type FakeModelRouterOutcome,
   type FakeModelRouteDeclaration
@@ -111,12 +111,13 @@ const usageTemplate = {
   outcome: "succeeded"
 } as const;
 
+const createRouterWith = (
+  catalog: readonly FakeModelRouteDeclaration[],
+  outcomes: readonly FakeModelRouterOutcome[]
+) => createFakeModelRouter({ catalog, outcomes, now: createClock() });
+
 const createRouter = (outcomes: readonly FakeModelRouterOutcome[]) =>
-  createFakeModelRouter({
-    catalog: [gateway, fallback],
-    outcomes,
-    now: createClock()
-  });
+  createRouterWith([gateway, fallback], outcomes);
 
 describe("fake model router scripted selection", () => {
   it("resolves scripted routes in request order and records every request", async () => {
@@ -174,17 +175,24 @@ describe("fake model router scripted selection", () => {
     const router = createRouter([
       {
         kind: "failure",
-        code: "provider.rate_limited",
-        message: "The gateway rejected the request.",
-        retryable: true
+        failure: {
+          code: "rate_limited",
+          message: "The gateway rejected the request.",
+          retryable: true,
+          routeRef: gateway.route.routeRef
+        }
       },
       { kind: "selected", routeRef: fallback.route.routeRef, reason: "Gateway rate limited." }
     ]);
 
     const failure = await router.resolve(context()).catch((error: unknown) => error);
 
-    expect(failure).toBeInstanceOf(FakeModelRouterFailure);
-    expect(failure).toMatchObject({ code: "provider.rate_limited", retryable: true });
+    expect(failure).toBeInstanceOf(ModelRoutingError);
+    expect(failure).toMatchObject({
+      code: "rate_limited",
+      retryable: true,
+      failure: { routeRef: gateway.route.routeRef }
+    });
     expect(await router.resolve(context({ idempotencyKey: "model:resolve:2" }))).toMatchObject({
       routeRef: fallback.route.routeRef
     });
@@ -202,8 +210,25 @@ describe("fake model router capability honesty", () => {
       .resolve(context({ requiredCapabilities: ["audio"] }))
       .catch((error: unknown) => error);
 
-    expect(failure).toBeInstanceOf(FakeModelRouterFailure);
-    expect(failure).toMatchObject({ code: "model.capability_unavailable", retryable: false });
+    expect(failure).toBeInstanceOf(ModelRoutingError);
+    expect(failure).toMatchObject({ code: "capability_unavailable", retryable: false });
+  });
+
+  it("reports a capable but disabled route as route_disabled, not capability_unavailable", async () => {
+    const router = createRouterWith(
+      [
+        {
+          route: ModelRouteSchema.parse({ ...gateway.route, enabled: false }),
+          catalogEntry: gateway.catalogEntry
+        }
+      ],
+      [{ kind: "selected", routeRef: gateway.route.routeRef, reason: "Primary route." }]
+    );
+
+    const failure = await router.resolve(context()).catch((error: unknown) => error);
+
+    expect(failure).toBeInstanceOf(ModelRoutingError);
+    expect(failure).toMatchObject({ code: "route_disabled", retryable: false });
   });
 
   it("refuses a script that selects a route the required capabilities exclude", async () => {

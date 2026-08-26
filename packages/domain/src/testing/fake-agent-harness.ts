@@ -4,7 +4,7 @@ import {
   AgentInvocationRequestSchema,
   AgentPermissionRequestSchema,
   AgentResumeRequestSchema,
-  AgentSessionEventSchema,
+  AgentSessionStreamEventSchema,
   AgentSteerRequestSchema,
   admitAgentPermissionResponse,
   type AgentCancelRequest,
@@ -15,8 +15,8 @@ import {
   type AgentPermissionResponderPort,
   type AgentPermissionResponse,
   type AgentResumeRequest,
-  type AgentSessionEvent,
   type AgentSessionId,
+  type AgentSessionStreamEvent,
   type AgentSteerRequest
 } from "@autostack/contracts";
 
@@ -36,10 +36,19 @@ export interface FakeAgentHarnessOptions {
   readonly descriptor?: FakeAgentHarnessDescriptorOverrides;
 }
 
-/** Introspection is read-only: a consumer drives the fake through the port, never through state. */
-export interface FakeAgentHarness extends AgentHarnessPort, AgentPermissionResponderPort {
+/**
+ * Introspection is read-only: a consumer drives the fake through the port, never through state.
+ *
+ * `respondToPermission` is present only when the descriptor declares `capabilities.permissions`,
+ * mirroring the contract's rule that adapters without that capability must not implement
+ * `AgentPermissionResponderPort`. A generic conformance suite therefore learns the rule by probing
+ * for the method rather than by provoking a runtime rejection.
+ */
+export interface FakeAgentHarness extends AgentHarnessPort, Partial<AgentPermissionResponderPort> {
   readonly sentMessages: readonly AgentSteerRequest[];
   readonly permissionResponses: readonly AgentPermissionResponse[];
+  /** The request an `await_permission` step is currently blocked on, with the options it offered. */
+  readonly pendingPermission: AgentPermissionRequest | undefined;
   readonly disposed: boolean;
   dispose(): Promise<void>;
 }
@@ -59,6 +68,15 @@ export const createFakeAgentHarness = (options: FakeAgentHarnessOptions): FakeAg
     ...overrides,
     capabilities: { ...DEFAULT_DESCRIPTOR.capabilities, ...overrides?.capabilities }
   });
+
+  if (!descriptor.capabilities.permissions) {
+    const permissionStep = options.script.find((step) => step.kind === "await_permission");
+    if (permissionStep !== undefined) {
+      throw new TypeError(
+        "A harness that does not declare permission support cannot script a permission step."
+      );
+    }
+  }
 
   const script = options.script;
   const sentMessages: AgentSteerRequest[] = [];
@@ -94,9 +112,9 @@ export const createFakeAgentHarness = (options: FakeAgentHarnessOptions): FakeAg
   const nextEvent = (
     template: FakeHarnessEventTemplate,
     session: AgentSessionId
-  ): AgentSessionEvent => {
+  ): AgentSessionStreamEvent => {
     sequence += 1;
-    return AgentSessionEventSchema.parse({
+    return AgentSessionStreamEventSchema.parse({
       ...withProviderSessionRef(template),
       schemaVersion: 1,
       sessionId: session,
@@ -118,7 +136,9 @@ export const createFakeAgentHarness = (options: FakeAgentHarnessOptions): FakeAg
     if (disposed) throw new TypeError(`A disposed fake agent harness cannot ${action}.`);
   };
 
-  const runScript = async function* (session: AgentSessionId): AsyncGenerator<AgentSessionEvent> {
+  const runScript = async function* (
+    session: AgentSessionId
+  ): AsyncGenerator<AgentSessionStreamEvent> {
     while (cursor < script.length) {
       if (disposed) return;
       if (cancelled) {
@@ -176,11 +196,21 @@ export const createFakeAgentHarness = (options: FakeAgentHarnessOptions): FakeAg
         yield nextEvent({ type: "cancelled" }, session);
         return;
       }
+      const answer = permissionResponses[consumedPermissions];
       consumedPermissions += 1;
+      if (answer === undefined) return;
+      yield nextEvent(
+        {
+          type: "permission_resolved",
+          permissionRef: answer.permissionRef,
+          selectedOptionId: answer.selectedOptionId
+        },
+        session
+      );
     }
   };
 
-  const start = (request: AgentInvocationRequest): AsyncIterable<AgentSessionEvent> =>
+  const start = (request: AgentInvocationRequest): AsyncIterable<AgentSessionStreamEvent> =>
     (async function* () {
       requireUsable("start a session");
       const parsed = AgentInvocationRequestSchema.parse(request);
@@ -191,7 +221,7 @@ export const createFakeAgentHarness = (options: FakeAgentHarnessOptions): FakeAg
       yield* runScript(parsed.agentSessionId);
     })();
 
-  const resume = (request: AgentResumeRequest): AsyncIterable<AgentSessionEvent> =>
+  const resume = (request: AgentResumeRequest): AsyncIterable<AgentSessionStreamEvent> =>
     (async function* () {
       requireUsable("resume a session");
       if (!descriptor.capabilities.resume) {
@@ -226,9 +256,6 @@ export const createFakeAgentHarness = (options: FakeAgentHarnessOptions): FakeAg
 
   const respondToPermission = async (response: AgentPermissionResponse): Promise<void> => {
     requireUsable("answer a permission request");
-    if (!descriptor.capabilities.permissions) {
-      throw new TypeError("This fake agent harness does not declare permission support.");
-    }
     if (pendingPermission === undefined) {
       throw new TypeError("The fake agent harness has no outstanding permission request.");
     }
@@ -251,6 +278,9 @@ export const createFakeAgentHarness = (options: FakeAgentHarnessOptions): FakeAg
     get permissionResponses() {
       return [...permissionResponses];
     },
+    get pendingPermission() {
+      return pendingPermission;
+    },
     get disposed() {
       return disposed;
     },
@@ -258,7 +288,7 @@ export const createFakeAgentHarness = (options: FakeAgentHarnessOptions): FakeAg
     resume,
     steer,
     cancel,
-    respondToPermission,
-    dispose
+    dispose,
+    ...(descriptor.capabilities.permissions ? { respondToPermission } : {})
   };
 };

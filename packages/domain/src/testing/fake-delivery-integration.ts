@@ -21,8 +21,12 @@ export interface FakeDeliveryIntegrationOptions {
   readonly pullRequestNumber: () => number;
   readonly commentId: () => number;
   readonly providerEvidenceDigest: () => string;
-  /** Errors are consumed in order per operation, so a retry after an injected failure succeeds. */
-  readonly failures?: Partial<Record<FakeDeliveryOperation, readonly Error[]>>;
+  /**
+   * An ordered queue of outcomes per operation, consumed one entry per non-replayed call:
+   * an `Error` raises, `undefined` lets that call through. A retry after an injected failure
+   * therefore succeeds, and a run can be scripted to fail only on a later attempt.
+   */
+  readonly failures?: Partial<Record<FakeDeliveryOperation, readonly (Error | undefined)[]>>;
 }
 
 /** The head branch a publication targeted, recorded once per approved scope. */
@@ -66,20 +70,19 @@ export const createFakeDeliveryIntegration = (
   const injectFailure = (operation: FakeDeliveryOperation): void => {
     const queued = options.failures?.[operation] ?? [];
     const consumed = consumedFailures.get(operation) ?? 0;
-    const failure = queued[consumed];
-    if (failure === undefined) return;
+    if (consumed >= queued.length) return;
     consumedFailures.set(operation, consumed + 1);
-    throw failure;
+    const failure = queued[consumed];
+    if (failure !== undefined) throw failure;
   };
 
   const createDraftPullRequest = async (
     request: DraftPullRequestRequest
   ): Promise<DraftPullRequestResult> => {
     const admitted = await admitDraftPullRequestRequest(request);
-    injectFailure("createDraftPullRequest");
-
     const replayed = pullRequests.get(admitted.idempotencyKey);
     if (replayed !== undefined) return replayed;
+    injectFailure("createDraftPullRequest");
 
     const number = options.pullRequestNumber();
     const result = DraftPullRequestResultSchema.parse({
@@ -112,8 +115,8 @@ export const createFakeDeliveryIntegration = (
 
   const postSlackProgress = async (request: SlackProgressRequest): Promise<void> => {
     const parsed = SlackProgressRequestSchema.parse(request);
-    injectFailure("postSlackProgress");
     if (slackProgress.has(parsed.idempotencyKey)) return;
+    injectFailure("postSlackProgress");
     slackProgress.set(parsed.idempotencyKey, parsed);
   };
 
@@ -121,10 +124,9 @@ export const createFakeDeliveryIntegration = (
     request: GitHubProgressCommentRequest
   ): Promise<GitHubProgressCommentResult> => {
     const parsed = GitHubProgressCommentRequestSchema.parse(request);
-    injectFailure("upsertProgressComment");
-
     const replayed = commentResults.get(parsed.idempotencyKey);
     if (replayed !== undefined) return replayed;
+    injectFailure("upsertProgressComment");
 
     const edited = parsed.commentId;
     if (

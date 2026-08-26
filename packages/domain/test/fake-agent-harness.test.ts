@@ -7,11 +7,16 @@ import {
   AgentPermissionResponseSchema,
   AgentResumeRequestSchema,
   AgentSessionEventSchema,
+  AgentSessionStreamEventSchema,
   AgentSteerRequestSchema,
-  type AgentSessionEvent
+  type AgentPermissionResponderPort,
+  type AgentSessionStreamEvent
 } from "@autostack/contracts";
 
-import { createFakeAgentHarness } from "../src/testing/fake-agent-harness.js";
+import {
+  createFakeAgentHarness,
+  type FakeAgentHarness
+} from "../src/testing/fake-agent-harness.js";
 import type { FakeHarnessScript } from "../src/testing/fake-agent-harness-script.js";
 
 const digest = (character: string): string => character.repeat(64);
@@ -102,10 +107,22 @@ const createHarness = (
     ...(descriptor === undefined ? {} : { descriptor })
   });
 
-const collect = async (stream: AsyncIterable<AgentSessionEvent>): Promise<AgentSessionEvent[]> => {
-  const events: AgentSessionEvent[] = [];
+const collect = async (
+  stream: AsyncIterable<AgentSessionStreamEvent>
+): Promise<AgentSessionStreamEvent[]> => {
+  const events: AgentSessionStreamEvent[] = [];
   for await (const event of stream) events.push(event);
   return events;
+};
+
+const responderOf = (
+  harness: FakeAgentHarness
+): AgentPermissionResponderPort["respondToPermission"] => {
+  const respond = harness.respondToPermission;
+  if (respond === undefined) {
+    throw new TypeError("This harness declares permission support and must expose the responder.");
+  }
+  return respond;
 };
 
 const isPending = async (promise: Promise<unknown>): Promise<boolean> =>
@@ -241,26 +258,45 @@ describe("fake agent harness permission round trip", () => {
 
     const blocked = iterator.next();
     expect(await isPending(blocked)).toBe(true);
+    expect(harness.pendingPermission).toMatchObject({
+      permissionRef: "workspace.write",
+      evidenceDigest: digest("4"),
+      options: [...permissionOptions]
+    });
 
-    await expect(
-      harness.respondToPermission({ ...permissionResponse, selectedOptionId: "escalate" })
-    ).rejects.toThrow(/did not offer/);
-    await expect(
-      harness.respondToPermission({ ...permissionResponse, evidenceDigest: digest("5") })
-    ).rejects.toThrow(/stale/);
+    const respond = responderOf(harness);
+    await expect(respond({ ...permissionResponse, selectedOptionId: "escalate" })).rejects.toThrow(
+      /did not offer/
+    );
+    await expect(respond({ ...permissionResponse, evidenceDigest: digest("5") })).rejects.toThrow(
+      /stale/
+    );
     expect(harness.permissionResponses).toEqual([]);
 
-    await harness.respondToPermission(permissionResponse);
+    await respond(permissionResponse);
 
-    expect((await blocked).value).toMatchObject({ type: "completed" });
+    expect((await blocked).value).toMatchObject({
+      type: "permission_resolved",
+      permissionRef: "workspace.write",
+      selectedOptionId: "allow-once"
+    });
+    expect((await iterator.next()).value).toMatchObject({ type: "completed" });
     expect(harness.permissionResponses).toEqual([permissionResponse]);
+    expect(harness.pendingPermission).toBeUndefined();
   });
 
-  it("rejects a permission response the descriptor does not declare support for", async () => {
-    const harness = createHarness(script, { capabilities: { permissions: false } });
+  it("does not implement the responder port when the descriptor declares no permissions", () => {
+    const harness = createHarness([{ kind: "emit", event: { type: "started" } }], {
+      capabilities: { permissions: false }
+    });
 
-    await expect(harness.respondToPermission(permissionResponse)).rejects.toThrow(
-      /not declare permission/
+    expect(harness.respondToPermission).toBeUndefined();
+    expect("respondToPermission" in harness).toBe(false);
+  });
+
+  it("refuses a permission step a harness without the capability could never answer", () => {
+    expect(() => createHarness(script, { capabilities: { permissions: false } })).toThrow(
+      /permission/i
     );
   });
 });
@@ -297,7 +333,7 @@ describe("fake agent harness cancellation and disposal", () => {
     await expect(harness.steer(steer)).rejects.toThrow(/disposed/);
     await expect(harness.cancel(cancel)).rejects.toThrow(/disposed/);
     await expect(collect(harness.resume(resumption))).rejects.toThrow(/disposed/);
-    await expect(harness.respondToPermission(permissionResponse)).rejects.toThrow(/disposed/);
+    await expect(responderOf(harness)(permissionResponse)).rejects.toThrow(/disposed/);
   });
 });
 
@@ -342,5 +378,78 @@ describe("fake agent harness failure injection and resumption", () => {
     const resumed = await collect(harness.resume(resumption));
 
     expect(resumed.map((event) => [event.type, event.sequence])).toEqual([["completed", 3]]);
+  });
+});
+
+describe("fake agent harness detail events and view copies", () => {
+  it("carries normalized detail events through the port", async () => {
+    const harness = createHarness([
+      { kind: "emit", event: { type: "started" } },
+      {
+        kind: "emit",
+        event: { type: "plan", planDigest: digest("7"), summary: "Split the adapter." }
+      },
+      {
+        kind: "emit",
+        event: { type: "file_change", path: "packages/domain/src/index.ts", change: "modified" }
+      },
+      {
+        kind: "emit",
+        event: {
+          type: "usage",
+          tokens: {
+            input: { state: "reported", value: 1_200 },
+            output: { state: "reported", value: 340 },
+            cachedInput: { state: "unknown" },
+            reasoning: { state: "unknown" }
+          },
+          cost: { state: "unknown" }
+        }
+      },
+      { kind: "emit", event: { type: "completed", evidenceDigests: [digest("3")] } }
+    ]);
+
+    const events = await collect(harness.start(invocation));
+
+    expect(events.map((event) => event.type)).toEqual([
+      "started",
+      "plan",
+      "file_change",
+      "usage",
+      "completed"
+    ]);
+    expect(events.map((event) => event.sequence)).toEqual([1, 2, 3, 4, 5]);
+    for (const event of events) {
+      expect(AgentSessionStreamEventSchema.parse(event)).toEqual(event);
+    }
+  });
+
+  it("refuses a detail event the contract rejects", async () => {
+    const harness = createHarness([
+      { kind: "emit", event: { type: "started" } },
+      {
+        kind: "emit",
+        event: { type: "file_change", path: "../outside/secrets.env", change: "modified" }
+      }
+    ]);
+
+    await expect(collect(harness.start(invocation))).rejects.toThrow();
+  });
+
+  it("hands out copies so a consumer cannot mutate recorded state", async () => {
+    const harness = createHarness([
+      { kind: "emit", event: { type: "started" } },
+      { kind: "await_steer", reason: "awaiting reviewer direction" }
+    ]);
+    const iterator = harness.start(invocation)[Symbol.asyncIterator]();
+    await iterator.next();
+    await iterator.next();
+    await harness.steer(steer);
+
+    const view = harness.sentMessages;
+    view.slice().pop();
+    expect(harness.sentMessages).toEqual([steer]);
+    expect(harness.sentMessages).not.toBe(view);
+    expect(harness.permissionResponses).not.toBe(harness.permissionResponses);
   });
 });
