@@ -8,7 +8,12 @@
 semantics; every pre-existing test passes unmodified.
 
 Wave 1 stream leads: read the **Additions** section for the new shapes you are expected to build
-against, and the **Escalated** section for the two changes that Task 0.1 could not make.
+against, and the **Resolved escalations** section for the two ingress-enum changes the orchestrator
+approved after the first review pass.
+
+**Revision 2 (post-review):** adds the station-evidence digest contract (item 11), applies the two
+orchestrator-approved ingress-enum widenings (item 15 / E1 / E2, now resolved), and adds approval
+inbox paging (item 20).
 
 ## Verdict summary
 
@@ -28,7 +33,7 @@ against, and the **Escalated** section for the two changes that Task 0.1 could n
 | 12  | Bounded implement→review rework (§8.3)                  | GAP — fixed (counter was sufficient; the edge was not) |
 | 13  | Clarification question/answer                           | GAP — fixed                                            |
 | 14  | `PublishScope` binds branch + repo + diff (§14.2)       | SUFFICIENT                                             |
-| 15  | Ingress delivery identifiers (§15)                      | SUFFICIENT (see Escalated E1)                          |
+| 15  | Ingress delivery identifiers (§15)                      | SUFFICIENT — event coverage widened, see E1/E2         |
 | 16  | Editable GitHub progress comments (§4.4)                | GAP — fixed                                            |
 | 17  | Draft-PR body content (§4.4)                            | GAP — fixed                                            |
 | 18  | Slack approval interactivity (§4.3)                     | GAP — fixed                                            |
@@ -204,6 +209,42 @@ address — `TriageReportSchema` (`:44`), `PlanDocumentSchema` (`:90`), `Verific
 
 The existing evidence schemas are unchanged; these documents are what their digests cover.
 
+**Digest contract (revision 2).** Declaring the documents was not enough: `planDigest`,
+`verificationReportDigest`, and the fields that reference them had no byte-level serialization, so S1
+(producer) and S4 (staleness verifier) could each have computed a different digest over the same
+document. The station documents now follow the same canonicalize/digest/admit pattern as
+`canonicalizePublishScopeForDigest` / `digestPublishScope` / `admitPublicationEvidenceBundle`
+(`pipeline.ts:354-383`):
+
+| Helper                                                          | Purpose                                                                |
+| --------------------------------------------------------------- | ---------------------------------------------------------------------- |
+| `canonicalizePlanDocumentForDigest` (`station-evidence.ts:288`) | Explicit field list under domain `autostack.plan-document`             |
+| `digestPlanDocument` (`:305`)                                   | Parse, canonicalize, SHA-256                                           |
+| `admitPlanDocument` (`:363`)                                    | Rejects a plan whose `planDigest` does not cover its own content       |
+| `canonicalizeVerificationReportForDigest` (`:317`)              | Explicit field list under domain `autostack.verification-report`       |
+| `digestVerificationReport` (`:331`)                             | Parse, canonicalize, SHA-256                                           |
+| `admitVerificationReport` (`:372`)                              | Rejects a report not bound to the plan it names, or from another run   |
+| `admitReviewReport` (`:385`)                                    | Rejects a review not bound to this plan and this verification evidence |
+
+Two canonicalization rules that S1 and S4 must both honour, and which differ deliberately:
+
+- **The plan document excludes `planDigest` and `producedAt`.** `planDigest` is the digest itself.
+  `producedAt` is record metadata, not approved content — spec §14.2 invalidates an approval only
+  when the plan changes _materially_, so re-planning byte-identical content must digest identically.
+  This mirrors `canonicalizePublishScopeForDigest`, which likewise excludes `createdAt`.
+- **The verification report covers every field, including timestamps and durations.** It has no
+  self-digest field to exclude, and unlike a plan it is evidence of one specific execution rather
+  than approved content, so the binding from a review to the exact verification run it read should be
+  strict.
+
+`canonicalJson` (`runner.ts:455`) sorts object keys before hashing, so the key order in the
+canonicalize functions does not affect the digest; array order does, which is correct for ordered
+acceptance criteria and verification commands.
+
+`ReviewReportSchema.reviewedDiffDigest` is intentionally **not** derived here — it is a reference to
+`ImplementationEvidenceSchema.finalDiffDigest`, and `PublicationEvidenceBundleSchema`
+(`pipeline.ts:284`) already enforces that binding.
+
 ### 12. Bounded implement→review rework — GAP (partly sufficient)
 
 The **counter** is durable and sufficient: `StageRunSchema.attempt`
@@ -251,7 +292,8 @@ Both ingress variants carry `deliveryId` and `deduplicationKey`
 deduplication need. Socket Mode ack semantics are a transport concern above this contract: the
 envelope is acked, then the durable queue processes the deduplicated delivery (§13.2). No addition.
 
-**But see Escalated E1** — the ingress _event_ enums do not cover every §4.4/§4.3 trigger.
+The ingress _event_ enums did not originally cover every §4.4/§4.3 trigger; the orchestrator approved
+widening them in revision 2 — see **Resolved escalations** below.
 
 ### 16. Editable GitHub progress comments — GAP
 
@@ -319,28 +361,40 @@ decision is detectable) and `ApprovalDecisionResponseSchema` (`:148`, with `repl
 re-decision), `SteerRunRequestSchema`/`SteerRunResponseSchema` (`:158`, `:162`), and
 `CancelRunRequestSchema`/`CancelRunResponseSchema` (`:166`, `:170`).
 
+`ListApprovalsQuerySchema` also carries an optional `cursor` (coerced positive integer) so a client
+can feed `ListApprovalsResponseSchema.nextCursor` back in and page past the first window — the
+response advertised a cursor the query could not consume until revision 2.
+
+`ApprovalSummarySchema.kind`/`.status` and `ListApprovalsQuerySchema.status` reuse
+`ApprovalSchema.shape.kind` / `.shape.status` from `entities.ts` rather than re-declaring the
+vocabulary, so the HTTP surface cannot drift from the domain entity.
+`ApprovalDecisionResponseSchema.status` keeps its own narrower enum on purpose — a decided approval
+can never be `pending`.
+
 `ApiErrorSchema`'s code enum (`:80`) gains nothing: `run_not_found`, `invalid_request`,
 `version_conflict`, and `idempotency_conflict` already cover approval failures, and adding members to
 an existing enum is outside the append-only mandate.
 
-## Escalated — orchestrator action required before S5 starts
+## Resolved escalations
 
-These two changes cannot be made append-only. Both require adding members to an existing `z.enum`
-inside an existing schema, which Task 0.1's mandate forbids. Recommend the orchestrator applies them
-on the base branch before cutting the S5 worktree.
+Both items were escalated in revision 1 because widening an existing `z.enum` falls outside the
+append-only mandate. The orchestrator approved both, and revision 2 applies them on this branch,
+before the Wave 1 worktrees are cut. Each widens inbound parsing only — no consumer exists yet that
+switches on these values, so no downstream code can break.
 
-**E1 — GitHub ingress event coverage.** `GitHubIngressDeliverySchema.event`
-(`packages/contracts/src/integration.ts:31`) admits only `issues.opened`, `issues.edited`, and
-`issue_comment.created`. Spec §4.4 and acceptance criterion 4 require intake from "an issue labeled
-`autostack`" — labelling an _existing_ issue emits `issues.labeled`, which cannot be represented.
-Recommended: add `issues.labeled`.
+**E1 — GitHub ingress event coverage — RESOLVED.** `GitHubIngressDeliverySchema.event`
+(`packages/contracts/src/integration.ts:31`) now admits `issues.labeled` alongside `issues.opened`,
+`issues.edited`, and `issue_comment.created`. Spec §4.4 and acceptance criterion 4 require intake
+from "an issue labeled `autostack`", and labelling an _existing_ issue emits `issues.labeled`.
 
-**E2 — Slack ingress event coverage.** `SlackIngressDeliverySchema.event`
-(`packages/contracts/src/integration.ts:53`) admits only `app_mention` and `message`. Spec §4.3 and
-acceptance criterion 3 require invocation from "a DM, mention, or **message action**" — the shortcut
-arrives as an interactive payload with no matching event value. Recommended: add `message_action`
-(the delivery's existing `channelId`/`threadTs`/`messageTs`/`userId` fields already carry everything
-the shortcut needs).
+**E2 — Slack ingress event coverage — RESOLVED.** `SlackIngressDeliverySchema.event`
+(`packages/contracts/src/integration.ts:57`) now admits `message_action` alongside `app_mention` and
+`message`. Spec §4.3 and acceptance criterion 3 require invocation from "a DM, mention, or **message
+action**"; the delivery's existing `channelId`/`threadTs`/`messageTs`/`userId` fields already carry
+everything the shortcut needs.
+
+Unmodelled provider events are still rejected — S5 must escalate rather than widen these enums
+silently.
 
 ## Explicit deferrals
 
@@ -355,31 +409,43 @@ the shortcut needs).
 
 ## Verification
 
-- `pnpm --filter @autostack/contracts test` — 268 passed (15 files).
-- `pnpm --filter @autostack/contracts test:coverage` — statements 90.5%, branches 82.3%,
-  functions 93.5%, lines 92.0%; `station-evidence.ts` at 100%.
+- `pnpm --filter @autostack/contracts test` — 282 passed (15 files).
+- `pnpm --filter @autostack/contracts test:coverage` — statements 90.6%, branches 82.5%,
+  functions 93.8%, lines 92.2%; `station-evidence.ts` at 100%.
 - `pnpm check` — 12/12 tasks successful.
-- `pnpm test` (whole monorepo) — 21/21 tasks successful, run twice.
 - `pnpm format:check` — clean across `packages/contracts` and `docs/development`. See the notes below
   for pre-existing failures elsewhere in the repository.
 
-**Test-timeout change.** `packages/contracts/vitest.config.ts` now sets `testTimeout: 20_000`. The
-pre-existing `events.test.ts > accepts one ordered local execution evidence stream` case is
-crypto-digest bound and took 2.7s at the base commit against the 5s default; the extra test file
-added here pushes it to ~4.5s under parallel load, close enough to the default to flake. No assertion
-was weakened — only the wall-clock budget was raised.
+**Test-timeout note.** Revision 1 raised `testTimeout` package-wide in
+`packages/contracts/vitest.config.ts`; revision 2 reverts that and scopes the allowance to the single
+case that needs it — `events.test.ts > accepts one ordered local execution evidence stream` now
+carries `{ timeout: 15_000 }`. That case is crypto-digest bound: it hashes the whole local-execution
+evidence stream and took 2.7s at the base commit against the 5s default, which leaves no margin once
+the suite's files run in parallel. No assertion was weakened; only that one case's wall-clock budget
+changed.
 
-**Pre-existing gate failure (not introduced here):** at the Task 0.1 base commit `e8ec2e6`,
-`pnpm format:check` already fails on eight files that Task 0.1 does not touch —
-`apps/desktop/e2e/fixtures/quick-exit-probe.ts`, `apps/desktop/e2e/fixtures/seed-execution.ts`,
-`apps/desktop/src/guardian/bootstrap-router.ts`, `apps/desktop/src/renderer/main.tsx`,
-`scripts/verify-local-execution.mjs`, `docs/superpowers/plans/2026-08-26-autostack-milestone-a-parallel.md`,
-and two untracked files under `.superpowers/`. Since the plan's global constraints make
-`pnpm format:check` a merge gate for every stream, this blocks all of Wave 1 until fixed.
-Recommended: a separate `chore: apply prettier` commit on the base branch, plus adding
-`.superpowers/` to `.prettierignore` (it is excluded from Git but not from Prettier).
+## Pre-existing gate failures (not introduced by this task)
 
-**Second pre-existing gate failure (not introduced here):** `pnpm test:coverage` fails on
-`@autostack/cli` at the base commit with identical numbers before and after this task — statements
-50.59%, branches 49.07%, functions 60%, lines 53.77% against the 80% floor. This also blocks every
-Wave 1 stream's merge gate and needs an owner before Wave 1 merges begin.
+All three were verified by stashing this task's changes and re-running against the base commit. Since
+the plan's global constraints make these merge gates for every stream, they block all of Wave 1 until
+they have an owner.
+
+1. **`pnpm format:check` fails on eight untouched files** — `apps/desktop/e2e/fixtures/quick-exit-probe.ts`,
+   `apps/desktop/e2e/fixtures/seed-execution.ts`, `apps/desktop/src/guardian/bootstrap-router.ts`,
+   `apps/desktop/src/renderer/main.tsx`, `scripts/verify-local-execution.mjs`,
+   `docs/superpowers/plans/2026-08-26-autostack-milestone-a-parallel.md`, and two files under
+   `.superpowers/`. Recommended: a separate `chore: apply prettier` commit on the base branch, plus
+   adding `.superpowers/` to `.prettierignore` — it is excluded from Git via `.git/info/exclude` but
+   not from Prettier, which is why the orchestrator's own working files trip the gate.
+2. **`pnpm test:coverage` fails on `@autostack/cli`** — statements 50.59%, branches 49.07%,
+   functions 60%, lines 53.77% against the 80% floor, identical before and after this task.
+3. **`@autostack/runner-local` has a load-dependent flake.** A full `pnpm test` intermittently fails
+   two cases in that package with 5s timeouts. It is not a regression from Task 0.1, and the
+   evidence is that a **different pair of tests fails on each run**: `worktree-manager.test.ts` with
+   this task's changes applied, `command-guardian.test.ts` with them stashed and the base commit's
+   contracts checked out. `worktree-manager.test.ts` passes 60/60 in isolation but spends ~84s in
+   real Git subprocesses, and the package reports ~670s of test time inside ~137s of wall clock, so
+   its own internal parallelism is enough to starve individual cases. This is the same class of
+   latent flake as the contracts case noted above, and the same fix applies: a per-test timeout on
+   the Git- and IPC-bound cases. Those files are in Stream S2's and I2's lane, so Task 0.1 did not
+   touch them.
