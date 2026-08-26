@@ -323,3 +323,61 @@ describe("slack approval interactivity", () => {
     expect(() => SlackApprovalPromptSchema.parse({ ...prompt(), kind: "deploy" })).toThrow();
   });
 });
+
+describe("ingress trigger coverage", () => {
+  it("accepts a labelled GitHub issue as intake", () => {
+    const delivery = IngressDeliverySchema.parse({
+      schemaVersion: 1,
+      provider: "github",
+      deliveryId: "github-delivery-1",
+      deduplicationKey: "github:issues.labeled:1",
+      receivedAt: "2026-08-23T12:00:00.000Z",
+      event: "issues.labeled",
+      repository: { id: "repo-1", fullName: "NeelM0906/Factory" },
+      issue: {
+        number: 7,
+        title: "Local runs cannot resume after a restart",
+        body: "Steps to reproduce...",
+        authorId: "user-1"
+      }
+    });
+    expect(delivery.event).toBe("issues.labeled");
+  });
+
+  it("accepts a Slack message shortcut as intake", () => {
+    const delivery = IngressDeliverySchema.parse({
+      schemaVersion: 1,
+      provider: "slack",
+      deliveryId: "slack-delivery-1",
+      deduplicationKey: "slack:message_action:1756000000.000100",
+      receivedAt: "2026-08-23T12:00:00.000Z",
+      event: "message_action",
+      slackWorkspaceId: "T123",
+      channelId: "C123",
+      threadTs: "1756000000.000100",
+      messageTs: "1756000000.000100",
+      userId: "U123",
+      text: "Please fix the restart bug"
+    });
+    expect(delivery.event).toBe("message_action");
+  });
+
+  it("still rejects an unmodelled provider event", () => {
+    expect(() =>
+      IngressDeliverySchema.parse({
+        schemaVersion: 1,
+        provider: "slack",
+        deliveryId: "slack-delivery-2",
+        deduplicationKey: "slack:reaction_added:1",
+        receivedAt: "2026-08-23T12:00:00.000Z",
+        event: "reaction_added",
+        slackWorkspaceId: "T123",
+        channelId: "C123",
+        threadTs: "1756000000.000100",
+        messageTs: "1756000000.000100",
+        userId: "U123",
+        text: "ignored"
+      })
+    ).toThrow();
+  });
+});

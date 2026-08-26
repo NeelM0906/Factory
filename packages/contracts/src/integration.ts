@@ -1,5 +1,6 @@
 import { z } from "zod";
 
+import { ApprovalSchema } from "./entities.js";
 import {
   ApprovalIdSchema,
   CredentialRefIdSchema,
@@ -28,7 +29,7 @@ const GitHubIngressDeliverySchema = z
     deliveryId: StableRefSchema,
     deduplicationKey: StableRefSchema,
     receivedAt: TimestampSchema,
-    event: z.enum(["issues.opened", "issues.edited", "issue_comment.created"]),
+    event: z.enum(["issues.opened", "issues.edited", "issues.labeled", "issue_comment.created"]),
     repository: z
       .object({ id: StableRefSchema, fullName: z.string().regex(/^[^/\s]+\/[^/\s]+$/) })
       .strict(),
@@ -50,7 +51,7 @@ const SlackIngressDeliverySchema = z
     deliveryId: StableRefSchema,
     deduplicationKey: StableRefSchema,
     receivedAt: TimestampSchema,
-    event: z.enum(["app_mention", "message"]),
+    event: z.enum(["app_mention", "message", "message_action"]),
     slackWorkspaceId: StableRefSchema,
     channelId: StableRefSchema,
     threadTs: StableRefSchema,
@@ -210,7 +211,7 @@ export const DraftPullRequestBodySchema = z
   })
   .strict();
 
-const ApprovalKindSchema = z.enum(["plan", "publish", "permission"]);
+const ApprovalKindSchema = ApprovalSchema.shape.kind;
 
 /** An approval prompt posted into a bound Slack thread with its evidence digest (spec §4.3). */
 export const SlackApprovalPromptSchema = z
