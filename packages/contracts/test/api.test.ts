@@ -1,9 +1,11 @@
 import { describe, expect, it } from "vitest";
 
+import { ApprovalSchema } from "../src/entities.js";
 import {
   ApiErrorSchema,
   ApprovalDecisionRequestSchema,
   ApprovalDecisionResponseSchema,
+  ApprovalSummarySchema,
   CancelRunRequestSchema,
   CreateRunRequestSchema,
   CreateRunResponseSchema,
@@ -139,6 +141,17 @@ describe("HTTP contracts", () => {
 describe("approval and steering HTTP contracts", () => {
   const APPROVAL_ID = "apr_123e4567-e89b-42d3-a456-426614174000";
   const DIGEST = "a".repeat(64);
+  const approvalSummary = () => ({
+    approvalId: APPROVAL_ID,
+    runId: RUN_ID,
+    workItemId: WORK_ITEM_ID,
+    title: "Add local durability",
+    kind: "plan" as const,
+    status: "pending" as const,
+    evidenceDigest: DIGEST,
+    requestedAt: NOW,
+    updatedAt: NOW
+  });
 
   it("defaults the approval inbox to pending work", () => {
     expect(ListApprovalsQuerySchema.parse({})).toEqual({ status: "pending", limit: 25 });
@@ -148,6 +161,29 @@ describe("approval and steering HTTP contracts", () => {
     });
     expect(() => ListApprovalsQuerySchema.parse({ limit: 0 })).toThrow();
     expect(() => ListApprovalsQuerySchema.parse({ status: "unknown" })).toThrow();
+  });
+
+  it("pages past the first window using the cursor it hands back", () => {
+    expect(ListApprovalsQuerySchema.parse({}).cursor).toBeUndefined();
+    expect(ListApprovalsQuerySchema.parse({ cursor: "101" }).cursor).toBe(101);
+
+    const page = ListApprovalsResponseSchema.parse({ items: [], nextCursor: 101 });
+    expect(ListApprovalsQuerySchema.parse({ cursor: String(page.nextCursor) }).cursor).toBe(
+      page.nextCursor
+    );
+
+    expect(() => ListApprovalsQuerySchema.parse({ cursor: "0" })).toThrow();
+    expect(() => ListApprovalsQuerySchema.parse({ cursor: "not-a-cursor" })).toThrow();
+  });
+
+  it("accepts every approval kind and status the domain declares", () => {
+    for (const kind of ApprovalSchema.shape.kind.options) {
+      expect(ApprovalSummarySchema.parse({ ...approvalSummary(), kind }).kind).toBe(kind);
+    }
+    for (const status of ApprovalSchema.shape.status.options) {
+      expect(ApprovalSummarySchema.parse({ ...approvalSummary(), status }).status).toBe(status);
+      expect(ListApprovalsQuerySchema.parse({ status }).status).toBe(status);
+    }
   });
 
   it("summarizes pending approvals with the evidence a reviewer must see", () => {
@@ -206,6 +242,13 @@ describe("approval and steering HTTP contracts", () => {
       SteerRunResponseSchema.parse({ runId: RUN_ID, accepted: true, acceptedAt: NOW }).accepted
     ).toBe(true);
     expect(() => SteerRunRequestSchema.parse({ instruction: "   " })).toThrow();
+    expect(CancelRunRequestSchema.parse({ reason: "No longer needed" }).reason).toBe(
+      "No longer needed"
+    );
+    expect(() => CancelRunRequestSchema.parse({ reason: "" })).toThrow();
+  });
+
+  it("rejects credential material pasted into operator free text", () => {
     expect(() =>
       SteerRunRequestSchema.parse({
         instruction: "authenticate with ghp_abcdefghijklmnopqrstuvwxyz01"
@@ -222,9 +265,5 @@ describe("approval and steering HTTP contracts", () => {
         note: "use ghp_abcdefghijklmnopqrstuvwxyz01"
       })
     ).toThrow();
-    expect(CancelRunRequestSchema.parse({ reason: "No longer needed" }).reason).toBe(
-      "No longer needed"
-    );
-    expect(() => CancelRunRequestSchema.parse({ reason: "" })).toThrow();
   });
 });

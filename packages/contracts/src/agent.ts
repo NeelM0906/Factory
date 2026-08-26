@@ -354,6 +354,7 @@ export const AgentSessionStreamEventSchema = z.discriminatedUnion("type", [
 ]);
 
 export type AgentHarnessProfile = z.infer<typeof AgentHarnessProfileSchema>;
+export type AgentPermissionOptionKind = z.infer<typeof AgentPermissionOptionKindSchema>;
 export type AgentPermissionOption = z.infer<typeof AgentPermissionOptionSchema>;
 export type AgentPermissionRequest = z.infer<typeof AgentPermissionRequestSchema>;
 export type AgentPermissionResponse = z.infer<typeof AgentPermissionResponseSchema>;

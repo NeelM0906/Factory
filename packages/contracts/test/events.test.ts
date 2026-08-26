@@ -837,7 +837,10 @@ describe("domain event contracts", () => {
     );
   });
 
-  it("accepts one ordered local execution evidence stream", async () => {
+  // Crypto-digest bound: this case hashes the whole local-execution evidence stream and runs a
+  // few seconds of real SHA-256, which has no margin under the 5s default when the suite's files
+  // run in parallel.
+  it("accepts one ordered local execution evidence stream", { timeout: 15_000 }, async () => {
     const localBodies = await localEventBodies();
     const disposalIndex = localBodies.findIndex((body) => body.type === "environment.disposed");
     if (disposalIndex === -1) throw new TypeError("Fixture is missing disposal evidence.");

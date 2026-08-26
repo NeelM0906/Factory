@@ -8,7 +8,8 @@ import {
   AgentSessionDetailEventSchema,
   AgentSessionEventSchema,
   AgentSessionStreamEventSchema,
-  admitAgentPermissionResponse
+  admitAgentPermissionResponse,
+  type AgentPermissionOptionKind
 } from "../src/agent.js";
 
 const ids = {
@@ -200,6 +201,25 @@ describe("agent harness profile contracts", () => {
 });
 
 describe("agent permission round trip", () => {
+  it("names every permission option kind through an exported type", () => {
+    const kinds: readonly AgentPermissionOptionKind[] = [
+      "allow_once",
+      "allow_always",
+      "deny_once",
+      "deny_always"
+    ];
+    expect(new Set(kinds).size).toBe(4);
+    const request = permissionRequest();
+    for (const kind of kinds) {
+      expect(
+        AgentPermissionRequestSchema.parse({
+          ...request,
+          options: [{ optionId: "chosen", kind, label: "Chosen" }, request.options[1]]
+        }).options[0]?.kind
+      ).toBe(kind);
+    }
+  });
+
   it("requires unique options and an explicit denial option", () => {
     expect(AgentPermissionRequestSchema.parse(permissionRequest()).options).toHaveLength(2);
 

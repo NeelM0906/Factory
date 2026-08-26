@@ -1,6 +1,12 @@
 import { z } from "zod";
 
-import { RunSchema, RunStageSchema, RunStatusSchema, WorkItemSchema } from "./entities.js";
+import {
+  ApprovalSchema,
+  RunSchema,
+  RunStageSchema,
+  RunStatusSchema,
+  WorkItemSchema
+} from "./entities.js";
 import { StoredDomainEventSchema } from "./events.js";
 import { ApprovalIdSchema, RunIdSchema, WorkItemIdSchema } from "./ids.js";
 import { SafeMetadataStringSchema } from "./secret-safety.js";
@@ -114,8 +120,8 @@ export const ApprovalSummarySchema = z
     runId: RunIdSchema,
     workItemId: WorkItemIdSchema,
     title: z.string().min(1).max(240),
-    kind: z.enum(["plan", "publish", "permission"]),
-    status: z.enum(["pending", "approved", "rejected", "stale"]),
+    kind: ApprovalSchema.shape.kind,
+    status: ApprovalSchema.shape.status,
     evidenceDigest: Sha256Schema,
     requestedAt: z.iso.datetime(),
     updatedAt: z.iso.datetime()
@@ -125,8 +131,9 @@ export const ApprovalSummarySchema = z
 /** Query for the approval inbox. Values arrive as strings from the query string. */
 export const ListApprovalsQuerySchema = z
   .object({
-    status: z.enum(["pending", "approved", "rejected", "stale"]).default("pending"),
-    limit: z.coerce.number().int().min(1).max(100).default(25)
+    status: ApprovalSchema.shape.status.default("pending"),
+    limit: z.coerce.number().int().min(1).max(100).default(25),
+    cursor: z.coerce.number().int().positive().optional()
   })
   .strict();
 
