@@ -397,11 +397,18 @@ export type AgentSteerRequest = z.infer<typeof AgentSteerRequestSchema>;
 export type AgentCancelRequest = z.infer<typeof AgentCancelRequestSchema>;
 export type AgentSessionEvent = z.infer<typeof AgentSessionEventSchema>;
 
-/** Vendor-neutral lifecycle boundary. Model routing is intentionally a separate port. */
+/**
+ * Vendor-neutral lifecycle boundary. Model routing is intentionally a separate port.
+ *
+ * The stream carries `AgentSessionStreamEvent` — lifecycle plus normalized detail events in one
+ * sequence space — because that is what `AgentSessionStreamEventSchema` describes adapters as
+ * emitting. Narrowing it to `AgentSessionEvent` would have made the detail events unreachable
+ * through the only boundary an adapter has.
+ */
 export interface AgentHarnessPort {
   readonly descriptor: AgentHarnessDescriptor;
-  start(request: AgentInvocationRequest): AsyncIterable<AgentSessionEvent>;
-  resume(request: AgentResumeRequest): AsyncIterable<AgentSessionEvent>;
+  start(request: AgentInvocationRequest): AsyncIterable<AgentSessionStreamEvent>;
+  resume(request: AgentResumeRequest): AsyncIterable<AgentSessionStreamEvent>;
   steer(request: AgentSteerRequest): Promise<void>;
   cancel(request: AgentCancelRequest): Promise<void>;
 }

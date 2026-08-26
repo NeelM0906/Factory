@@ -9,7 +9,9 @@ import {
   AgentSessionEventSchema,
   AgentSessionStreamEventSchema,
   admitAgentPermissionResponse,
-  type AgentPermissionOptionKind
+  type AgentHarnessPort,
+  type AgentPermissionOptionKind,
+  type AgentSessionStreamEvent
 } from "../src/agent.js";
 
 const ids = {
@@ -332,5 +334,54 @@ describe("normalized agent session detail events", () => {
         change: "modified"
       })
     ).toThrow();
+  });
+});
+
+describe("agent harness port", () => {
+  const invocation = () =>
+    AgentInvocationRequestSchema.parse({
+      schemaVersion: 1,
+      idempotencyKey: "agent-invoke:run:implement:1",
+      ...ids,
+      adapterId: "claude.local.v1",
+      objective: "Implement the approved plan.",
+      cwd: "/workspace/factory",
+      inputEvidenceDigests: [digest("c")]
+    });
+
+  it("carries normalized detail events, not only the lifecycle union", async () => {
+    const harness: AgentHarnessPort = {
+      descriptor: AgentHarnessDescriptorSchema.parse(harnessProfile().descriptor),
+      async *start() {
+        yield AgentSessionStreamEventSchema.parse({
+          ...eventContext,
+          sequence: 1,
+          type: "started",
+          providerSessionRef: "provider-session-1"
+        });
+        yield AgentSessionStreamEventSchema.parse({
+          ...eventContext,
+          sequence: 2,
+          type: "plan",
+          planDigest: digest("d"),
+          summary: "Split the adapter from the transport."
+        });
+      },
+      async *resume() {
+        yield AgentSessionStreamEventSchema.parse({
+          ...eventContext,
+          sequence: 3,
+          type: "file_change",
+          path: "packages/contracts/src/agent.ts",
+          change: "modified"
+        });
+      },
+      steer: async () => undefined,
+      cancel: async () => undefined
+    };
+
+    const started: AgentSessionStreamEvent[] = [];
+    for await (const event of harness.start(invocation())) started.push(event);
+    expect(started.map((event) => event.type)).toEqual(["started", "plan"]);
   });
 });
