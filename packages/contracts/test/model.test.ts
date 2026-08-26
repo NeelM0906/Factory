@@ -1,7 +1,10 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  MODEL_ROUTING_FAILURE_CODES,
   ModelCatalogEntrySchema,
+  ModelRoutingError,
+  ModelRoutingFailureSchema,
   ModelPolicySchema,
   ModelRouteFallbackSchema,
   ModelRouteSchema,
@@ -268,5 +271,63 @@ describe("model policy", () => {
         fallbackRouteRefs: ["route.openrouter.default", "route.openrouter.default"]
       })
     ).toThrow();
+  });
+});
+
+describe("model routing failures", () => {
+  const failure = () => ({
+    schemaVersion: 1 as const,
+    code: "rate_limited" as const,
+    message: "The gateway returned 429 for the requested provider.",
+    retryable: true,
+    routeRef: "route.gateway.default",
+    requestedModel: "anthropic/claude-sonnet-4"
+  });
+
+  it("declares the whole routing taxonomy the streams share", () => {
+    expect([...MODEL_ROUTING_FAILURE_CODES]).toEqual([
+      "capability_unavailable",
+      "route_disabled",
+      "provider_error",
+      "rate_limited",
+      "budget_exceeded"
+    ]);
+  });
+
+  it("admits an attributed failure and rejects an unmodelled code", () => {
+    const parsed = ModelRoutingFailureSchema.parse(failure());
+    expect(parsed.code).toBe("rate_limited");
+    expect(parsed.routeRef).toBe("route.gateway.default");
+    expect(() => ModelRoutingFailureSchema.parse({ ...failure(), code: "kaput" })).toThrow();
+    expect(() => ModelRoutingFailureSchema.parse({ ...failure(), attempt: 2 })).toThrow();
+  });
+
+  it("keeps the transient and deterministic split honest", () => {
+    expect(() => ModelRoutingFailureSchema.parse({ ...failure(), retryable: false })).toThrow();
+    for (const code of ["capability_unavailable", "route_disabled", "budget_exceeded"] as const) {
+      expect(() =>
+        ModelRoutingFailureSchema.parse({ ...failure(), code, retryable: true })
+      ).toThrow();
+      expect(
+        ModelRoutingFailureSchema.parse({ ...failure(), code, retryable: false }).retryable
+      ).toBe(false);
+    }
+    for (const retryable of [true, false]) {
+      expect(
+        ModelRoutingFailureSchema.parse({ ...failure(), code: "provider_error", retryable })
+          .retryable
+      ).toBe(retryable);
+    }
+  });
+
+  it("raises a typed error that carries the admitted failure", () => {
+    const error = new ModelRoutingError(failure());
+    expect(error).toBeInstanceOf(Error);
+    expect(error.name).toBe("ModelRoutingError");
+    expect(error.message).toBe("The gateway returned 429 for the requested provider.");
+    expect(error.code).toBe("rate_limited");
+    expect(error.retryable).toBe(true);
+    expect(error.failure).toEqual(ModelRoutingFailureSchema.parse(failure()));
+    expect(() => new ModelRoutingError({ ...failure(), code: "kaput" })).toThrow();
   });
 });

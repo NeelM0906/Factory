@@ -237,6 +237,80 @@ export const ModelRouteFallbackSchema = z
     }
   });
 
+/**
+ * The shared vocabulary for a route that could not be resolved (spec §8.3, §10.1). Every stream
+ * that raises or classifies a routing failure uses these codes, so the retry decision is read from
+ * the taxonomy rather than from provider prose.
+ */
+export const MODEL_ROUTING_FAILURE_CODES = [
+  "capability_unavailable",
+  "route_disabled",
+  "provider_error",
+  "rate_limited",
+  "budget_exceeded"
+] as const;
+export const ModelRoutingFailureCodeSchema = z.enum(MODEL_ROUTING_FAILURE_CODES);
+
+/** Codes that describe the request itself, not the moment: retrying the same request cannot help. */
+const DETERMINISTIC_ROUTING_FAILURE_CODES = new Set<string>([
+  "capability_unavailable",
+  "route_disabled",
+  "budget_exceeded"
+]);
+
+/** Codes that describe the moment, not the request: the same request can succeed later. */
+const TRANSIENT_ROUTING_FAILURE_CODES = new Set<string>(["rate_limited"]);
+
+export const ModelRoutingFailureSchema = z
+  .object({
+    schemaVersion: VersionSchema,
+    code: ModelRoutingFailureCodeSchema,
+    message: SafeMetadataStringSchema.max(2_000),
+    retryable: z.boolean(),
+    routeRef: StableRefSchema.optional(),
+    requestedModel: StableRefSchema.optional()
+  })
+  .strict()
+  .superRefine((value, context) => {
+    if (DETERMINISTIC_ROUTING_FAILURE_CODES.has(value.code) && value.retryable) {
+      context.addIssue({
+        code: "custom",
+        path: ["retryable"],
+        message: `A ${value.code} failure describes the request, so retrying it cannot succeed.`
+      });
+    }
+    if (TRANSIENT_ROUTING_FAILURE_CODES.has(value.code) && !value.retryable) {
+      context.addIssue({
+        code: "custom",
+        path: ["retryable"],
+        message: `A ${value.code} failure describes the moment, so it must stay retryable.`
+      });
+    }
+  });
+
+export type ModelRoutingFailureCode = z.infer<typeof ModelRoutingFailureCodeSchema>;
+export type ModelRoutingFailure = z.infer<typeof ModelRoutingFailureSchema>;
+
+/**
+ * The throwable form of a routing failure. `ModelRouterPort.resolve` returns a selection or raises,
+ * so the taxonomy has to survive as an error; admission happens in the constructor, which means an
+ * unmodelled code can never reach a caller's retry decision.
+ */
+export class ModelRoutingError extends Error {
+  readonly failure: ModelRoutingFailure;
+  readonly code: ModelRoutingFailureCode;
+  readonly retryable: boolean;
+
+  constructor(failure: unknown) {
+    const admitted = ModelRoutingFailureSchema.parse(failure);
+    super(admitted.message);
+    this.name = "ModelRoutingError";
+    this.failure = admitted;
+    this.code = admitted.code;
+    this.retryable = admitted.retryable;
+  }
+}
+
 export const MODEL_REASONING_LEVELS = ["none", "low", "medium", "high"] as const;
 export const ModelReasoningLevelSchema = z.enum(MODEL_REASONING_LEVELS);
 
