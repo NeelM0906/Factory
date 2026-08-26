@@ -5,7 +5,7 @@
   "type": "module",
   "exports": {
     ".": "./src/index.ts",
-    "./testing": "./src/testing/runner-provider-conformance.ts"
+    "./testing": "./src/testing/index.ts"
   },
   "scripts": {
     "build": "tsc -p tsconfig.json --noEmit",
