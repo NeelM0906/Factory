@@ -2,12 +2,15 @@ import { z } from "zod";
 
 import {
   AgentSessionIdSchema,
+  ApprovalIdSchema,
   CredentialRefIdSchema,
   EnvironmentIdSchema,
   RunIdSchema,
   StageRunIdSchema,
   WorkspaceIdSchema
 } from "./ids.js";
+import { ModelCostSchema, ModelTokenUsageSchema } from "./model.js";
+import { RelativeWorkspacePathSchema } from "./runner.js";
 import { SafeMetadataStringSchema } from "./secret-safety.js";
 
 const VersionSchema = z.literal(1);
@@ -157,6 +160,235 @@ export const AgentSessionEventSchema = z.discriminatedUnion("type", [
   z.object({ ...AgentEventContextShape, type: z.literal("cancelled") }).strict()
 ]);
 
+/**
+ * Declarative harness profile (spec §9.1). Capabilities the adapter cannot honour stay visibly
+ * unavailable, and installed/authenticated status is reported separately from capability.
+ */
+export const AgentHarnessProfileSchema = z
+  .object({
+    schemaVersion: VersionSchema,
+    descriptor: AgentHarnessDescriptorSchema,
+    selection: z
+      .object({
+        modelSelection: z.boolean(),
+        reasoningSelection: z.boolean(),
+        permissionModes: z.array(StableRefSchema).max(16)
+      })
+      .strict(),
+    availability: z
+      .object({
+        installed: z.boolean(),
+        authenticated: z.boolean(),
+        detail: SafeMetadataStringSchema.max(2_000).optional(),
+        checkedAt: TimestampSchema
+      })
+      .strict()
+  })
+  .strict()
+  .superRefine((value, context) => {
+    if (value.availability.authenticated && !value.availability.installed) {
+      context.addIssue({
+        code: "custom",
+        path: ["availability", "authenticated"],
+        message: "A harness cannot be authenticated while it is not installed."
+      });
+    }
+    const { permissionModes } = value.selection;
+    if (!value.descriptor.capabilities.permissions && permissionModes.length > 0) {
+      context.addIssue({
+        code: "custom",
+        path: ["selection", "permissionModes"],
+        message: "A harness without permission support cannot declare permission modes."
+      });
+    }
+    if (new Set(permissionModes).size !== permissionModes.length) {
+      context.addIssue({
+        code: "custom",
+        path: ["selection", "permissionModes"],
+        message: "Permission modes must be unique."
+      });
+    }
+  });
+
+export const AGENT_PERMISSION_OPTION_KINDS = [
+  "allow_once",
+  "allow_always",
+  "deny_once",
+  "deny_always"
+] as const;
+export const AgentPermissionOptionKindSchema = z.enum(AGENT_PERMISSION_OPTION_KINDS);
+
+export const AgentPermissionOptionSchema = z
+  .object({
+    optionId: StableRefSchema,
+    kind: AgentPermissionOptionKindSchema,
+    label: SafeMetadataStringSchema.max(200)
+  })
+  .strict();
+
+export const AgentPermissionRequestSchema = z
+  .object({
+    schemaVersion: VersionSchema,
+    sessionId: AgentSessionIdSchema,
+    permissionRef: StableRefSchema,
+    summary: SafeMetadataStringSchema.max(2_000),
+    evidenceDigest: DigestSchema,
+    options: z.array(AgentPermissionOptionSchema).min(1).max(16),
+    requestedAt: TimestampSchema
+  })
+  .strict()
+  .superRefine((value, context) => {
+    const optionIds = value.options.map((option) => option.optionId);
+    if (new Set(optionIds).size !== optionIds.length) {
+      context.addIssue({
+        code: "custom",
+        path: ["options"],
+        message: "Permission option identifiers must be unique."
+      });
+    }
+    if (
+      !value.options.some((option) => option.kind === "deny_once" || option.kind === "deny_always")
+    ) {
+      context.addIssue({
+        code: "custom",
+        path: ["options"],
+        message: "A permission request must offer a denial option."
+      });
+    }
+  });
+
+export const AgentPermissionResponseSchema = z
+  .object({
+    schemaVersion: VersionSchema,
+    idempotencyKey: IdempotencyKeySchema,
+    sessionId: AgentSessionIdSchema,
+    permissionRef: StableRefSchema,
+    approvalId: ApprovalIdSchema,
+    selectedOptionId: StableRefSchema,
+    evidenceDigest: DigestSchema,
+    decidedAt: TimestampSchema
+  })
+  .strict();
+
+const AgentSessionDetailEventOptions = [
+  z
+    .object({
+      ...AgentEventContextShape,
+      type: z.literal("message"),
+      role: z.enum(["assistant", "user"]),
+      text: SafeMetadataStringSchema.max(100_000)
+    })
+    .strict(),
+  z
+    .object({
+      ...AgentEventContextShape,
+      type: z.literal("thought_summary"),
+      text: SafeMetadataStringSchema.max(20_000)
+    })
+    .strict(),
+  z
+    .object({
+      ...AgentEventContextShape,
+      type: z.literal("plan"),
+      planDigest: DigestSchema,
+      summary: SafeMetadataStringSchema.max(20_000)
+    })
+    .strict(),
+  z
+    .object({
+      ...AgentEventContextShape,
+      type: z.literal("tool_call"),
+      toolCallRef: StableRefSchema,
+      name: SafeMetadataStringSchema.max(200),
+      phase: z.enum(["started", "completed", "failed"]),
+      detail: SafeMetadataStringSchema.max(20_000).optional()
+    })
+    .strict(),
+  z
+    .object({
+      ...AgentEventContextShape,
+      type: z.literal("file_change"),
+      path: RelativeWorkspacePathSchema,
+      change: z.enum(["added", "modified", "deleted"]),
+      diffDigest: DigestSchema.optional()
+    })
+    .strict(),
+  z
+    .object({
+      ...AgentEventContextShape,
+      type: z.literal("permission_resolved"),
+      permissionRef: StableRefSchema,
+      selectedOptionId: StableRefSchema
+    })
+    .strict(),
+  z
+    .object({
+      ...AgentEventContextShape,
+      type: z.literal("usage"),
+      tokens: ModelTokenUsageSchema,
+      cost: ModelCostSchema,
+      model: StableRefSchema.optional()
+    })
+    .strict(),
+  z
+    .object({
+      ...AgentEventContextShape,
+      type: z.literal("interrupted"),
+      reason: SafeMetadataStringSchema.max(2_000),
+      retryable: z.boolean(),
+      evidenceDigests: z.array(DigestSchema).max(100)
+    })
+    .strict()
+] as const;
+
+/** Normalized detail events (spec §9.1) that share the lifecycle stream's sequence space. */
+export const AgentSessionDetailEventSchema = z.discriminatedUnion(
+  "type",
+  AgentSessionDetailEventOptions
+);
+
+/** The complete normalized agent stream: lifecycle plus detail events, ordered by `sequence`. */
+export const AgentSessionStreamEventSchema = z.discriminatedUnion("type", [
+  ...AgentSessionEventSchema.options,
+  ...AgentSessionDetailEventOptions
+]);
+
+export type AgentHarnessProfile = z.infer<typeof AgentHarnessProfileSchema>;
+export type AgentPermissionOption = z.infer<typeof AgentPermissionOptionSchema>;
+export type AgentPermissionRequest = z.infer<typeof AgentPermissionRequestSchema>;
+export type AgentPermissionResponse = z.infer<typeof AgentPermissionResponseSchema>;
+export type AgentSessionDetailEvent = z.infer<typeof AgentSessionDetailEventSchema>;
+export type AgentSessionStreamEvent = z.infer<typeof AgentSessionStreamEventSchema>;
+
+/** Admits a permission decision only when it answers the request it claims to answer. */
+export const admitAgentPermissionResponse = (
+  request: unknown,
+  response: unknown
+): {
+  readonly request: AgentPermissionRequest;
+  readonly response: AgentPermissionResponse;
+} => {
+  const permissionRequest = AgentPermissionRequestSchema.parse(request);
+  const permissionResponse = AgentPermissionResponseSchema.parse(response);
+  if (permissionResponse.sessionId !== permissionRequest.sessionId) {
+    throw new TypeError("Permission response belongs to a different agent session.");
+  }
+  if (permissionResponse.permissionRef !== permissionRequest.permissionRef) {
+    throw new TypeError("Permission response does not answer this permission request.");
+  }
+  if (permissionResponse.evidenceDigest !== permissionRequest.evidenceDigest) {
+    throw new TypeError("Permission response decides stale permission evidence.");
+  }
+  if (
+    !permissionRequest.options.some(
+      (option) => option.optionId === permissionResponse.selectedOptionId
+    )
+  ) {
+    throw new TypeError("Permission response selects an option the request did not offer.");
+  }
+  return { request: permissionRequest, response: permissionResponse };
+};
+
 export type AgentHarnessDescriptor = z.infer<typeof AgentHarnessDescriptorSchema>;
 export type AgentInvocationRequest = z.infer<typeof AgentInvocationRequestSchema>;
 export type AgentResumeRequest = z.infer<typeof AgentResumeRequestSchema>;
@@ -171,4 +403,12 @@ export interface AgentHarnessPort {
   resume(request: AgentResumeRequest): AsyncIterable<AgentSessionEvent>;
   steer(request: AgentSteerRequest): Promise<void>;
   cancel(request: AgentCancelRequest): Promise<void>;
+}
+
+/**
+ * Implemented in addition to `AgentHarnessPort` by adapters whose descriptor declares
+ * `capabilities.permissions`. Adapters without that capability must not implement it.
+ */
+export interface AgentPermissionResponderPort {
+  respondToPermission(response: AgentPermissionResponse): Promise<void>;
 }

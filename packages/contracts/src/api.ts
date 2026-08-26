@@ -2,7 +2,7 @@ import { z } from "zod";
 
 import { RunSchema, RunStageSchema, RunStatusSchema, WorkItemSchema } from "./entities.js";
 import { StoredDomainEventSchema } from "./events.js";
-import { RunIdSchema, WorkItemIdSchema } from "./ids.js";
+import { ApprovalIdSchema, RunIdSchema, WorkItemIdSchema } from "./ids.js";
 
 export const HealthResponseSchema = z
   .object({
@@ -103,6 +103,83 @@ export const ApiErrorSchema = z
     requestId: z.string().min(1).optional()
   })
   .strict();
+
+const Sha256Schema = z.string().regex(/^[0-9a-f]{64}$/i);
+const ApprovalOriginSchema = z.enum(["desktop", "web", "cli", "slack", "github", "api"]);
+
+export const ApprovalSummarySchema = z
+  .object({
+    approvalId: ApprovalIdSchema,
+    runId: RunIdSchema,
+    workItemId: WorkItemIdSchema,
+    title: z.string().min(1).max(240),
+    kind: z.enum(["plan", "publish", "permission"]),
+    status: z.enum(["pending", "approved", "rejected", "stale"]),
+    evidenceDigest: Sha256Schema,
+    requestedAt: z.iso.datetime(),
+    updatedAt: z.iso.datetime()
+  })
+  .strict();
+
+/** Query for the approval inbox. Values arrive as strings from the query string. */
+export const ListApprovalsQuerySchema = z
+  .object({
+    status: z.enum(["pending", "approved", "rejected", "stale"]).default("pending"),
+    limit: z.coerce.number().int().min(1).max(100).default(25)
+  })
+  .strict();
+
+export const ListApprovalsResponseSchema = z
+  .object({
+    items: z.array(ApprovalSummarySchema).max(100),
+    nextCursor: z.number().int().positive().optional()
+  })
+  .strict();
+
+export const ApprovalDecisionRequestSchema = z
+  .object({
+    decision: z.enum(["approved", "rejected"]),
+    evidenceDigest: Sha256Schema,
+    origin: ApprovalOriginSchema,
+    note: z.string().trim().min(1).max(2_000).optional()
+  })
+  .strict();
+
+export const ApprovalDecisionResponseSchema = z
+  .object({
+    approvalId: ApprovalIdSchema,
+    runId: RunIdSchema,
+    status: z.enum(["approved", "rejected", "stale"]),
+    decidedAt: z.iso.datetime(),
+    replayed: z.boolean()
+  })
+  .strict();
+
+export const SteerRunRequestSchema = z
+  .object({ instruction: z.string().trim().min(1).max(20_000) })
+  .strict();
+
+export const SteerRunResponseSchema = z
+  .object({ runId: RunIdSchema, accepted: z.boolean(), acceptedAt: z.iso.datetime() })
+  .strict();
+
+export const CancelRunRequestSchema = z
+  .object({ reason: z.string().trim().min(1).max(2_000) })
+  .strict();
+
+export const CancelRunResponseSchema = z
+  .object({ runId: RunIdSchema, status: RunStatusSchema, requestedAt: z.iso.datetime() })
+  .strict();
+
+export type ApprovalSummary = z.infer<typeof ApprovalSummarySchema>;
+export type ListApprovalsQuery = z.infer<typeof ListApprovalsQuerySchema>;
+export type ListApprovalsResponse = z.infer<typeof ListApprovalsResponseSchema>;
+export type ApprovalDecisionRequest = z.infer<typeof ApprovalDecisionRequestSchema>;
+export type ApprovalDecisionResponse = z.infer<typeof ApprovalDecisionResponseSchema>;
+export type SteerRunRequest = z.infer<typeof SteerRunRequestSchema>;
+export type SteerRunResponse = z.infer<typeof SteerRunResponseSchema>;
+export type CancelRunRequest = z.infer<typeof CancelRunRequestSchema>;
+export type CancelRunResponse = z.infer<typeof CancelRunResponseSchema>;
 
 export type HealthResponse = z.infer<typeof HealthResponseSchema>;
 export type CreateRunRequestInput = z.input<typeof CreateRunRequestSchema>;

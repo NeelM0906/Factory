@@ -1,6 +1,12 @@
 import { z } from "zod";
 
-import { CredentialRefIdSchema, ProjectIdSchema, WorkspaceIdSchema } from "./ids.js";
+import {
+  ApprovalIdSchema,
+  CredentialRefIdSchema,
+  ProjectIdSchema,
+  RunIdSchema,
+  WorkspaceIdSchema
+} from "./ids.js";
 import { PublicationEvidenceBundleSchema, admitPublicationEvidenceBundle } from "./pipeline.js";
 import { SafeMetadataStringSchema } from "./secret-safety.js";
 
@@ -159,7 +165,93 @@ export const SlackProgressRequestSchema = z
   })
   .strict();
 
+/**
+ * One editable progress comment per run (spec §4.4). Omitting `commentId` creates the comment;
+ * supplying it edits that comment in place instead of adding another.
+ */
+export const GitHubProgressCommentRequestSchema = z
+  .object({
+    schemaVersion: VersionSchema,
+    idempotencyKey: IdempotencyKeySchema,
+    bindingRef: StableRefSchema,
+    repositoryFullName: z.string().regex(/^[^/\s]+\/[^/\s]+$/),
+    issueNumber: z.number().int().positive(),
+    commentId: z.number().int().positive().optional(),
+    body: SafeMetadataStringSchema.max(60_000),
+    evidenceDigest: DigestSchema
+  })
+  .strict();
+
+export const GitHubProgressCommentResultSchema = z
+  .object({
+    schemaVersion: VersionSchema,
+    idempotencyKey: IdempotencyKeySchema,
+    repositoryFullName: z.string().regex(/^[^/\s]+\/[^/\s]+$/),
+    issueNumber: z.number().int().positive(),
+    commentId: z.number().int().positive(),
+    url: z.url(),
+    updated: z.boolean(),
+    postedAt: TimestampSchema
+  })
+  .strict();
+
+/** The structured sections a draft pull-request body must present (spec §4.4). */
+export const DraftPullRequestBodySchema = z
+  .object({
+    schemaVersion: VersionSchema,
+    problemStatement: SafeMetadataStringSchema.max(20_000),
+    approvedPlanDigest: DigestSchema,
+    approvedPlanSummary: SafeMetadataStringSchema.max(20_000),
+    changeSummary: SafeMetadataStringSchema.max(20_000),
+    verificationSummary: SafeMetadataStringSchema.max(20_000),
+    reviewVerdict: z.literal("approved"),
+    knownLimitations: z.array(SafeMetadataStringSchema.max(2_000)).max(50),
+    runUrl: z.url()
+  })
+  .strict();
+
+const ApprovalKindSchema = z.enum(["plan", "publish", "permission"]);
+
+/** An approval prompt posted into a bound Slack thread with its evidence digest (spec §4.3). */
+export const SlackApprovalPromptSchema = z
+  .object({
+    schemaVersion: VersionSchema,
+    idempotencyKey: IdempotencyKeySchema,
+    bindingRef: StableRefSchema,
+    threadTs: StableRefSchema,
+    runId: RunIdSchema,
+    approvalId: ApprovalIdSchema,
+    kind: ApprovalKindSchema,
+    summary: SafeMetadataStringSchema.max(4_000),
+    evidenceDigest: DigestSchema
+  })
+  .strict();
+
+/** An interactive approve/reject payload, deduplicated like any other ingress delivery. */
+export const SlackApprovalActionSchema = z
+  .object({
+    schemaVersion: VersionSchema,
+    bindingRef: StableRefSchema,
+    slackWorkspaceId: StableRefSchema,
+    channelId: StableRefSchema,
+    messageTs: StableRefSchema,
+    userId: StableRefSchema,
+    runId: RunIdSchema,
+    approvalId: ApprovalIdSchema,
+    decision: z.enum(["approved", "rejected"]),
+    evidenceDigest: DigestSchema,
+    deliveryId: StableRefSchema,
+    deduplicationKey: StableRefSchema,
+    triggeredAt: TimestampSchema
+  })
+  .strict();
+
 export type IngressDelivery = z.infer<typeof IngressDeliverySchema>;
+export type GitHubProgressCommentRequest = z.infer<typeof GitHubProgressCommentRequestSchema>;
+export type GitHubProgressCommentResult = z.infer<typeof GitHubProgressCommentResultSchema>;
+export type DraftPullRequestBody = z.infer<typeof DraftPullRequestBodySchema>;
+export type SlackApprovalPrompt = z.infer<typeof SlackApprovalPromptSchema>;
+export type SlackApprovalAction = z.infer<typeof SlackApprovalActionSchema>;
 export type ChannelBinding = z.infer<typeof ChannelBindingSchema>;
 export type DraftPullRequestRequest = z.infer<typeof DraftPullRequestRequestSchema>;
 export type DraftPullRequestResult = z.infer<typeof DraftPullRequestResultSchema>;
@@ -172,4 +264,16 @@ export interface IntegrationIngressPort {
 export interface DeliveryIntegrationPort {
   createDraftPullRequest(request: DraftPullRequestRequest): Promise<DraftPullRequestResult>;
   postSlackProgress(request: SlackProgressRequest): Promise<void>;
+}
+
+/** Implemented alongside `DeliveryIntegrationPort` by the GitHub integration (spec §4.4). */
+export interface GitHubProgressIntegrationPort {
+  upsertProgressComment(
+    request: GitHubProgressCommentRequest
+  ): Promise<GitHubProgressCommentResult>;
+}
+
+/** Implemented alongside `DeliveryIntegrationPort` by the Slack integration (spec §4.3). */
+export interface SlackApprovalIntegrationPort {
+  postApprovalPrompt(prompt: SlackApprovalPrompt): Promise<void>;
 }

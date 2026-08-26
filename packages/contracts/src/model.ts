@@ -105,10 +105,194 @@ export const ModelUsageSchema = z
   })
   .strict();
 
+/** Reuses the station vocabulary already declared by `ModelRouteContextSchema`. */
+const ModelStageSchema = ModelRouteContextSchema.shape.stage;
+
+export const MODEL_MODALITIES = ["text", "image", "audio", "video", "pdf"] as const;
+export const ModelModalitySchema = z.enum(MODEL_MODALITIES);
+
+export const MODEL_FEATURES = [
+  "tool_call",
+  "structured_output",
+  "streaming",
+  "reasoning",
+  "prompt_caching"
+] as const;
+export const ModelFeatureSchema = z.enum(MODEL_FEATURES);
+
+const hasDuplicates = (values: readonly string[]): boolean =>
+  new Set(values).size !== values.length;
+
+/** Capability declaration discovered from a provider catalog (spec §10.1). */
+export const ModelCatalogEntrySchema = z
+  .object({
+    schemaVersion: VersionSchema,
+    routeRef: StableRefSchema,
+    providerModel: StableRefSchema,
+    displayName: SafeMetadataStringSchema.max(160),
+    inputModalities: z.array(ModelModalitySchema).min(1).max(MODEL_MODALITIES.length),
+    outputModalities: z.array(ModelModalitySchema).min(1).max(MODEL_MODALITIES.length),
+    features: z.array(ModelFeatureSchema).max(MODEL_FEATURES.length),
+    contextWindowTokens: z.number().int().positive().optional(),
+    maxOutputTokens: z.number().int().positive().optional(),
+    discoveredAt: TimestampSchema
+  })
+  .strict()
+  .superRefine((value, context) => {
+    const declarations = [
+      ["inputModalities", value.inputModalities],
+      ["outputModalities", value.outputModalities],
+      ["features", value.features]
+    ] as const;
+    for (const [path, values] of declarations) {
+      if (hasDuplicates(values)) {
+        context.addIssue({
+          code: "custom",
+          path: [path],
+          message: "A discovered capability may only be declared once."
+        });
+      }
+    }
+  });
+
+/** A provider-reported measurement, or an explicit record that the provider reported nothing. */
+export const ModelTokenCountSchema = z.discriminatedUnion("state", [
+  z.object({ state: z.literal("reported"), value: z.number().int().nonnegative() }).strict(),
+  z.object({ state: z.literal("unknown") }).strict()
+]);
+
+export const ModelCostSchema = z.discriminatedUnion("state", [
+  z
+    .object({
+      state: z.literal("reported"),
+      currency: z.literal("USD"),
+      micros: z.number().int().nonnegative()
+    })
+    .strict(),
+  z.object({ state: z.literal("unknown") }).strict()
+]);
+
+export const ModelTokenUsageSchema = z
+  .object({
+    input: ModelTokenCountSchema,
+    output: ModelTokenCountSchema,
+    cachedInput: ModelTokenCountSchema,
+    reasoning: ModelTokenCountSchema
+  })
+  .strict();
+
+/** Attributed usage that keeps missing provider data unknown rather than estimated (spec §10.2). */
+export const ModelUsageRecordSchema = z
+  .object({
+    schemaVersion: VersionSchema,
+    idempotencyKey: IdempotencyKeySchema,
+    workspaceId: WorkspaceIdSchema,
+    runId: RunIdSchema,
+    stageRunId: StageRunIdSchema,
+    stage: ModelStageSchema,
+    adapterId: StableRefSchema,
+    routeRef: StableRefSchema,
+    requested: z.object({ provider: StableRefSchema.optional(), model: StableRefSchema }).strict(),
+    actual: z
+      .object({
+        provider: StableRefSchema,
+        model: StableRefSchema,
+        providerRequestId: StableRefSchema.optional()
+      })
+      .strict(),
+    tokens: ModelTokenUsageSchema,
+    cost: ModelCostSchema,
+    latencyMs: z.number().int().nonnegative(),
+    outcome: z.enum(["succeeded", "failed", "cancelled"]),
+    recordedAt: TimestampSchema
+  })
+  .strict();
+
+const ModelRouteTargetSchema = z
+  .object({ routeRef: StableRefSchema, model: StableRefSchema })
+  .strict();
+
+/** A provider or model fallback, recorded so cost and evaluation reflect reality (spec §15). */
+export const ModelRouteFallbackSchema = z
+  .object({
+    schemaVersion: VersionSchema,
+    idempotencyKey: IdempotencyKeySchema,
+    workspaceId: WorkspaceIdSchema,
+    runId: RunIdSchema,
+    stageRunId: StageRunIdSchema,
+    from: ModelRouteTargetSchema,
+    to: ModelRouteTargetSchema,
+    failureCode: StableRefSchema,
+    reason: SafeMetadataStringSchema.max(2_000),
+    occurredAt: TimestampSchema
+  })
+  .strict()
+  .superRefine((value, context) => {
+    if (value.from.routeRef === value.to.routeRef && value.from.model === value.to.model) {
+      context.addIssue({
+        code: "custom",
+        path: ["to"],
+        message: "A fallback must change the route or the model."
+      });
+    }
+  });
+
+export const MODEL_REASONING_LEVELS = ["none", "low", "medium", "high"] as const;
+export const ModelReasoningLevelSchema = z.enum(MODEL_REASONING_LEVELS);
+
+/** Per-station model constraints the pipeline enforces and the inspector displays (spec §10.2). */
+export const ModelPolicySchema = z
+  .object({
+    schemaVersion: VersionSchema,
+    policyRef: StableRefSchema,
+    stage: ModelStageSchema,
+    allowedRouteRefs: z.array(StableRefSchema).min(1).max(32),
+    fallbackRouteRefs: z.array(StableRefSchema).max(32),
+    maxInputTokens: z.number().int().positive().optional(),
+    maxOutputTokens: z.number().int().positive().optional(),
+    maxCostMicros: z.number().int().nonnegative().optional(),
+    reasoningLevel: ModelReasoningLevelSchema.optional()
+  })
+  .strict()
+  .superRefine((value, context) => {
+    for (const [path, routeRefs] of [
+      ["allowedRouteRefs", value.allowedRouteRefs],
+      ["fallbackRouteRefs", value.fallbackRouteRefs]
+    ] as const) {
+      if (hasDuplicates(routeRefs)) {
+        context.addIssue({
+          code: "custom",
+          path: [path],
+          message: "A route may only be listed once."
+        });
+      }
+    }
+    const allowed = new Set(value.allowedRouteRefs);
+    for (const [index, routeRef] of value.fallbackRouteRefs.entries()) {
+      if (!allowed.has(routeRef)) {
+        context.addIssue({
+          code: "custom",
+          path: ["fallbackRouteRefs", index],
+          message: "A policy cannot fall back to a route it does not allow."
+        });
+      }
+    }
+  });
+
 export type ModelRoute = z.infer<typeof ModelRouteSchema>;
 export type ModelRouteContext = z.infer<typeof ModelRouteContextSchema>;
 export type ModelRouteSelection = z.infer<typeof ModelRouteSelectionSchema>;
 export type ModelUsage = z.infer<typeof ModelUsageSchema>;
+export type ModelModality = z.infer<typeof ModelModalitySchema>;
+export type ModelFeature = z.infer<typeof ModelFeatureSchema>;
+export type ModelCatalogEntry = z.infer<typeof ModelCatalogEntrySchema>;
+export type ModelTokenCount = z.infer<typeof ModelTokenCountSchema>;
+export type ModelCost = z.infer<typeof ModelCostSchema>;
+export type ModelTokenUsage = z.infer<typeof ModelTokenUsageSchema>;
+export type ModelUsageRecord = z.infer<typeof ModelUsageRecordSchema>;
+export type ModelRouteFallback = z.infer<typeof ModelRouteFallbackSchema>;
+export type ModelReasoningLevel = z.infer<typeof ModelReasoningLevelSchema>;
+export type ModelPolicy = z.infer<typeof ModelPolicySchema>;
 
 /** Resolves routes and accounts for usage without coupling agent harnesses to a vendor SDK. */
 export interface ModelRouterPort {

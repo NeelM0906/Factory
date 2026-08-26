@@ -2,11 +2,18 @@ import { describe, expect, it } from "vitest";
 
 import {
   ApiErrorSchema,
+  ApprovalDecisionRequestSchema,
+  ApprovalDecisionResponseSchema,
+  CancelRunRequestSchema,
   CreateRunRequestSchema,
   CreateRunResponseSchema,
   HealthResponseSchema,
+  ListApprovalsQuerySchema,
+  ListApprovalsResponseSchema,
   ListEventsResponseSchema,
-  ListRunsResponseSchema
+  ListRunsResponseSchema,
+  SteerRunRequestSchema,
+  SteerRunResponseSchema
 } from "../src/api.js";
 
 const NOW = "2026-08-20T12:00:00.000Z";
@@ -126,5 +133,82 @@ describe("HTTP contracts", () => {
         error: { code: "internal_error", message: "Failed", stack: "secret stack" }
       })
     ).toThrow();
+  });
+});
+
+describe("approval and steering HTTP contracts", () => {
+  const APPROVAL_ID = "apr_123e4567-e89b-42d3-a456-426614174000";
+  const DIGEST = "a".repeat(64);
+
+  it("defaults the approval inbox to pending work", () => {
+    expect(ListApprovalsQuerySchema.parse({})).toEqual({ status: "pending", limit: 25 });
+    expect(ListApprovalsQuerySchema.parse({ status: "stale", limit: "50" })).toEqual({
+      status: "stale",
+      limit: 50
+    });
+    expect(() => ListApprovalsQuerySchema.parse({ limit: 0 })).toThrow();
+    expect(() => ListApprovalsQuerySchema.parse({ status: "unknown" })).toThrow();
+  });
+
+  it("summarizes pending approvals with the evidence a reviewer must see", () => {
+    const response = ListApprovalsResponseSchema.parse({
+      items: [
+        {
+          approvalId: APPROVAL_ID,
+          runId: RUN_ID,
+          workItemId: WORK_ITEM_ID,
+          title: "Add local durability",
+          kind: "plan",
+          status: "pending",
+          evidenceDigest: DIGEST,
+          requestedAt: NOW,
+          updatedAt: NOW
+        }
+      ]
+    });
+    expect(response.items[0]?.kind).toBe("plan");
+    expect(response.nextCursor).toBeUndefined();
+  });
+
+  it("binds an approval decision to the evidence it approves", () => {
+    const request = ApprovalDecisionRequestSchema.parse({
+      decision: "approved",
+      evidenceDigest: DIGEST,
+      origin: "desktop"
+    });
+    expect(request.decision).toBe("approved");
+    expect(
+      ApprovalDecisionResponseSchema.parse({
+        approvalId: APPROVAL_ID,
+        runId: RUN_ID,
+        status: "approved",
+        decidedAt: NOW,
+        replayed: false
+      }).replayed
+    ).toBe(false);
+    expect(() =>
+      ApprovalDecisionRequestSchema.parse({
+        decision: "approved",
+        evidenceDigest: "not-a-digest",
+        origin: "desktop"
+      })
+    ).toThrow();
+    expect(() =>
+      ApprovalDecisionRequestSchema.parse({ decision: "approved", origin: "desktop" })
+    ).toThrow();
+  });
+
+  it("steers and cancels a live run through bounded instructions", () => {
+    expect(
+      SteerRunRequestSchema.parse({ instruction: "  Focus on the failing test  " }).instruction
+    ).toBe("Focus on the failing test");
+    expect(
+      SteerRunResponseSchema.parse({ runId: RUN_ID, accepted: true, acceptedAt: NOW }).accepted
+    ).toBe(true);
+    expect(() => SteerRunRequestSchema.parse({ instruction: "   " })).toThrow();
+    expect(CancelRunRequestSchema.parse({ reason: "No longer needed" }).reason).toBe(
+      "No longer needed"
+    );
+    expect(() => CancelRunRequestSchema.parse({ reason: "" })).toThrow();
   });
 });

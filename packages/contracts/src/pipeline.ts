@@ -417,6 +417,35 @@ export const assertPipelineTransition = (
   return to;
 };
 
+/** Milestone A allows at most three attempts per agent stage (spec §8.3). */
+export const PIPELINE_REWORK_MAX_ATTEMPTS = 3;
+
+/**
+ * A failed independent review routes back to implement (spec §8.2) instead of advancing through
+ * `assertPipelineTransition`. The bound keeps the loop finite and never marks review passed.
+ */
+export const assertPipelineReworkTransition = (
+  from: z.infer<typeof PipelineStageSchema>,
+  attempt: number,
+  maxAttempts: number = PIPELINE_REWORK_MAX_ATTEMPTS
+): z.infer<typeof PipelineStageSchema> => {
+  if (from !== "isolated_review") {
+    throw new TypeError(`Delivery pipeline rework may only follow isolated_review, not ${from}.`);
+  }
+  if (!Number.isSafeInteger(attempt) || attempt < 1) {
+    throw new TypeError("Delivery pipeline rework requires a positive attempt number.");
+  }
+  if (!Number.isSafeInteger(maxAttempts) || maxAttempts < 1) {
+    throw new TypeError("Delivery pipeline rework requires a positive attempt bound.");
+  }
+  if (attempt >= maxAttempts) {
+    throw new TypeError(
+      `Delivery pipeline rework attempts are exhausted after ${maxAttempts} attempts.`
+    );
+  }
+  return "implement";
+};
+
 export type PipelineStage = z.infer<typeof PipelineStageSchema>;
 export type PipelineStageRequest = z.infer<typeof PipelineStageRequestSchema>;
 export type PipelineEvidence = z.infer<typeof PipelineEvidenceSchema>;

@@ -5,7 +5,9 @@ import {
   PipelineEvidenceSchema,
   PipelineStageRequestSchema,
   PublicationEvidenceBundleSchema,
+  PIPELINE_REWORK_MAX_ATTEMPTS,
   ReviewEvidenceSchema,
+  assertPipelineReworkTransition,
   assertPipelineTransition
 } from "../src/pipeline.js";
 
@@ -242,5 +244,24 @@ describe("delivery pipeline contracts", () => {
         review: { ...evidence.review, verdict: "failed" }
       })
     ).toThrow();
+  });
+});
+
+describe("bounded review rework", () => {
+  it("routes a failed review back to implement within the attempt bound", () => {
+    expect(PIPELINE_REWORK_MAX_ATTEMPTS).toBe(3);
+    expect(assertPipelineReworkTransition("isolated_review", 1)).toBe("implement");
+    expect(assertPipelineReworkTransition("isolated_review", 2)).toBe("implement");
+  });
+
+  it("refuses rework once the attempt bound is exhausted", () => {
+    expect(() => assertPipelineReworkTransition("isolated_review", 3)).toThrow(/attempts/);
+    expect(() => assertPipelineReworkTransition("isolated_review", 1, 1)).toThrow(/attempts/);
+    expect(() => assertPipelineReworkTransition("isolated_review", 1, 0)).toThrow(/bound/);
+  });
+
+  it("refuses rework from any stage other than review", () => {
+    expect(() => assertPipelineReworkTransition("verify", 1)).toThrow(/rework/);
+    expect(() => assertPipelineReworkTransition("isolated_review", 0)).toThrow(/attempt/);
   });
 });

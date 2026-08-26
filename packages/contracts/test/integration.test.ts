@@ -2,8 +2,13 @@ import { describe, expect, it } from "vitest";
 
 import {
   ChannelBindingSchema,
+  DraftPullRequestBodySchema,
   DraftPullRequestRequestSchema,
+  GitHubProgressCommentRequestSchema,
+  GitHubProgressCommentResultSchema,
   IngressDeliverySchema,
+  SlackApprovalActionSchema,
+  SlackApprovalPromptSchema,
   admitDraftPullRequestRequest
 } from "../src/integration.js";
 import { digestPublishScope } from "../src/pipeline.js";
@@ -200,5 +205,121 @@ describe("integration contracts", () => {
         publicationEvidence: { ...evidence, publishScope: alteredScope }
       })
     ).rejects.toThrow("Publish scope digest");
+  });
+});
+
+describe("github progress comments", () => {
+  const progressComment = () => ({
+    schemaVersion: 1 as const,
+    idempotencyKey: "github-progress:run:implement",
+    bindingRef: "binding.github.factory",
+    repositoryFullName: "NeelM0906/Factory",
+    issueNumber: 7,
+    body: "Implementing the approved plan.",
+    evidenceDigest: digest("9")
+  });
+
+  it("creates one comment and then edits it in place", () => {
+    const created = GitHubProgressCommentRequestSchema.parse(progressComment());
+    expect(created.commentId).toBeUndefined();
+
+    const edited = GitHubProgressCommentRequestSchema.parse({
+      ...progressComment(),
+      commentId: 991
+    });
+    expect(edited.commentId).toBe(991);
+
+    const result = GitHubProgressCommentResultSchema.parse({
+      schemaVersion: 1,
+      idempotencyKey: edited.idempotencyKey,
+      repositoryFullName: edited.repositoryFullName,
+      issueNumber: edited.issueNumber,
+      commentId: 991,
+      url: "https://github.test/NeelM0906/Factory/issues/7#issuecomment-991",
+      updated: true,
+      postedAt: "2026-08-23T12:10:00.000Z"
+    });
+    expect(result.updated).toBe(true);
+  });
+
+  it("rejects an unusable comment identity", () => {
+    expect(() =>
+      GitHubProgressCommentRequestSchema.parse({ ...progressComment(), commentId: 0 })
+    ).toThrow();
+    expect(() =>
+      GitHubProgressCommentRequestSchema.parse({ ...progressComment(), issueNumber: -1 })
+    ).toThrow();
+  });
+});
+
+describe("draft pull request body structure", () => {
+  const body = () => ({
+    schemaVersion: 1 as const,
+    problemStatement: "Local runs cannot resume after a restart.",
+    approvedPlanDigest: digest("a"),
+    approvedPlanSummary: "Persist the lease and replay the outbox.",
+    changeSummary: "Adds lease recovery to the local executor.",
+    verificationSummary: "pnpm --filter @autostack/workflow test passed in 41s.",
+    reviewVerdict: "approved" as const,
+    knownLimitations: ["Cloud executor is unchanged."],
+    runUrl: "https://autostack.local/runs/run_123e4567-e89b-42d3-a456-426614174000"
+  });
+
+  it("carries every section the pull request must present", () => {
+    const parsed = DraftPullRequestBodySchema.parse(body());
+    expect(parsed.reviewVerdict).toBe("approved");
+    expect(parsed.knownLimitations).toEqual(["Cloud executor is unchanged."]);
+  });
+
+  it("cannot publish a body that admits an unapproved review", () => {
+    expect(() =>
+      DraftPullRequestBodySchema.parse({ ...body(), reviewVerdict: "changes_requested" })
+    ).toThrow();
+    expect(() => DraftPullRequestBodySchema.parse({ ...body(), runUrl: "not-a-url" })).toThrow();
+  });
+});
+
+describe("slack approval interactivity", () => {
+  const approvalId = "apr_123e4567-e89b-42d3-a456-426614174000";
+  const prompt = () => ({
+    schemaVersion: 1 as const,
+    idempotencyKey: "slack-approval-prompt:run:plan",
+    bindingRef: "binding.slack.factory",
+    threadTs: "1756000000.000100",
+    runId,
+    approvalId,
+    kind: "plan" as const,
+    summary: "Approve the plan for run 123.",
+    evidenceDigest: digest("7")
+  });
+  const action = () => ({
+    schemaVersion: 1 as const,
+    bindingRef: "binding.slack.factory",
+    slackWorkspaceId: "T123",
+    channelId: "C123",
+    messageTs: "1756000000.000100",
+    userId: "U123",
+    runId,
+    approvalId,
+    decision: "approved" as const,
+    evidenceDigest: digest("7"),
+    deliveryId: "slack-interaction-1",
+    deduplicationKey: "slack:T123:1756000000.000100:approve",
+    triggeredAt: "2026-08-23T12:11:00.000Z"
+  });
+
+  it("carries the approval identity and evidence digest through the round trip", () => {
+    expect(SlackApprovalPromptSchema.parse(prompt()).approvalId).toBe(approvalId);
+    const decided = SlackApprovalActionSchema.parse(action());
+    expect(decided.decision).toBe("approved");
+    expect(decided.deliveryId).toBe("slack-interaction-1");
+  });
+
+  it("rejects an approval action without a decidable outcome", () => {
+    expect(() => SlackApprovalActionSchema.parse({ ...action(), decision: "maybe" })).toThrow();
+    expect(() =>
+      SlackApprovalActionSchema.parse({ ...action(), approvalId: "apr_nope" })
+    ).toThrow();
+    expect(() => SlackApprovalPromptSchema.parse({ ...prompt(), kind: "deploy" })).toThrow();
   });
 });
