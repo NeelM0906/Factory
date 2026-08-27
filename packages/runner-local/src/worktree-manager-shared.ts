@@ -43,9 +43,12 @@ const ERROR_MESSAGES = Object.freeze({
 export class WorktreeManagerError extends Error {
   readonly code: WorktreeManagerErrorCode;
 
-  constructor(code: WorktreeManagerErrorCode) {
+  // Retains what failed underneath without changing what this error says: the message and code
+  // still come from the fixed table above. `Error` installs `cause` non-enumerably, so it stays out
+  // of any serialization and is reachable only by a caller that asks for it.
+  constructor(code: WorktreeManagerErrorCode, cause?: unknown) {
     const admitted = Object.hasOwn(ERROR_MESSAGES, code) ? code : "unsafe_state";
-    super(ERROR_MESSAGES[admitted]);
+    super(ERROR_MESSAGES[admitted], cause === undefined ? undefined : { cause });
     this.name = "WorktreeManagerError";
     this.code = admitted;
     Object.freeze(this);

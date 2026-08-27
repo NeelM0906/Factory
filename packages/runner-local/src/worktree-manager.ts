@@ -452,19 +452,24 @@ export class WorktreeManager {
     );
   }
 
+  // Every branch keeps the original error as the cause. The code each branch chooses is
+  // unchanged; this only stops the normalization from being a one-way door.
   static #normalizeError(error: unknown): WorktreeManagerError {
-    if (error instanceof WorktreeManagerError) return new WorktreeManagerError(error.code);
+    if (error instanceof WorktreeManagerError) return new WorktreeManagerError(error.code, error);
     if (error instanceof DataRootLockError) {
-      return new WorktreeManagerError(error.code === "root_busy" ? "root_busy" : "unsafe_state");
+      return new WorktreeManagerError(
+        error.code === "root_busy" ? "root_busy" : "unsafe_state",
+        error
+      );
     }
     if (error instanceof GitClientError) {
       if (error.code === "unsafe_process_state") {
-        return new WorktreeManagerError("unsafe_process_state");
+        return new WorktreeManagerError("unsafe_process_state", error);
       }
       if (error.code === "branch_conflict" || error.code === "config_changed") {
-        return new WorktreeManagerError("environment_conflict");
+        return new WorktreeManagerError("environment_conflict", error);
       }
-      return new WorktreeManagerError("unsafe_state");
+      return new WorktreeManagerError("unsafe_state", error);
     }
     if (error instanceof EnvironmentRegistryError) {
       if (
@@ -472,12 +477,12 @@ export class WorktreeManager {
         error.code === "invalid_transition" ||
         error.code === "invalid_input"
       ) {
-        return new WorktreeManagerError("environment_conflict");
+        return new WorktreeManagerError("environment_conflict", error);
       }
       if (error.code === "maintenance_required") {
-        return new WorktreeManagerError("maintenance_required");
+        return new WorktreeManagerError("maintenance_required", error);
       }
     }
-    return new WorktreeManagerError("unsafe_state");
+    return new WorktreeManagerError("unsafe_state", error);
   }
 }

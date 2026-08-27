@@ -28,9 +28,12 @@ const ERROR_MESSAGES = Object.freeze({
 export class CommandExecutorError extends Error {
   readonly code: CommandExecutorErrorCode;
 
-  constructor(code: CommandExecutorErrorCode) {
+  // Same treatment as the worktree and provider errors: the message and code still come from the
+  // fixed table, and the underlying failure is retained as a non-enumerable cause so the catch-all
+  // `unsafe_state` below stops being a dead end.
+  constructor(code: CommandExecutorErrorCode, cause?: unknown) {
     const admitted = Object.hasOwn(ERROR_MESSAGES, code) ? code : "unsafe_state";
-    super(ERROR_MESSAGES[admitted]);
+    super(ERROR_MESSAGES[admitted], cause === undefined ? undefined : { cause });
     this.name = "CommandExecutorError";
     this.code = admitted;
     Object.freeze(this);
@@ -40,9 +43,10 @@ export class CommandExecutorError extends Error {
 const trustedExecutorErrors = new WeakSet<CommandExecutorError>();
 
 export const createCommandExecutorError = (
-  code: CommandExecutorErrorCode
+  code: CommandExecutorErrorCode,
+  cause?: unknown
 ): CommandExecutorError => {
-  const error = new CommandExecutorError(code);
+  const error = new CommandExecutorError(code, cause);
   trustedExecutorErrors.add(error);
   return error;
 };
@@ -71,19 +75,21 @@ export const admitPositiveBoundedInteger = (value: unknown, maximum: number): nu
 
 export const mapCommandRegistryError = (error: unknown): CommandExecutorError => {
   if (isTrustedCommandExecutorError(error)) {
-    return createCommandExecutorError(error.code);
+    return createCommandExecutorError(error.code, error);
   }
   if (isTrustedCommandRegistryError(error)) {
-    if (error.code === "command_conflict") return createCommandExecutorError("command_conflict");
+    if (error.code === "command_conflict")
+      return createCommandExecutorError("command_conflict", error);
     if (error.code === "maintenance_required") {
-      return createCommandExecutorError("maintenance_required");
+      return createCommandExecutorError("maintenance_required", error);
     }
     if (error.code === "invalid_request" || error.code === "cursor_invalid") {
-      return createCommandExecutorError("invalid_request");
+      return createCommandExecutorError("invalid_request", error);
     }
-    if (error.code === "command_not_found") return createCommandExecutorError("command_not_found");
-    if (error.code === "closed") return createCommandExecutorError("closed");
+    if (error.code === "command_not_found")
+      return createCommandExecutorError("command_not_found", error);
+    if (error.code === "closed") return createCommandExecutorError("closed", error);
   }
-  return createCommandExecutorError("unsafe_state");
+  return createCommandExecutorError("unsafe_state", error);
 };
 import { isTrustedCommandRegistryError } from "./command-registry-types.js";

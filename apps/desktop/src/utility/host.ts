@@ -212,15 +212,41 @@ const keepAlive = setInterval(() => undefined, 60_000);
  * `[autostack-e2e-utility-exit] host:1` and nothing else. Shaped like the control plane's own
  * startup report (apps/control-plane/src/server.ts:327-336).
  */
+const describeError = (
+  error: unknown
+): { readonly message: string; readonly code: string | null; readonly stack: string | null } => {
+  if (!(error instanceof Error)) {
+    return { message: "Unknown startup error.", code: null, stack: null };
+  }
+  const code: unknown = Reflect.get(error, "code");
+  return {
+    message: `${error.name}: ${error.message}`,
+    code: typeof code === "string" ? code : null,
+    stack: error.stack ?? null
+  };
+};
+
 const reportStartupFailure = (error: unknown): void => {
+  // Walks the whole cause chain. The boundary errors are stable by design -- "The local runner
+  // failed closed." says nothing on its own -- so the layer that actually failed is reachable only
+  // through the causes those errors now retain. Bounded at eight links, and cycle-guarded, so a
+  // pathological chain cannot turn a diagnostic into a hang.
+  const chain: ReturnType<typeof describeError>[] = [];
+  const seen = new Set<unknown>();
+  let current: unknown = error;
+  while (current !== undefined && current !== null && chain.length < 8 && !seen.has(current)) {
+    seen.add(current);
+    chain.push(describeError(current));
+    current = current instanceof Error ? current.cause : undefined;
+  }
   console.error(
     JSON.stringify({
       level: "error",
       event: "host_start_failed",
-      message:
-        error instanceof Error ? `${error.name}: ${error.message}` : "Unknown startup error.",
-      cause: error instanceof Error && error.cause instanceof Error ? error.cause.message : null,
-      stack: error instanceof Error ? (error.stack ?? null) : null
+      message: chain[0]?.message ?? "Unknown startup error.",
+      code: chain[0]?.code ?? null,
+      causes: chain.slice(1),
+      stack: chain[0]?.stack ?? null
     })
   );
 };

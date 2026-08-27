@@ -207,7 +207,7 @@ const mapWorktreeError = (error: WorktreeManagerError): LocalRunnerProviderError
                   : error.code === "invalid_request"
                     ? "invalid_request"
                     : "unsafe_state";
-  return new LocalRunnerProviderError(code);
+  return new LocalRunnerProviderError(code, error);
 };
 
 const mapExecutorCode = (code: CommandExecutorErrorCode): LocalRunnerProviderErrorCode =>
@@ -232,17 +232,20 @@ const mapExecutorCode = (code: CommandExecutorErrorCode): LocalRunnerProviderErr
                     : "unsafe_state";
 
 export const rematerializeProviderError = (error: unknown): LocalRunnerProviderError => {
-  if (error instanceof LocalRunnerProviderError) return new LocalRunnerProviderError(error.code);
+  if (error instanceof LocalRunnerProviderError) {
+    return new LocalRunnerProviderError(error.code, error);
+  }
   if (error instanceof WorktreeManagerError) return mapWorktreeError(error);
   if (error instanceof CommandExecutorError) {
-    return new LocalRunnerProviderError(mapExecutorCode(error.code));
+    return new LocalRunnerProviderError(mapExecutorCode(error.code), error);
   }
   if (error instanceof GitClientError) {
     return new LocalRunnerProviderError(
-      error.code === "invalid_request" ? "invalid_request" : "invalid_path"
+      error.code === "invalid_request" ? "invalid_request" : "invalid_path",
+      error
     );
   }
-  return new LocalRunnerProviderError("unsafe_state");
+  return new LocalRunnerProviderError("unsafe_state", error);
 };
 
 const ownDataRecord = (value: unknown): Readonly<Record<string, unknown>> => {

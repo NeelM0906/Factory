@@ -43,9 +43,16 @@ const ERROR_MESSAGES = Object.freeze({
 export class LocalRunnerProviderError extends Error {
   readonly code: LocalRunnerProviderErrorCode;
 
-  constructor(code: LocalRunnerProviderErrorCode, _cause?: unknown) {
+  // `cause` was accepted and dropped here, which is why a startup failure in CI run 33118019098
+  // reported only "The local runner failed closed." with no way to reach what actually failed. It
+  // is now retained, and the "no caller-controlled provenance" guarantee above is unchanged: the
+  // message and code are still chosen from the fixed table and never derive from the cause. The
+  // cause is installed by `Error` as a non-enumerable own property, so it does not appear in
+  // `JSON.stringify`, and the host maps this error to an API status by `code` alone -- it is
+  // reachable only by code that asks for it, which is exactly the diagnostic path.
+  constructor(code: LocalRunnerProviderErrorCode, cause?: unknown) {
     const admitted = Object.hasOwn(ERROR_MESSAGES, code) ? code : "unsafe_state";
-    super(ERROR_MESSAGES[admitted]);
+    super(ERROR_MESSAGES[admitted], cause === undefined ? undefined : { cause });
     this.name = "LocalRunnerProviderError";
     this.code = admitted;
     Object.freeze(this);
