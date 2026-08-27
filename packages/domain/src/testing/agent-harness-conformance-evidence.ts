@@ -4,7 +4,8 @@ import {
   AgentSessionDetailEventSchema,
   ModelCostSchema,
   ModelTokenUsageSchema,
-  WorkflowFailureSchema
+  WorkflowFailureSchema,
+  normalizeWorkflowFailureCode
 } from "@autostack/contracts";
 
 import type { AgentHarnessConformanceFixture } from "./agent-harness-conformance-fixture.js";
@@ -13,18 +14,6 @@ import {
   expectSessionStream,
   isTerminalEvent
 } from "./agent-harness-conformance-support.js";
-
-/**
- * The retry policy consumes `WorkflowFailure`, whose codes are a narrower alphabet than an agent
- * event's `code`. A classification that cannot be lifted into that alphabet is prose, not a
- * classification, and a stage runner could never decide from it.
- */
-const toWorkflowFailureCode = (code: string): string =>
-  code
-    .trim()
-    .toLowerCase()
-    .replace(/[^a-z0-9]+/g, "_")
-    .replace(/^_+/, "");
 
 /** Behaviours 8, 9, and 10: what a session leaves behind — usage, classification, and evidence. */
 export const describeAgentHarnessEvidenceConformance = (
@@ -65,10 +54,11 @@ export const describeAgentHarnessEvidenceConformance = (
         if (terminal?.type !== "failed") throw new TypeError("unreachable");
 
         // The contract requires `code` to already be in the workflow-failure alphabet, so lifting
-        // it must be a no-op: a code that changes under normalization is one the adapter owes a
-        // mapping for, not one the retry policy can branch on.
+        // it must be a no-op. `normalizeWorkflowFailureCode` is the pipeline's own rule, shared
+        // through contracts rather than re-derived here: it admits a code only unchanged, so a code
+        // the adapter owes a mapping for comes back undefined instead of being quietly rewritten.
         expect(
-          toWorkflowFailureCode(terminal.code),
+          normalizeWorkflowFailureCode(terminal.code),
           `the failure code "${terminal.code}" must already match ^[a-z][a-z0-9_]{0,63}$ (lowercase snake_case, at most 64 characters); a code that normalization has to rewrite — a JSON-RPC numeric code such as -32601, or a dotted "provider.rate_limited" — must be mapped by the adapter before it is emitted`
         ).toBe(terminal.code);
         WorkflowFailureSchema.parse({

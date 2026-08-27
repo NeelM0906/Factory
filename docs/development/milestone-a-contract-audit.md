@@ -58,6 +58,7 @@ inbox paging (item 20).
 | 27  | Rework from a failed verification (§8.2)                | GAP — fixed (revision 4, widening)                     |
 | 28  | Pipeline, clarification, steering, agent relay events   | GAP — fixed (revision 4)                               |
 | 29  | Work item on an agent invocation (§14.1)                | GAP — fixed (revision 4)                               |
+| 30  | Shared failure-code normalization rule (§8.3)           | GAP — fixed (revision 4)                               |
 
 ## Agent contract — spec §9.1–9.3, streams S1 and S2
 
@@ -573,6 +574,34 @@ assume.
 
 ## Cross-cutting
 
+### 30. Shared failure-code normalization rule — GAP (revision 4)
+
+Two places have to agree on when an agent-side failure code is usable as a `WorkflowFailure` code:
+S4's `classifyStageFailure` in `packages/workflow`, and the agent-harness conformance suite in
+`packages/domain`. The suite carried its own coercing normalization as a placeholder. It could not
+simply import the classifier — `packages/workflow` depends on `packages/domain`, so the import would
+close a cycle — which means the rule itself belongs here, below both.
+
+**Addition:** `normalizeWorkflowFailureCode`
+(`packages/contracts/src/workflow-failure.ts:39`) with `WorkflowFailureCode` (`:21`).
+
+The rule is **unchanged-acceptance**, and the distinction is not academic.
+`WorkflowFailureCodeSchema` (`:7`) carries `.trim()`, so `" rate_limited"` parses _successfully_ — to
+a different string. A helper that returned `parsed.data` whenever parsing succeeded would ship
+trim-then-accept, conjuring a code the event stream never carried and that the pipeline never
+branches on. The helper therefore compares the parse result against the untrimmed input with strict
+equality, and `" rate_limited"`, `"RATE_LIMITED"`, `"provider.rate_limited"`, `"-32601"`, and `""`
+all return `undefined`.
+
+Returning `undefined` rather than throwing or substituting is deliberate: what to do with a code that
+cannot be lifted is the consumer's decision — the classifier may map it, the conformance suite fails
+the adapter that emitted it — and this helper is only the shared rule they agree on.
+
+`packages/domain/src/testing/agent-harness-conformance-evidence.ts` now consumes it in place of its
+suite-local normalization. The assertion is unchanged in outcome (both the old coercion and the new
+refusal make a non-conforming code fail the comparison against itself), so no fixture code relied on
+coercion and both conformance runners stay green.
+
 ### 19. `WorkItem` intake — SUFFICIENT
 
 `WorkItemSchema` (`packages/contracts/src/entities.ts:144`) carries title, description, requester,
@@ -645,7 +674,7 @@ silently.
 
 ## Verification
 
-- `pnpm --filter @autostack/contracts test` — 320 passed (16 files) after revision 4; 287 at
+- `pnpm --filter @autostack/contracts test` — 324 passed (17 files) after revision 4; 287 at
   revision 3; 282 at revision 2.
 - `pnpm --filter @autostack/domain test` — 114 passed (12 files) after revision 4, including the four
   shared fakes.
