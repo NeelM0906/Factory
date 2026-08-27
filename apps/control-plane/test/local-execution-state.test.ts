@@ -464,24 +464,32 @@ describe("EventBackedLocalExecutionState ownership resolution", () => {
     ).rejects.toThrow(/Local execution resource was not found/);
   });
 
-  // KNOWN DEFECT (characterized, not endorsed): `resolveCancellation` spreads the resolved
-  // `ReadCommandEventsRequest` — which carries `after` — into the strict `CancelCommandRequestSchema`,
-  // so every authorized cancellation is rejected as an unrecognized key. Cancellation via the local
-  // surface is therefore unreachable today. When this is fixed, this test must be replaced with one
-  // asserting the resolved request carries the ownership bindings and the caller's idempotency key.
-  it("currently rejects every authorized cancellation because the stream cursor leaks into the cancel request", async () => {
+  it("resolves a cancellation carrying both authorization bindings and the caller's idempotency key", async () => {
     const run = await seed();
     await started(run);
     const state = openState(run);
 
-    await expect(
-      state.resolveCancellation({
-        environmentId: run.environmentId,
-        commandId: run.commandId,
-        commandAuthorizationId: run.commandAuthorization.id,
-        idempotencyKey: "cancel-1"
-      } as never)
-    ).rejects.toThrow(/unrecognized_keys[\s\S]*after/);
+    const resolved = await state.resolveCancellation({
+      environmentId: run.environmentId,
+      commandId: run.commandId,
+      commandAuthorizationId: run.commandAuthorization.id,
+      idempotencyKey: "cancel-1"
+    } as never);
+
+    // The stream cursor is not part of a cancel request; it must never leak in from the
+    // ownership resolution the cancellation shares with the events request.
+    expect(resolved).not.toHaveProperty("after");
+    expect(resolved).toMatchObject({
+      workspaceId: run.workspaceId,
+      runId: run.runId,
+      environmentId: run.environmentId,
+      commandId: run.commandId,
+      environmentAuthorizationId: run.environmentAuthorization.id,
+      environmentAuthorizationDigest: run.environmentAuthorization.digest,
+      commandAuthorizationId: run.commandAuthorization.id,
+      commandAuthorizationDigest: run.commandAuthorization.digest,
+      idempotency: { key: "cancel-1" }
+    });
   });
 
   it("refuses a cancellation presented under a command authorization that does not own the command", async () => {

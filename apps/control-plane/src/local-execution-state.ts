@@ -417,8 +417,10 @@ export class EventBackedLocalExecutionState implements LocalExecutionState, Comm
     const { intent } = await this.#findCommand(input.environmentId, input.commandId);
     if (intent.authorization.id !== input.commandAuthorizationId)
       throw new TypeError("Command authorization does not own cancellation.");
+    const { after: _after, ...ownership } = await this.resolveEvents({ ...input, after: 0 });
+    void _after;
     return CancelCommandRequestSchema.parse({
-      ...(await this.resolveEvents({ ...input, after: 0 })),
+      ...ownership,
       idempotency: { key: input.idempotencyKey }
     });
   }
