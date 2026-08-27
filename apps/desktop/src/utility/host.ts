@@ -257,6 +257,24 @@ try {
         }
       })({ dataRoot, runtime })
   });
+} catch (error: unknown) {
+  // Without this the host utility dies silently: `log` above is deliberately a no-op, and an
+  // unhandled top-level rejection inside an Electron utility process writes nothing to the child's
+  // stderr pipe. CI run 33113576845 saw only `[autostack-e2e-utility-exit] host:1` and had no way
+  // to name the cause. The control plane already reports its own startup failure this way
+  // (apps/control-plane/src/server.ts:327-336); this is the host's missing half. The exit code is
+  // unchanged -- the process still leaves with 1 through the existing exit below.
+  const cause = error instanceof Error && error.cause instanceof Error ? error.cause.message : null;
+  console.error(
+    JSON.stringify({
+      level: "error",
+      event: "host_start_failed",
+      message:
+        error instanceof Error ? `${error.name}: ${error.message}` : "Unknown startup error.",
+      cause
+    })
+  );
+  process.exitCode = 1;
 } finally {
   clearInterval(keepAlive);
 }

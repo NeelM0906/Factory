@@ -134,6 +134,11 @@ Object.defineProperty(utilityProcess, "fork", {
     child.stderr?.on("data", (chunk: Buffer) => {
       process.stderr.write(`[autostack-e2e-utility] ${chunk.toString("utf8")}`);
     });
+    // stdout was never forwarded, so a child that reports on stdout rather than stderr stayed
+    // invisible. Both streams are piped by the fork options above; read both.
+    child.stdout?.on("data", (chunk: Buffer) => {
+      process.stderr.write(`[autostack-e2e-utility-out] ${chunk.toString("utf8")}`);
+    });
     child.once("exit", (code) => {
       process.stderr.write(
         `[autostack-e2e-utility-exit] ${modulePath.endsWith("/host.js") ? "host" : "control-plane"}:${String(code)}\n`
