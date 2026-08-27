@@ -117,6 +117,28 @@ jobs:
           test "$(uname -m)" = arm64
           test "$(node -p process.arch)" = arm64
 
+      - name: Require a supported system Git
+        # The desktop host pins `trustedGitExecutable: "/usr/bin/git"` and runs its utility with
+        # PATH restricted to the system directories, so this exact binary is the one the product
+        # uses -- Homebrew's newer git on this runner is deliberately out of reach. GitClient
+        # requires >= 2.45 (packages/runner-local/src/git-client-admission.ts:302). When the image's
+        # Xcode git is older, the verifier below fails 30 seconds later as an opaque
+        # "The local runner failed closed."; this says so in five, and names the version.
+        run: |
+          version="$(/usr/bin/git --version)"
+          echo "system git: ${version}"
+          printf '%s\n' "${version}" | awk '
+            match($0, /[0-9]+\.[0-9]+/) {
+              split(substr($0, RSTART, RLENGTH), v, ".")
+              if (v[1] > 2 || (v[1] == 2 && v[2] >= 45)) exit 0
+              exit 1
+            }
+            { exit 1 }
+          ' || {
+            echo "::error::/usr/bin/git is ${version}; @autostack/runner-local requires git >= 2.45."
+            exit 1
+          }
+
       - name: Install locked dependencies
         run: pnpm install --frozen-lockfile
 
