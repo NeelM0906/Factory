@@ -11,8 +11,7 @@ describe("classifyTransportResponse", () => {
     const failure = classifyTransportResponse({
       routeRef: "route:openai",
       status: 429,
-      headers: headers(),
-      body: "sensitive-body-should-not-leak"
+      headers: headers()
     });
     expect(failure).toBeInstanceOf(ModelRoutingError);
     expect(failure.code).toBe("rate_limited");
@@ -23,8 +22,7 @@ describe("classifyTransportResponse", () => {
     const failure = classifyTransportResponse({
       routeRef: "route:openai",
       status: 503,
-      headers: headers({ "retry-after": "30" }),
-      body: "sensitive-body-should-not-leak"
+      headers: headers({ "retry-after": "30" })
     });
     expect(failure.code).toBe("rate_limited");
     expect(failure.retryable).toBe(true);
@@ -36,13 +34,22 @@ describe("classifyTransportResponse", () => {
       const failure = classifyTransportResponse({
         routeRef: "route:openai",
         status,
-        headers: headers(),
-        body: "sensitive-body-should-not-leak"
+        headers: headers()
       });
       expect(failure.code).toBe("provider_error");
       expect(failure.retryable).toBe(true);
     }
   );
+
+  it("classifies 529 (overloaded) as provider_error, retryable", () => {
+    const failure = classifyTransportResponse({
+      routeRef: "route:openai",
+      status: 529,
+      headers: headers()
+    });
+    expect(failure.code).toBe("provider_error");
+    expect(failure.retryable).toBe(true);
+  });
 
   it("classifies a network throw as provider_error, retryable", () => {
     const failure = classifyTransportResponse({
@@ -53,50 +60,76 @@ describe("classifyTransportResponse", () => {
     expect(failure.retryable).toBe(true);
   });
 
-  it("classifies a malformed body as provider_error, retryable", () => {
+  it("classifies a malformed body on a 2xx response as provider_error, retryable", () => {
     const failure = classifyTransportResponse({
       routeRef: "route:openai",
       status: 200,
       headers: headers(),
-      body: "sensitive-body-should-not-leak",
       malformedBody: true
     });
     expect(failure.code).toBe("provider_error");
     expect(failure.retryable).toBe(true);
   });
 
-  it.each([400, 401, 403, 404, 422])("classifies %d as provider_error, non-retryable", (status) => {
+  it("ignores malformedBody on a non-2xx response and lets the status decide", () => {
     const failure = classifyTransportResponse({
       routeRef: "route:openai",
-      status,
+      status: 401,
       headers: headers(),
-      body: "sensitive-body-should-not-leak"
+      malformedBody: true
     });
     expect(failure.code).toBe("provider_error");
     expect(failure.retryable).toBe(false);
   });
 
-  it("classifies an unrecognized status as provider_error, retryable", () => {
+  it.each([400, 401, 403, 404, 422])("classifies %d as provider_error, non-retryable", (status) => {
+    const failure = classifyTransportResponse({
+      routeRef: "route:openai",
+      status,
+      headers: headers()
+    });
+    expect(failure.code).toBe("provider_error");
+    expect(failure.retryable).toBe(false);
+  });
+
+  it("classifies 402 (insufficient credits) as provider_error, non-retryable", () => {
+    const failure = classifyTransportResponse({
+      routeRef: "route:openai",
+      status: 402,
+      headers: headers()
+    });
+    expect(failure.code).toBe("provider_error");
+    expect(failure.retryable).toBe(false);
+  });
+
+  it("classifies an unrecognized 4xx as provider_error, non-retryable", () => {
     const failure = classifyTransportResponse({
       routeRef: "route:openai",
       status: 418,
-      headers: headers(),
-      body: "sensitive-body-should-not-leak"
+      headers: headers()
+    });
+    expect(failure.code).toBe("provider_error");
+    expect(failure.retryable).toBe(false);
+  });
+
+  it.each([408, 425])("classifies %d as provider_error, retryable (transient 4xx)", (status) => {
+    const failure = classifyTransportResponse({
+      routeRef: "route:openai",
+      status,
+      headers: headers()
     });
     expect(failure.code).toBe("provider_error");
     expect(failure.retryable).toBe(true);
   });
 
-  it("composes a message from safe values only, never body or header values", () => {
+  it("composes a message from safe values only, never a header value", () => {
     const failure = classifyTransportResponse({
       routeRef: "route:openai",
       status: 500,
-      headers: headers({ "x-request-id": "leaked-header-value" }),
-      body: "leaked-body-value"
+      headers: headers({ "x-request-id": "leaked-header-value" })
     });
     expect(failure.message).toContain("route:openai");
     expect(failure.message).toContain("500");
-    expect(failure.message).not.toContain("leaked-body-value");
     expect(failure.message).not.toContain("leaked-header-value");
   });
 });
