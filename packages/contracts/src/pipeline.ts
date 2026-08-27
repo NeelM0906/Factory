@@ -47,7 +47,14 @@ export const TriageEvidenceSchema = z
   .object({
     ...EvidenceContextShape,
     stage: z.literal("triage"),
-    summary: SafeMetadataStringSchema.max(20_000)
+    summary: SafeMetadataStringSchema.max(20_000),
+    /**
+     * The `TriageReport` this envelope addresses, by `digestTriageReport`. Optional so evidence
+     * recorded before a report exists stays valid, but naming it is what lets a verifier bind the
+     * document to the envelope — without it triage is the one station whose evidence can only be
+     * checked for run identity, while plan, verify, and review all bind their documents.
+     */
+    triageReportDigest: DigestSchema.optional()
   })
   .strict();
 

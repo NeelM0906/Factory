@@ -274,9 +274,13 @@ whichever arrived last.
 
 **Addition:** an append-only optional `attempt` ordinal on `ModelUsageRecordSchema`
 (`packages/contracts/src/model.ts:213`), nonnegative rather than positive per S3's ruling, so a first
-attempt may be numbered 0 or 1 without the contract taking a side. Note the deliberate divergence
-from `StageRunSchema.attempt` and `PipelineStageRequestSchema.attempt`, which are positive: those
-count stage executions, this one indexes retries inside a single call.
+attempt may be numbered 0 or 1 without the contract taking a side.
+
+**Convention, recorded so nobody "fixes" one into the other:** this field is a **0-based ordinal**
+that indexes retries inside one call, matching S3's loop-index tests, and is therefore nonnegative.
+`StageRunSchema.attempt`, `PipelineStageRequestSchema.attempt`, and the `stage.leased` payload's
+`attempt` are **1-based counters** of how many times a stage has been executed, and are therefore
+positive. Different semantics, both correct; the numeric bounds differ because the meanings do.
 
 **Item 8 confirmed, not merely assumed.** S1's finding 12 claims `ModelUsageSchema` cannot express
 unknown usage while `ModelUsageRecordSchema` can. Verified and now pinned by a test: the exact-count
@@ -445,12 +449,17 @@ updated in the same change". S4 did, with a tabulation; this is that change.
   `assertPipelineTransition`, or back to `implement` through `assertPipelineReworkTransition` when the
   previous stage judged the implementation (item 27).
 
-  **Each envelope binds only what it actually names**, which is an asymmetry worth stating rather than
-  papering over: the plan evidence names a `planDigest` and the document is admitted against it;
-  verification evidence names a pass the report must support; review evidence names a verdict and a
-  reviewed diff that must agree; **triage evidence names nothing about its report**, so run identity
-  is the whole check there. Closing that last gap would mean adding a digest field to
-  `TriageEvidenceSchema`, which is not append-only and was not in scope.
+  **Each envelope binds what it names**, and every station now names something: the plan evidence
+  names a `planDigest` and the document is admitted against it; verification evidence names a pass
+  the report must support; review evidence names a verdict and a reviewed diff that must agree; and
+  triage evidence names a `triageReportDigest` (`packages/contracts/src/pipeline.ts:57`), admitted
+  through `admitTriageReport` (`packages/contracts/src/events.ts:1020`).
+
+  Triage was identity-only in the first pass of this batch, and the note here claimed closing it
+  would not be append-only. That was wrong: an **optional** digest field is append-only, evidence
+  recorded before a report exists stays valid, and the binding only engages once the envelope names
+  a digest. It landed as a follow-up in this
+  same batch, so S4's staleness chain reaches every station.
 
 - **`clarification.requested` / `clarification.answered`** enforce one question per reference per run,
   at most one answer, and refuse an answer to a question nobody asked.
@@ -674,7 +683,7 @@ silently.
 
 ## Verification
 
-- `pnpm --filter @autostack/contracts test` — 324 passed (17 files) after revision 4; 287 at
+- `pnpm --filter @autostack/contracts test` — 327 passed (17 files) after revision 4; 287 at
   revision 3; 282 at revision 2.
 - `pnpm --filter @autostack/domain test` — 114 passed (12 files) after revision 4, including the four
   shared fakes.

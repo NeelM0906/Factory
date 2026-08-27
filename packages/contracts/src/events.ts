@@ -61,7 +61,8 @@ import {
   ClarificationRequestSchema,
   ClarificationResponseSchema,
   PipelineStationDocumentSchema,
-  admitPlanDocument
+  admitPlanDocument,
+  admitTriageReport
 } from "./station-evidence.js";
 import { WorkflowFailureSchema } from "./workflow-failure.js";
 
@@ -1010,8 +1011,14 @@ export const validateRunStreamCoherence = async (
           ) {
             throw new TypeError("Station document belongs to a different run than its envelope.");
           }
-          // Each envelope can only bind what it actually names. Triage names nothing about its
-          // report, so identity is the whole check; the other three name something and it is bound.
+          // Each envelope binds what it names, and every station now names something.
+          if (
+            document.kind === "triage" &&
+            evidence.stage === "triage" &&
+            evidence.triageReportDigest !== undefined
+          ) {
+            await admitTriageReport(document.report, evidence.triageReportDigest);
+          }
           if (document.kind === "plan" && evidence.stage === "plan") {
             await admitPlanDocument(document.document);
             if (evidence.planDigest !== document.document.planDigest) {

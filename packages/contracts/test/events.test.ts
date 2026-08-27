@@ -9,7 +9,7 @@ import {
   digestTerminalRunTransition,
   validateRunStreamCoherence
 } from "../src/events.js";
-import { digestPlanDocument } from "../src/station-evidence.js";
+import { digestPlanDocument, digestTriageReport } from "../src/station-evidence.js";
 import {
   digestCommandAuthorization,
   digestCommandScope,
@@ -1448,6 +1448,39 @@ describe("pipeline, clarification, steering, and agent session events", () => {
       )
     ]);
     expect(stream).toHaveLength(2);
+  });
+
+  it("binds a triage report to the digest its envelope names, in both directions", async () => {
+    const triageReportDigest = await digestTriageReport(triageReport);
+    const sealed = (evidenceDigest: string) => ({
+      runId: RUN_ID,
+      jobId: JOB_ID,
+      attempt: 1,
+      evidence: { ...triageEvidence, triageReportDigest: evidenceDigest },
+      document: { kind: "triage", report: triageReport }
+    });
+
+    await expect(
+      validateRunStreamCoherence([
+        recorded(sealed(triageReportDigest), "pipeline.evidence_recorded")
+      ])
+    ).resolves.toHaveLength(1);
+
+    await expect(
+      validateRunStreamCoherence([recorded(sealed(digestOf("9")), "pipeline.evidence_recorded")])
+    ).rejects.toThrow(/digest/i);
+
+    await expect(
+      validateRunStreamCoherence([
+        recorded(
+          {
+            ...sealed(triageReportDigest),
+            document: { kind: "triage", report: { ...triageReport, priority: "low" } }
+          },
+          "pipeline.evidence_recorded"
+        )
+      ])
+    ).rejects.toThrow(/digest/i);
   });
 
   it("refuses a document that does not describe the stage its envelope records", async () => {

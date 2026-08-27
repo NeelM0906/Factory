@@ -7,6 +7,7 @@ import {
   PublicationEvidenceBundleSchema,
   PIPELINE_REWORK_MAX_ATTEMPTS,
   ReviewEvidenceSchema,
+  TriageEvidenceSchema,
   assertPipelineReworkTransition,
   assertPipelineTransition
 } from "../src/pipeline.js";
@@ -278,5 +279,32 @@ describe("bounded review rework", () => {
       expect(() => assertPipelineReworkTransition(stage, 1)).toThrow(/rework/);
     }
     expect(() => assertPipelineReworkTransition("isolated_review", 0)).toThrow(/attempt/);
+  });
+});
+
+describe("triage evidence", () => {
+  const triageEvidence = () => ({
+    schemaVersion: 1 as const,
+    ...identity,
+    stage: "triage" as const,
+    evidenceDigest: digest("1"),
+    artifactIds: [],
+    producedAt: "2026-08-23T12:00:00.000Z",
+    summary: "A reproducible regression."
+  });
+
+  it("optionally names the triage report it addresses", () => {
+    expect(TriageEvidenceSchema.parse(triageEvidence()).triageReportDigest).toBeUndefined();
+    expect(
+      TriageEvidenceSchema.parse({ ...triageEvidence(), triageReportDigest: digest("7") })
+        .triageReportDigest
+    ).toBe(digest("7"));
+  });
+
+  it("refuses anything that is not a digest and any unknown field", () => {
+    expect(() =>
+      TriageEvidenceSchema.parse({ ...triageEvidence(), triageReportDigest: "not-a-digest" })
+    ).toThrow();
+    expect(() => TriageEvidenceSchema.parse({ ...triageEvidence(), triageReport: {} })).toThrow();
   });
 });
