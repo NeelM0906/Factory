@@ -2,7 +2,7 @@ import { chmod, mkdir, readFile, unlink, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 
-import { app, BrowserWindow, dialog, safeStorage, utilityProcess } from "electron";
+import { app, BrowserWindow, dialog, safeStorage, screen, utilityProcess } from "electron";
 
 import { createHostDaemonClient } from "../../../control-plane/src/host-daemon-client.js";
 
@@ -220,10 +220,29 @@ Object.defineProperty(globalThis, "__autostackVerifier", {
     messageTrace() {
       return [...messageTrace];
     },
-    resize(width: number, height: number) {
+    // Returns the content size the window manager actually granted, so a caller can assert against
+    // what happened instead of polling blind for what it asked for.
+    //
+    // The clamp is not cosmetic. Asking for a content size whose *frame* does not fit the display's
+    // work area does not simply clamp the overflowing axis: macOS re-constrains the whole frame and
+    // the width comes back at the window's original `minWidth`. That is how a 720x900 request
+    // became 1024 wide -- exactly `minWidth` -- on CI's 1024x768 virtual display while passing on a
+    // larger one. Measured directly: on a 1512x949 work area, requesting 720x4000 yields
+    // [1024, 917], requesting 720x949 still yields [1024, 917] because the title bar pushes the
+    // frame over, and requesting 720x917 yields [720, 917]. So fit the request to the work area
+    // with the frame chrome subtracted, and the width asked for is the width granted.
+    resize(width: number, height: number): { width: number; height: number } | null {
       const window = BrowserWindow.getAllWindows()[0];
-      window?.setMinimumSize(0, 0);
-      window?.setContentSize(width, height);
+      if (window === undefined) return null;
+      window.setMinimumSize(0, 0);
+      const { workArea } = screen.getDisplayMatching(window.getBounds());
+      const chrome = window.getBounds().height - (window.getContentSize()[1] ?? 0);
+      window.setContentSize(
+        Math.min(width, workArea.width),
+        Math.min(height, workArea.height - chrome)
+      );
+      const granted = window.getContentSize();
+      return { width: granted[0] ?? 0, height: granted[1] ?? 0 };
     },
     quit() {
       app.quit();

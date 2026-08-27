@@ -362,14 +362,27 @@ test("real desktop survives restart and keeps repository authority opaque", asyn
     ({ application, page } = await launch(scenario));
     await expect(page.getByRole("heading", { name: "AutoStack Factory" })).toBeVisible();
 
-    await application.evaluate(() =>
+    const granted = await application.evaluate(() =>
       (
         globalThis as unknown as {
-          __autostackVerifier: { resize(width: number, height: number): void };
+          __autostackVerifier: {
+            resize(
+              width: number,
+              height: number
+            ): { readonly width: number; readonly height: number } | null;
+          };
         }
       ).__autostackVerifier.resize(720, 900)
     );
-    await expect.poll(async () => await page.evaluate(() => window.innerWidth)).toBe(720);
+    // The accessibility pass below is only worth anything at a narrow viewport, so prove the window
+    // manager granted one rather than assuming the request was honoured. Polling for the granted
+    // width instead of the requested width means a display that cannot give exactly 720 fails the
+    // narrowness assertion above with a real number, rather than timing out here with none.
+    expect(granted).not.toBeNull();
+    expect(granted?.width).toBeLessThanOrEqual(720);
+    await expect
+      .poll(async () => await page.evaluate(() => window.innerWidth))
+      .toBe(granted?.width);
     await assertAccessible(page);
     await attachScreenshot(page, testInfo, "factory-narrow.png");
 
