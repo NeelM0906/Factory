@@ -132,33 +132,32 @@ describe("LocalArtifactService verification refusals", () => {
     ).rejects.toThrow(/artifact verification/i);
   });
 
-  it("refuses a non-terminal chunk that carries no bytes so the read cannot stall", async () => {
-    const service = respond((request) =>
-      ReadArtifactChunkResponseSchema.parse({
-        artifact: descriptor,
-        offset: request.offset,
-        bytes: "",
-        nextOffset: request.offset,
-        done: false
-      })
-    );
+  // These two responses are deliberately NOT run through ReadArtifactChunkResponseSchema in the
+  // fake host: the point is that the service refuses them itself, rather than the test fixture
+  // refusing to build them.
+  it("refuses a host chunk that claims no progress so a read can never stall", async () => {
+    const service = respond((request) => ({
+      artifact: descriptor,
+      offset: request.offset,
+      bytes: "",
+      nextOffset: request.offset,
+      done: false
+    }));
 
     await expect(service.verifyFinalizedArtifact(descriptor, ownership)).rejects.toThrow(
       /artifact verification/i
     );
   });
 
-  it("refuses a terminal chunk that stops short of the declared byte size", async () => {
+  it("refuses a host chunk that declares completion short of the descriptor byte size", async () => {
     const truncated = bytes.subarray(0, 4);
-    const service = respond((request) =>
-      ReadArtifactChunkResponseSchema.parse({
-        artifact: descriptor,
-        offset: request.offset,
-        bytes: truncated.toString("base64"),
-        nextOffset: truncated.byteLength,
-        done: true
-      })
-    );
+    const service = respond((request) => ({
+      artifact: descriptor,
+      offset: request.offset,
+      bytes: truncated.toString("base64"),
+      nextOffset: truncated.byteLength,
+      done: true
+    }));
 
     await expect(service.verifyFinalizedArtifact(descriptor, ownership)).rejects.toThrow(
       /artifact verification/i
