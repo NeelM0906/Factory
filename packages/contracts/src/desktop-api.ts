@@ -1,6 +1,7 @@
 import { z } from "zod";
 
 import {
+  ApprovalIdSchema,
   ArtifactIdSchema,
   CommandAuthorizationIdSchema,
   CommandIdSchema,
@@ -12,11 +13,19 @@ import {
   WorkspaceIdSchema
 } from "./ids.js";
 import {
+  ApprovalDecisionRequestSchema,
+  ApprovalDecisionResponseSchema,
+  CancelRunRequestSchema,
+  CancelRunResponseSchema,
   CreateRunRequestSchema,
   CreateRunResponseSchema,
   HealthResponseSchema,
+  ListApprovalsQuerySchema,
+  ListApprovalsResponseSchema,
+  ListRunsResponseSchema,
   ListEventsResponseSchema,
-  ListRunsResponseSchema
+  SteerRunRequestSchema,
+  SteerRunResponseSchema
 } from "./api.js";
 import {
   CancelCommandResponseSchema,
@@ -159,11 +168,41 @@ export const DesktopLocalDisposeRequestSchema = z
   })
   .strict();
 
+/**
+ * The approval and run-control operations, each derived from the HTTP schema it mirrors rather than
+ * re-declared, so the two surfaces cannot drift. Two deliberate differences from HTTP:
+ *
+ * - No idempotency key. Over HTTP a client supplies one; over IPC the main process derives it, so
+ *   a renderer cannot replay another window's decision by guessing the key.
+ * - `origin` is narrowed to the literal `"desktop"`. The renderer is the desktop, and a contract
+ *   that let it claim to be Slack would be recording a lie.
+ */
+export const DesktopFactoryApprovalListRequestSchema = ListApprovalsQuerySchema.extend({
+  operation: z.literal("factory.approvals.list")
+});
+export const DesktopFactoryApprovalDecideRequestSchema = ApprovalDecisionRequestSchema.extend({
+  operation: z.literal("factory.approvals.decide"),
+  approvalId: ApprovalIdSchema,
+  origin: z.literal("desktop")
+});
+export const DesktopFactoryRunSteerRequestSchema = SteerRunRequestSchema.extend({
+  operation: z.literal("factory.runs.steer"),
+  runId: RunIdSchema
+});
+export const DesktopFactoryRunCancelRequestSchema = CancelRunRequestSchema.extend({
+  operation: z.literal("factory.runs.cancel"),
+  runId: RunIdSchema
+});
+
 export const DesktopApiRequestSchemaByOperation = {
   "factory.health": DesktopFactoryHealthRequestSchema,
   "factory.runs.list": DesktopFactoryRunListRequestSchema,
   "factory.runs.events": DesktopFactoryRunEventsRequestSchema,
   "factory.runs.create": DesktopFactoryCreateRunRequestSchema,
+  "factory.approvals.list": DesktopFactoryApprovalListRequestSchema,
+  "factory.approvals.decide": DesktopFactoryApprovalDecideRequestSchema,
+  "factory.runs.steer": DesktopFactoryRunSteerRequestSchema,
+  "factory.runs.cancel": DesktopFactoryRunCancelRequestSchema,
   "local.inspect": DesktopLocalInspectRequestSchema,
   "local.list": DesktopLocalListRequestSchema,
   "local.prepare": DesktopLocalPrepareRequestSchema,
@@ -178,6 +217,10 @@ export const DesktopApiOperationMapSchema = z.discriminatedUnion("operation", [
   DesktopFactoryRunListRequestSchema,
   DesktopFactoryRunEventsRequestSchema,
   DesktopFactoryCreateRunRequestSchema,
+  DesktopFactoryApprovalListRequestSchema,
+  DesktopFactoryApprovalDecideRequestSchema,
+  DesktopFactoryRunSteerRequestSchema,
+  DesktopFactoryRunCancelRequestSchema,
   DesktopLocalInspectRequestSchema,
   DesktopLocalListRequestSchema,
   DesktopLocalPrepareRequestSchema,
@@ -192,6 +235,10 @@ export const DesktopApiResponseSchemaByOperation = {
   "factory.runs.list": ListRunsResponseSchema,
   "factory.runs.events": ListEventsResponseSchema,
   "factory.runs.create": CreateRunResponseSchema,
+  "factory.approvals.list": ListApprovalsResponseSchema,
+  "factory.approvals.decide": ApprovalDecisionResponseSchema,
+  "factory.runs.steer": SteerRunResponseSchema,
+  "factory.runs.cancel": CancelRunResponseSchema,
   "local.inspect": DesktopRepositoryInspectionSchema,
   "local.list": ListEnvironmentsResponseSchema,
   "local.prepare": z
