@@ -96,11 +96,15 @@ describe("Electron utility launcher", () => {
       authorizeTerminalEvidence: async () => undefined,
       writeChildLog: (line) => written.push(line)
     });
-    await launch("control-plane", {});
+    const child = await launch("control-plane", {});
+    // The child rejects its eagerly created readiness promise on exit; observe it so the exit below
+    // does not surface as an unhandled rejection. The supervisor always awaits this in production.
+    const readiness = child.waitReady().catch(() => undefined);
 
     utility.stderr.emit("data", "died mid-sentence");
     expect(written).toEqual([]);
     utility.emit("exit", 1);
+    await readiness;
 
     expect(JSON.parse(written[0] ?? "{}")).toMatchObject({
       service: "control-plane",
