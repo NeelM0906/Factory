@@ -387,7 +387,12 @@ export const localExecutionRequests = async (offset = 0) => {
 };
 
 /** The prepared-environment body a host returns for a seeded preparation request. */
-export const preparedEnvironmentFor = (seeded: SeededRun) =>
+export const preparedEnvironmentFor = (
+  seeded: Pick<
+    SeededRun,
+    "environmentId" | "workspaceId" | "runId" | "inspection" | "branch" | "environmentAuthorization"
+  >
+) =>
   ({
     environment: {
       environmentId: seeded.environmentId,

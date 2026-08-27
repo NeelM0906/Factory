@@ -7,7 +7,10 @@ import {
   type PrepareEnvironmentRequest
 } from "@autostack/contracts";
 
-import { LocalExecutionService } from "../src/local-execution-service.js";
+import {
+  LocalExecutionService,
+  LocalRunnerUnavailableError
+} from "../src/local-execution-service.js";
 import { deriveDurableCommandCursor } from "../src/reconciliation-cursor.js";
 
 const UUID = "123e4567-e89b-42d3-a456-426614174000";
@@ -152,5 +155,239 @@ describe("LocalExecutionService", () => {
     await first;
     expect(operations).toEqual(["ingress", "reconciliation", "persistence"]);
     expect(() => service.inspect({ sourcePath: "/repo", baseRef: "main" })).toThrow(/unavailable/i);
+  });
+});
+
+describe("LocalExecutionService host delegation", () => {
+  const events = {
+    environmentId: `env_${UUID}`,
+    commandId: `cmd_${UUID}`,
+    after: 4
+  } as const;
+
+  it("lists prepared environments straight from the host", async () => {
+    const listing = { items: [] } as const;
+    const service = new LocalExecutionService({
+      host: { listEnvironments: async () => listing as never },
+      state: {}
+    });
+
+    await expect(service.list()).resolves.toBe(listing);
+  });
+
+  it("opens a command event stream against the ownership-resolved host request", async () => {
+    const resolved = { marker: "resolved events" };
+    const stream = (async function* () {
+      yield { type: "runner.heartbeat" };
+    })();
+    const service = new LocalExecutionService({
+      state: {
+        resolveEvents: async (input) => {
+          expect(input).toEqual(events);
+          return resolved as never;
+        }
+      },
+      host: {
+        openCommandEvents: (request) => {
+          expect(request).toBe(resolved as never);
+          return stream;
+        }
+      }
+    });
+
+    await expect(service.events(events as never)).resolves.toBe(stream);
+  });
+
+  it("cancels through the ownership-resolved host request", async () => {
+    const resolved = { marker: "resolved cancel" };
+    const response = { commandId: `cmd_${UUID}`, cancelled: true, replayed: false } as const;
+    const service = new LocalExecutionService({
+      state: { resolveCancellation: async () => resolved as never },
+      host: {
+        cancelCommand: async (request) => {
+          expect(request).toBe(resolved as never);
+          return response as never;
+        }
+      }
+    });
+
+    await expect(
+      service.cancel({
+        environmentId: events.environmentId,
+        commandId: events.commandId,
+        commandAuthorizationId: `cmdauth_${UUID}`,
+        idempotencyKey: "cancel-1"
+      } as never)
+    ).resolves.toBe(response);
+  });
+
+  it("disposes through the ownership-resolved host request", async () => {
+    const resolved = { marker: "resolved dispose" };
+    const response = { environmentId: `env_${UUID}`, disposed: true, replayed: false } as const;
+    const service = new LocalExecutionService({
+      state: { resolveDisposal: async () => resolved as never },
+      host: {
+        disposeEnvironment: async (request) => {
+          expect(request).toBe(resolved as never);
+          return response as never;
+        }
+      }
+    });
+
+    await expect(
+      service.dispose({
+        environmentId: events.environmentId,
+        environmentAuthorizationId: `envauth_${UUID}`,
+        idempotencyKey: "dispose-1"
+      } as never)
+    ).resolves.toBe(response);
+  });
+
+  it("notifies the reconciler about an accepted start without blocking the caller's response", async () => {
+    const tracked: unknown[] = [];
+    const authorized = { marker: "authorized start" };
+    const accepted = {
+      commandId: `cmd_${UUID}`,
+      acceptedAt: "2026-08-21T12:00:00.000Z",
+      replayed: false
+    } as const;
+    const service = new LocalExecutionService({
+      state: {
+        authorizeStart: async (_input, key) => {
+          expect(key).toBe("start-1");
+          return authorized as never;
+        },
+        recordCommandIntent: async () => undefined
+      },
+      host: { startCommand: async () => accepted as never },
+      reconciler: { trackAccepted: async (request) => void tracked.push(request) }
+    });
+
+    await expect(
+      service.start(
+        {
+          runId: `run_${UUID}`,
+          approvalId: `apr_${UUID}`,
+          commandAuthorizationId: `cmdauth_${UUID}`,
+          environmentId: events.environmentId,
+          commandId: events.commandId,
+          command: {
+            executable: "/usr/bin/true",
+            args: [],
+            cwd: ".",
+            environment: [],
+            timeoutSeconds: 30,
+            terminal: { columns: 80, rows: 24 }
+          }
+        } as never,
+        "start-1"
+      )
+    ).resolves.toBe(accepted);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(tracked).toEqual([authorized]);
+  });
+
+  it("still answers the caller when reconciler tracking of an accepted start fails", async () => {
+    const accepted = {
+      commandId: `cmd_${UUID}`,
+      acceptedAt: "2026-08-21T12:00:00.000Z",
+      replayed: false
+    } as const;
+    const service = new LocalExecutionService({
+      state: {
+        authorizeStart: async () => ({ marker: "authorized" }) as never,
+        recordCommandIntent: async () => undefined
+      },
+      host: { startCommand: async () => accepted as never },
+      reconciler: {
+        trackAccepted: async () => {
+          throw new Error("private tracking failure");
+        }
+      }
+    });
+
+    await expect(
+      service.start(
+        {
+          runId: `run_${UUID}`,
+          approvalId: `apr_${UUID}`,
+          commandAuthorizationId: `cmdauth_${UUID}`,
+          environmentId: events.environmentId,
+          commandId: events.commandId,
+          command: {
+            executable: "/usr/bin/true",
+            args: [],
+            cwd: ".",
+            environment: [],
+            timeoutSeconds: 30,
+            terminal: { columns: 80, rows: 24 }
+          }
+        } as never,
+        "start-1"
+      )
+    ).resolves.toBe(accepted);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+  });
+});
+
+describe("LocalExecutionService unavailability", () => {
+  it("reports the local runner unavailable for every capability the host does not provide", async () => {
+    const service = new LocalExecutionService({ host: {}, state: {} });
+
+    expect(() => service.list()).toThrow(LocalRunnerUnavailableError);
+    expect(() => service.inspect({ sourcePath: "/repo", baseRef: "main" } as never)).toThrow(
+      LocalRunnerUnavailableError
+    );
+    await expect(
+      service.events({ environmentId: `env_${UUID}`, commandId: `cmd_${UUID}`, after: 0 } as never)
+    ).rejects.toThrow(LocalRunnerUnavailableError);
+    await expect(
+      service.cancel({
+        environmentId: `env_${UUID}`,
+        commandId: `cmd_${UUID}`,
+        commandAuthorizationId: `cmdauth_${UUID}`,
+        idempotencyKey: "cancel-1"
+      } as never)
+    ).rejects.toThrow(LocalRunnerUnavailableError);
+    await expect(
+      service.readArtifact({ artifactId: `art_${UUID}`, offset: 0, length: 1 } as never)
+    ).rejects.toThrow(LocalRunnerUnavailableError);
+    await expect(
+      service.dispose({
+        environmentId: `env_${UUID}`,
+        environmentAuthorizationId: `envauth_${UUID}`,
+        idempotencyKey: "dispose-1"
+      } as never)
+    ).rejects.toThrow(LocalRunnerUnavailableError);
+  });
+
+  it("refuses to retire a generation that has no configured retirement sequence", () => {
+    const service = new LocalExecutionService({ host: {}, state: {} });
+
+    expect(() => service.retireHostGeneration()).toThrow(LocalRunnerUnavailableError);
+  });
+
+  it("closes every capability once the generation is retired", async () => {
+    const service = new LocalExecutionService({
+      host: { listEnvironments: async () => ({ items: [] }) as never },
+      state: {},
+      retirement: {
+        closeIngress: async () => undefined,
+        stopReconciliation: async () => undefined,
+        closePersistence: async () => undefined
+      }
+    });
+
+    await expect(service.list()).resolves.toEqual({ items: [] });
+    await service.retireHostGeneration();
+
+    expect(() => service.list()).toThrow(LocalRunnerUnavailableError);
+    await expect(
+      service.dispose({
+        environmentId: `env_${UUID}`,
+        environmentAuthorizationId: `envauth_${UUID}`,
+        idempotencyKey: "dispose-1"
+      } as never)
+    ).rejects.toThrow(LocalRunnerUnavailableError);
   });
 });
