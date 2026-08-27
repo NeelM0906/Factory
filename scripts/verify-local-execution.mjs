@@ -80,6 +80,38 @@ if (createHash("sha256").update(manifestBytes).digest("hex") !== expectedDigest)
 }
 
 const scenario = await createTestRepositoryScenario();
+
+// The verifier entry already forwards everything worth reading to the Electron process's stderr:
+// `[autostack-e2e-startup]` for a failed `start()`, plus `[autostack-e2e-utility]` and
+// `[autostack-e2e-utility-exit]` for each utility child. Nothing here ever read it, so a startup
+// failure surfaced only as Playwright's "Target page, context or browser has been closed" with an
+// empty call log. Buffer both child streams and print them, redacted, whenever the run fails.
+const CHILD_OUTPUT_LIMIT_BYTES = 64_000;
+const childOutput = [];
+let childOutputBytes = 0;
+const captureChildOutput = (stream, label) => {
+  stream?.on("data", (chunk) => {
+    if (childOutputBytes >= CHILD_OUTPUT_LIMIT_BYTES) return;
+    const text = chunk.toString("utf8");
+    childOutputBytes += Buffer.byteLength(text, "utf8");
+    childOutput.push(`[${label}] ${text}`);
+  });
+};
+// Redaction, not a secret-free assertion: this text only exists because something already failed,
+// so it has to print unconditionally. Longer paths are replaced before the scenario root that
+// contains them, so each value is marked by its most specific name.
+const redactScenario = (value) =>
+  [
+    [scenario.token, "[token]"],
+    [scenario.source, "[source]"],
+    [scenario.userData, "[user-data]"],
+    [scenario.evidence, "[evidence]"],
+    [scenario.root, "[scenario-root]"]
+  ].reduce(
+    (text, [secret, marker]) => (secret.length > 0 ? text.split(secret).join(marker) : text),
+    value
+  );
+
 let application;
 try {
   application = await electron.launch({
@@ -98,6 +130,8 @@ try {
     },
     timeout: 30_000
   });
+  captureChildOutput(application.process().stdout, "electron:out");
+  captureChildOutput(application.process().stderr, "electron:err");
   const page = await application.firstWindow({ timeout: 30_000 });
   await page.getByRole("heading", { name: "AutoStack Factory" }).waitFor({ timeout: 30_000 });
   await page.waitForFunction(
@@ -177,6 +211,13 @@ try {
       runCount: renderer.runs.items.length
     })}\n`
   );
+} catch (error) {
+  process.stderr.write(
+    childOutput.length === 0
+      ? "Electron child produced no output before the failure.\n"
+      : `Electron child output (redacted):\n${redactScenario(childOutput.join(""))}\n`
+  );
+  throw error;
 } finally {
   if (application !== undefined) await application.close().catch(() => undefined);
   await scenario.cleanup();
