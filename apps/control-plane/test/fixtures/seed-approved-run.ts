@@ -199,11 +199,14 @@ export const seedApprovedRun = async (options: SeedApprovedRunOptions = {}): Pro
   if (store === undefined) {
     directory = await mkdtemp(join(tmpdir(), "autostack-control-plane-state-"));
     let eventNumber = 500;
-    store = new SqliteDurableStore(openDatabase({ filePath: join(directory, "autostack.sqlite") }), {
-      eventId: () => EventIdSchema.parse(`evt_${uuid(eventNumber++)}`),
-      leaseToken: () => `lease-${eventNumber}`,
-      now: () => NOW
-    });
+    store = new SqliteDurableStore(
+      openDatabase({ filePath: join(directory, "autostack.sqlite") }),
+      {
+        eventId: () => EventIdSchema.parse(`evt_${uuid(eventNumber++)}`),
+        leaseToken: () => `lease-${eventNumber}`,
+        now: () => NOW
+      }
+    );
   }
 
   const actor = { kind: "user" as const, id: "local-user" };

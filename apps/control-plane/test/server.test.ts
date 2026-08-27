@@ -687,10 +687,7 @@ describe("control-plane server lifecycle", () => {
   const stubServer = () =>
     ({ close: (callback?: (error?: Error) => void) => callback?.() }) as unknown as ServerType;
 
-  const startLocal = async (
-    dataDirectory: string,
-    overrides: Record<string, unknown> = {}
-  ) =>
+  const startLocal = async (dataDirectory: string, overrides: Record<string, unknown> = {}) =>
     startControlPlane({
       bootstrap: bootstrap(dataDirectory),
       hostFetch: async () => {
@@ -810,9 +807,11 @@ describe("control-plane server lifecycle", () => {
     expect(runtime.desktopDispatcher).toBeUndefined();
     await expect(runtime.retireHostGeneration()).resolves.toBeUndefined();
     expect(
-      (await runtime.app.request("/v1/local/environments", {
-        headers: { Authorization: `Bearer ${TOKEN}` }
-      })).status
+      (
+        await runtime.app.request("/v1/local/environments", {
+          headers: { Authorization: `Bearer ${TOKEN}` }
+        })
+      ).status
     ).toBe(404);
     await runtime.close();
   });

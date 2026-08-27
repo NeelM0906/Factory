@@ -5,11 +5,7 @@ import { WorkspaceIdSchema } from "@autostack/contracts";
 import { createApp } from "../src/app.js";
 import { LocalRunnerUnavailableError } from "../src/local-execution-service.js";
 
-import {
-  NOW,
-  authorizedIdentity,
-  preparedEnvironmentFor
-} from "./fixtures/seed-approved-run.js";
+import { NOW, authorizedIdentity, preparedEnvironmentFor } from "./fixtures/seed-approved-run.js";
 
 const TOKEN = "0123456789abcdef0123456789abcdef";
 const WORKSPACE_ID = WorkspaceIdSchema.parse("ws_123e4567-e89b-42d3-a456-426614174000");
@@ -134,7 +130,10 @@ describe("local environment preparation route", () => {
 
     expect(response.status).toBe(400);
     expect(await response.json()).toEqual({
-      error: { code: "missing_idempotency_key", message: "A valid Idempotency-Key header is required." }
+      error: {
+        code: "missing_idempotency_key",
+        message: "A valid Idempotency-Key header is required."
+      }
     });
     expect(called).toBe(false);
   });
@@ -161,15 +160,11 @@ describe("local command routes", () => {
       start: async () => ({ commandId: identity.commandId, acceptedAt: NOW, replayed: false })
     });
 
-    const response = await call(
-      app,
-      `/v1/local/environments/${identity.environmentId}/commands`,
-      {
-        method: "POST",
-        headers: { "Idempotency-Key": "start-1" },
-        body: JSON.stringify(startBody())
-      }
-    );
+    const response = await call(app, `/v1/local/environments/${identity.environmentId}/commands`, {
+      method: "POST",
+      headers: { "Idempotency-Key": "start-1" },
+      body: JSON.stringify(startBody())
+    });
 
     expect(response.status).toBe(202);
     expect(await response.json()).toMatchObject({ commandId: identity.commandId });
@@ -206,15 +201,11 @@ describe("local command routes", () => {
       start: async () => ({ commandId: identity.commandId, acceptedAt: NOW, replayed: true })
     });
 
-    const response = await call(
-      app,
-      `/v1/local/environments/${identity.environmentId}/commands`,
-      {
-        method: "POST",
-        headers: { "Idempotency-Key": "start-1" },
-        body: JSON.stringify(startBody())
-      }
-    );
+    const response = await call(app, `/v1/local/environments/${identity.environmentId}/commands`, {
+      method: "POST",
+      headers: { "Idempotency-Key": "start-1" },
+      body: JSON.stringify(startBody())
+    });
 
     expect(response.status).toBe(200);
   });
@@ -241,7 +232,9 @@ describe("local command routes", () => {
 
     expect(response.headers.get("Content-Type")).toBe("application/x-ndjson");
     expect(response.headers.get("Cache-Control")).toBe("no-store");
-    expect(await response.text()).toBe(frames.map((frame) => `${JSON.stringify(frame)}\n`).join(""));
+    expect(await response.text()).toBe(
+      frames.map((frame) => `${JSON.stringify(frame)}\n`).join("")
+    );
     expect(requestedAfter).toBe(7);
   });
 
@@ -483,7 +476,9 @@ describe("local surface availability", () => {
 
   it("keeps health reachable while ingress is closed", async () => {
     const app = createApp({
-      store: { health: async () => ({ status: "ok", journalMode: "wal", schemaVersion: 4 }) } as never,
+      store: {
+        health: async () => ({ status: "ok", journalMode: "wal", schemaVersion: 4 })
+      } as never,
       executor: { getStatus: () => "idle" as const },
       token: TOKEN,
       workspaceId: WORKSPACE_ID,

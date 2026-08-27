@@ -4,10 +4,7 @@ import { CancelCommandRequestSchema, ReadCommandEventsRequestSchema } from "@aut
 
 import { createHostDaemonClient } from "../src/host-daemon-client.js";
 
-import {
-  localExecutionRequests,
-  preparedEnvironmentFor
-} from "./fixtures/seed-approved-run.js";
+import { localExecutionRequests, preparedEnvironmentFor } from "./fixtures/seed-approved-run.js";
 
 const TOKEN = "host-token-0123456789abcdef0123456789abcdef";
 const IDS = {
@@ -326,9 +323,9 @@ describe("HostDaemonClient routed calls", () => {
       replayed: false
     };
 
-    await expect(
-      client(async () => json(accepted, 202)).startCommand(start)
-    ).resolves.toEqual(accepted);
+    await expect(client(async () => json(accepted, 202)).startCommand(start)).resolves.toEqual(
+      accepted
+    );
   });
 
   it("requests an artifact range with a byte Range header and unwraps the chunk", async () => {
@@ -445,8 +442,9 @@ describe("HostDaemonClient routed calls", () => {
 
   it("reports an empty host body as an invalid response rather than parsing it", async () => {
     await expect(
-      client(async () => new Response("", { headers: { "content-type": "application/json" } }))
-        .listEnvironments()
+      client(
+        async () => new Response("", { headers: { "content-type": "application/json" } })
+      ).listEnvironments()
     ).rejects.toThrow(/invalid host response/i);
   });
 });

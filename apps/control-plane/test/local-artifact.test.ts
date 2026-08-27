@@ -101,9 +101,9 @@ describe("LocalArtifactService verification refusals", () => {
     });
 
   it("rejects a negative artifact size ceiling at construction", () => {
-    expect(() => new LocalArtifactService({ readArtifactRange: async () => ({}) as never }, -1)).toThrow(
-      /Artifact size limit is invalid/
-    );
+    expect(
+      () => new LocalArtifactService({ readArtifactRange: async () => ({}) as never }, -1)
+    ).toThrow(/Artifact size limit is invalid/);
   });
 
   it("refuses an artifact larger than the configured ceiling before reading any bytes", async () => {

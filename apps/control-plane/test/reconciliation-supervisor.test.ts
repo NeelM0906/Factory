@@ -210,9 +210,9 @@ describe("CommandReconciliationSupervisor", () => {
       reconciler: { reconcile: async () => "completed" as const }
     };
 
-    expect(() => new CommandReconciliationSupervisor({ ...dependencies, maximumFailures: -1 })).toThrow(
-      /Reconciliation failure limit is invalid/
-    );
+    expect(
+      () => new CommandReconciliationSupervisor({ ...dependencies, maximumFailures: -1 })
+    ).toThrow(/Reconciliation failure limit is invalid/);
     expect(
       () => new CommandReconciliationSupervisor({ ...dependencies, maximumFailures: 1.5 })
     ).toThrow(/Reconciliation failure limit is invalid/);

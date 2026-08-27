@@ -1,9 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import {
-  createControlPlaneReadiness,
-  publishControlPlaneReadiness
-} from "../src/readiness.js";
+import { createControlPlaneReadiness, publishControlPlaneReadiness } from "../src/readiness.js";
 
 describe("control-plane readiness", () => {
   it("publishes only the assigned numeric-loopback listener", () => {
