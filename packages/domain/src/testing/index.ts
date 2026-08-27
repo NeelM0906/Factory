@@ -1,3 +1,4 @@
+export * from "./agent-harness-conformance.js";
 export * from "./fake-agent-harness.js";
 export * from "./fake-agent-harness-script.js";
 export * from "./fake-delivery-integration.js";
