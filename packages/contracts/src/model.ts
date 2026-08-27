@@ -360,6 +360,99 @@ export const ModelPolicySchema = z
     }
   });
 
+/**
+ * The invocation seam over a route that `ModelRouterPort` already resolved (spec §10.1). Kept
+ * deliberately narrow and vendor-neutral: no provider SDK type appears here, and there is neither a
+ * tool-calling round trip nor token streaming, because Milestone A's stations produce one document
+ * per call and a partial document is a failure rather than a state.
+ */
+export const MODEL_MESSAGE_ROLES = ["system", "user", "assistant"] as const;
+export const ModelMessageRoleSchema = z.enum(MODEL_MESSAGE_ROLES);
+
+export const ModelMessageSchema = z
+  .object({ role: ModelMessageRoleSchema, content: SafeMetadataStringSchema.max(1_000_000) })
+  .strict();
+
+/**
+ * `maxOutputTokens` is required rather than optional: an unbounded generation cannot be checked
+ * against `ModelPolicySchema.maxOutputTokens`, and a caller that does not care still has to say so.
+ * `responseFormat: "json"` asks the provider for JSON *text* — parsing and validating it belongs to
+ * the caller that owns the document schema, so no response schema crosses this boundary.
+ */
+export const ModelGenerationOptionsSchema = z
+  .object({
+    maxOutputTokens: z.number().int().positive().max(1_000_000),
+    reasoningLevel: ModelReasoningLevelSchema.optional(),
+    responseFormat: z.enum(["text", "json"]).default("text")
+  })
+  .strict();
+
+export const ModelInferenceRequestSchema = z
+  .object({
+    schemaVersion: VersionSchema,
+    idempotencyKey: IdempotencyKeySchema,
+    selection: ModelRouteSelectionSchema,
+    messages: z.array(ModelMessageSchema).min(1).max(200),
+    options: ModelGenerationOptionsSchema
+  })
+  .strict()
+  .superRefine((value, context) => {
+    if (value.messages.every((message) => message.role === "system")) {
+      context.addIssue({
+        code: "custom",
+        path: ["messages"],
+        message: "A request made only of system messages asks the model nothing."
+      });
+    }
+  });
+
+export const MODEL_FINISH_REASONS = ["stop", "length", "content_filter", "error"] as const;
+export const ModelFinishReasonSchema = z.enum(MODEL_FINISH_REASONS);
+
+export const ModelInferenceResultSchema = z
+  .object({
+    schemaVersion: VersionSchema,
+    idempotencyKey: IdempotencyKeySchema,
+    routeRef: StableRefSchema,
+    content: SafeMetadataStringSchema.max(1_000_000),
+    actual: z
+      .object({
+        provider: StableRefSchema,
+        model: StableRefSchema,
+        providerRequestId: StableRefSchema.optional()
+      })
+      .strict(),
+    tokens: ModelTokenUsageSchema,
+    cost: ModelCostSchema,
+    finishReason: ModelFinishReasonSchema,
+    latencyMs: z.number().int().nonnegative(),
+    completedAt: TimestampSchema
+  })
+  .strict();
+
+export type ModelMessageRole = z.infer<typeof ModelMessageRoleSchema>;
+export type ModelMessage = z.infer<typeof ModelMessageSchema>;
+export type ModelGenerationOptions = z.infer<typeof ModelGenerationOptionsSchema>;
+export type ModelInferenceRequest = z.infer<typeof ModelInferenceRequestSchema>;
+export type ModelFinishReason = z.infer<typeof ModelFinishReasonSchema>;
+export type ModelInferenceResult = z.infer<typeof ModelInferenceResultSchema>;
+
+/** Admits a result only when it answers this request, on the route the request already resolved. */
+export const admitModelInferenceResult = (
+  requestInput: unknown,
+  resultInput: unknown
+): ModelInferenceResult => {
+  const request = ModelInferenceRequestSchema.parse(requestInput);
+  const result = ModelInferenceResultSchema.parse(resultInput);
+  if (result.idempotencyKey !== request.idempotencyKey) {
+    throw new TypeError("Model inference result answers a different request.");
+  }
+  if (result.routeRef !== request.selection.routeRef) {
+    throw new TypeError("Model inference result came from a route the request did not resolve.");
+  }
+  return result;
+};
+
 export type ModelRoute = z.infer<typeof ModelRouteSchema>;
 export type ModelRouteContext = z.infer<typeof ModelRouteContextSchema>;
 export type ModelRouteSelection = z.infer<typeof ModelRouteSelectionSchema>;
@@ -374,6 +467,17 @@ export type ModelUsageRecord = z.infer<typeof ModelUsageRecordSchema>;
 export type ModelRouteFallback = z.infer<typeof ModelRouteFallbackSchema>;
 export type ModelReasoningLevel = z.infer<typeof ModelReasoningLevelSchema>;
 export type ModelPolicy = z.infer<typeof ModelPolicySchema>;
+
+/**
+ * Executes one already-resolved route. Separate from `ModelRouterPort` because resolving a route
+ * and spending money on it are different authorities: the pipeline resolves, the adapter invokes.
+ *
+ * Every failure is raised as `ModelRoutingError`, so the taxonomy survives the call and a caller
+ * never has to interpret a provider SDK's error to decide whether to retry.
+ */
+export interface ModelInferencePort {
+  run(request: ModelInferenceRequest): Promise<ModelInferenceResult>;
+}
 
 /** Resolves routes and accounts for usage without coupling agent harnesses to a vendor SDK. */
 export interface ModelRouterPort {

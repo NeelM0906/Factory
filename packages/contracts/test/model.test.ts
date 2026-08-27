@@ -1,7 +1,12 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  MODEL_FINISH_REASONS,
+  MODEL_MESSAGE_ROLES,
   MODEL_ROUTING_FAILURE_CODES,
+  ModelInferenceRequestSchema,
+  ModelInferenceResultSchema,
+  admitModelInferenceResult,
   ModelCatalogEntrySchema,
   ModelRoutingError,
   ModelRoutingFailureSchema,
@@ -415,5 +420,120 @@ describe("model usage unknown-expressibility", () => {
     expect(ModelUsageRecordSchema.parse({ ...usageRecord(), attempt: 2 }).attempt).toBe(2);
     expect(() => ModelUsageRecordSchema.parse({ ...usageRecord(), attempt: -1 })).toThrow();
     expect(() => ModelUsageRecordSchema.parse({ ...usageRecord(), attempt: 1.5 })).toThrow();
+  });
+});
+
+describe("model inference", () => {
+  const selection = {
+    schemaVersion: 1 as const,
+    idempotencyKey: "model-infer:run:plan:1",
+    routeRef: "route.gateway.default",
+    reason: "Only allowed route for the plan station.",
+    selectedAt: "2026-08-23T12:00:00.000Z"
+  };
+  const request = () => ({
+    schemaVersion: 1 as const,
+    idempotencyKey: "model-infer:run:plan:1",
+    selection,
+    messages: [
+      { role: "system" as const, content: "You produce a plan document." },
+      { role: "user" as const, content: "Fix the failing regression." }
+    ],
+    options: {
+      maxOutputTokens: 4_096,
+      reasoningLevel: "medium" as const,
+      responseFormat: "json" as const
+    }
+  });
+  const result = () => ({
+    schemaVersion: 1 as const,
+    idempotencyKey: "model-infer:run:plan:1",
+    routeRef: "route.gateway.default",
+    content: '{"summary":"Fix the regression."}',
+    actual: {
+      provider: "anthropic",
+      model: "anthropic/claude-sonnet-4",
+      providerRequestId: "req-1"
+    },
+    tokens: {
+      input: { state: "reported" as const, value: 900 },
+      output: { state: "reported" as const, value: 120 },
+      cachedInput: { state: "unknown" as const },
+      reasoning: { state: "unknown" as const }
+    },
+    cost: { state: "unknown" as const },
+    finishReason: "stop" as const,
+    latencyMs: 1_400,
+    completedAt: "2026-08-23T12:00:02.000Z"
+  });
+
+  it("declares the vendor-neutral vocabularies the seam needs", () => {
+    expect([...MODEL_MESSAGE_ROLES]).toEqual(["system", "user", "assistant"]);
+    expect([...MODEL_FINISH_REASONS]).toEqual(["stop", "length", "content_filter", "error"]);
+  });
+
+  it("carries a resolved route, role-tagged messages, and a bounded generation budget", () => {
+    const parsed = ModelInferenceRequestSchema.parse(request());
+    expect(parsed.selection.routeRef).toBe("route.gateway.default");
+    expect(parsed.messages).toHaveLength(2);
+    expect(parsed.options.maxOutputTokens).toBe(4_096);
+    expect(parsed.options.responseFormat).toBe("json");
+  });
+
+  it("defaults the response format to text and leaves reasoning to the policy", () => {
+    const parsed = ModelInferenceRequestSchema.parse({
+      ...request(),
+      options: { maxOutputTokens: 512 }
+    });
+    expect(parsed.options.responseFormat).toBe("text");
+    expect(parsed.options.reasoningLevel).toBeUndefined();
+  });
+
+  it("refuses a request that asks nothing and an unbounded generation", () => {
+    expect(() => ModelInferenceRequestSchema.parse({ ...request(), messages: [] })).toThrow();
+    expect(() =>
+      ModelInferenceRequestSchema.parse({
+        ...request(),
+        messages: [{ role: "system", content: "You produce a plan document." }]
+      })
+    ).toThrow(/system/i);
+    expect(() =>
+      ModelInferenceRequestSchema.parse({ ...request(), options: { reasoningLevel: "low" } })
+    ).toThrow();
+  });
+
+  it("admits no tool call and no stream anywhere in the seam", () => {
+    expect(() =>
+      ModelInferenceRequestSchema.parse({ ...request(), tools: [{ name: "read_file" }] })
+    ).toThrow();
+    expect(() =>
+      ModelInferenceRequestSchema.parse({
+        ...request(),
+        options: { maxOutputTokens: 512, stream: true }
+      })
+    ).toThrow();
+    expect(() => ModelInferenceResultSchema.parse({ ...result(), toolCalls: [] })).toThrow();
+  });
+
+  it("preserves unknown provider usage on the result", () => {
+    const parsed = ModelInferenceResultSchema.parse(result());
+    expect(parsed.tokens.cachedInput).toEqual({ state: "unknown" });
+    expect(parsed.cost).toEqual({ state: "unknown" });
+    expect(parsed.actual.model).toBe("anthropic/claude-sonnet-4");
+    expect(parsed.finishReason).toBe("stop");
+  });
+
+  it("admits a result only for the request and route it answers", () => {
+    const admitted = admitModelInferenceResult(request(), result());
+    expect(admitted.content).toBe('{"summary":"Fix the regression."}');
+    expect(() =>
+      admitModelInferenceResult(request(), {
+        ...result(),
+        idempotencyKey: "model-infer:run:plan:2"
+      })
+    ).toThrow(/request/i);
+    expect(() =>
+      admitModelInferenceResult(request(), { ...result(), routeRef: "route.openrouter.default" })
+    ).toThrow(/route/i);
   });
 });
