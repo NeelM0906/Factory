@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { chmod, mkdir, realpath, rm, symlink, unlink, writeFile } from "node:fs/promises";
+import { chmod, mkdir, realpath, rename, rm, stat, symlink, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 
@@ -126,8 +126,16 @@ describe("guardian runtime", () => {
     const fixture = await buildRuntime();
     const runtime = await validateGuardianRuntime(fixture.descriptor);
 
-    await unlink(fixture.guardian);
-    await writeFile(fixture.guardian, "guardian", { mode: 0o600 });
+    // The replacement has to exist beside the original so the filesystem cannot hand it the inode
+    // it is about to free. Unlinking first and rewriting the same path lets ext4 and tmpfs reuse
+    // the just-freed inode number, which reproduces the pinned identity exactly and makes the
+    // guard correctly accept the file. Renaming a separately created file over the original keeps
+    // both inodes allocated at once, so the surviving inode always differs.
+    const pinned = await stat(fixture.guardian, { bigint: true });
+    const replacement = `${fixture.guardian}.replacement`;
+    await writeFile(replacement, "guardian", { mode: 0o600 });
+    await rename(replacement, fixture.guardian);
+    expect((await stat(fixture.guardian, { bigint: true })).ino).not.toBe(pinned.ino);
 
     await expect(runtime.revalidate()).rejects.toThrow("Guardian runtime identity changed.");
   });
