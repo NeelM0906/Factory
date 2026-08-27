@@ -83,7 +83,7 @@ combined union adapters emit and clients consume. `file_change.path` reuses
 `RelativeWorkspacePathSchema`, so an agent cannot report a change outside the managed worktree.
 
 **Revision 3 — the port could not carry them.** Declaring the union was not enough.
-`AgentHarnessPort.start`/`resume` (`packages/contracts/src/agent.ts:401`) still returned
+`AgentHarnessPort.start`/`resume` (`packages/contracts/src/agent.ts:408`) still returned
 `AsyncIterable<AgentSessionEvent>`, the narrower lifecycle union, and revision 1 deliberately left the
 port untouched. Async iterable element types are covariant, so `AsyncIterable<AgentSessionStreamEvent>`
 is not assignable to it: no adapter could emit a single detail event through the only boundary it has,
@@ -105,7 +105,7 @@ pipeline's `Approval` record (`kind: "permission"`, `packages/contracts/src/enti
 it. The admission helper rejects a response from a different session, a response to a different
 `permissionRef`, a response against a stale evidence digest, or a selection the request never offered.
 A request must offer at least one denial option. `AgentPermissionResponderPort`
-(`packages/contracts/src/agent.ts:412`) is a separate interface so adapters that do not declare
+(`packages/contracts/src/agent.ts:420`) is a separate interface so adapters that do not declare
 `capabilities.permissions` simply do not implement it — `AgentHarnessPort` is untouched.
 
 ### 4. Installed vs authenticated status — GAP
@@ -184,7 +184,7 @@ reason without saying what the reasons are. Item 21 gives it a closed vocabulary
 S6 must read it without importing S3; S4 selects routes per station and must evaluate the same
 ceilings. Two consumers outside S3 means it crosses a contract boundary.
 
-**Addition:** `ModelPolicySchema` (`packages/contracts/src/model.ts:244`) — `stage`,
+**Addition:** `ModelPolicySchema` (`packages/contracts/src/model.ts:318`) — `stage`,
 `allowedRouteRefs`, ordered `fallbackRouteRefs`, optional `maxInputTokens`/`maxOutputTokens`/
 `maxCostMicros`, and an optional `reasoningLevel`. A refinement rejects a fallback route that is not
 also an allowed route, so a policy cannot escape its own constraint. Data-handling requirements
@@ -193,7 +193,7 @@ no Milestone A stream reads them.
 
 ### 21. Model routing failure taxonomy — GAP (revision 3)
 
-`ModelRouterPort.resolve` (`packages/contracts/src/model.ts:299`) either returns a
+`ModelRouterPort.resolve` (`packages/contracts/src/model.ts:372`) either returns a
 `ModelRouteSelection` or raises, and nothing in contracts described the raise. Three streams have to
 agree on why a route could not be resolved: S3 raises it, S4 decides from it whether to retry the
 stage (§8.3 splits transient from deterministic failure), and S6 displays it. An adapter-local code
@@ -201,10 +201,10 @@ enum would have become a de-facto cross-stream interface without ever being revi
 is exactly what the Task 0.2 fake did before this was added.
 
 **Addition:** `MODEL_ROUTING_FAILURE_CODES` and `ModelRoutingFailureSchema`
-(`packages/contracts/src/model.ts:240`) declare the shared vocabulary — `capability_unavailable`,
+(`packages/contracts/src/model.ts:245`, `:264`) declare the shared vocabulary — `capability_unavailable`,
 `route_disabled`, `provider_error`, `rate_limited`, `budget_exceeded` — with secret-safe operator
 text, a `retryable` flag, and optional `routeRef`/`requestedModel` attribution.
-`ModelRoutingError` (`:295`) is the throwable form, and it admits its input in the constructor so an
+`ModelRoutingError` (`:299`) is the throwable form, and it admits its input in the constructor so an
 unmodelled code cannot reach a caller's retry decision.
 
 A refinement keeps §8.3's split structural rather than advisory. The three codes that describe the
@@ -213,8 +213,11 @@ retryable, because retrying the identical request cannot change the answer. `rat
 the _moment_ and must stay retryable. `provider_error` is deliberately either, since only the adapter
 knows whether a given provider fault was transient.
 
-This closes the gap for `ModelRouteFallbackSchema.failureCode` (item 9) as well: a recorded fallback
-now has a vocabulary to name its cause with.
+This gives `ModelRouteFallbackSchema.failureCode` (item 9) a vocabulary to name its cause with, but
+does not close that gap: the field is still `StableRefSchema`, structurally unbound to the enum, so
+nothing rejects a fallback that records a code outside the taxonomy. Binding the field to
+`ModelRoutingFailureCodeSchema` is a deferred contract change (see Explicit deferrals), not something
+this revision applies.
 
 ## Pipeline contract — spec §8, stream S4
 
@@ -261,12 +264,12 @@ document. The station documents now follow the same canonicalize/digest/admit pa
 
 | Helper                                                          | Purpose                                                                |
 | --------------------------------------------------------------- | ---------------------------------------------------------------------- |
-| `canonicalizePlanDocumentForDigest` (`station-evidence.ts:288`) | Explicit field list under domain `autostack.plan-document`             |
-| `digestPlanDocument` (`:305`)                                   | Parse, canonicalize, SHA-256                                           |
-| `admitPlanDocument` (`:363`)                                    | Rejects a plan whose `planDigest` does not cover its own content       |
-| `canonicalizeVerificationReportForDigest` (`:317`)              | Explicit field list under domain `autostack.verification-report`       |
-| `digestVerificationReport` (`:331`)                             | Parse, canonicalize, SHA-256                                           |
-| `admitVerificationReport` (`:372`)                              | Rejects a report not bound to the plan it names, or from another run   |
+| `canonicalizePlanDocumentForDigest` (`station-evidence.ts:291`) | Explicit field list under domain `autostack.plan-document`             |
+| `digestPlanDocument` (`:307`)                                   | Parse, canonicalize, SHA-256                                           |
+| `admitPlanDocument` (`:362`)                                    | Rejects a plan whose `planDigest` does not cover its own content       |
+| `canonicalizeVerificationReportForDigest` (`:322`)              | Explicit field list under domain `autostack.verification-report`       |
+| `digestVerificationReport` (`:335`)                             | Parse, canonicalize, SHA-256                                           |
+| `admitVerificationReport` (`:371`)                              | Rejects a report not bound to the plan it names, or from another run   |
 | `admitReviewReport` (`:385`)                                    | Rejects a review not bound to this plan and this verification evidence |
 
 Two canonicalization rules that S1 and S4 must both honour, and which differ deliberately:
@@ -426,12 +429,12 @@ before the Wave 1 worktrees are cut. Each widens inbound parsing only — no con
 switches on these values, so no downstream code can break.
 
 **E1 — GitHub ingress event coverage — RESOLVED.** `GitHubIngressDeliverySchema.event`
-(`packages/contracts/src/integration.ts:31`) now admits `issues.labeled` alongside `issues.opened`,
+(`packages/contracts/src/integration.ts:32`) now admits `issues.labeled` alongside `issues.opened`,
 `issues.edited`, and `issue_comment.created`. Spec §4.4 and acceptance criterion 4 require intake
 from "an issue labeled `autostack`", and labelling an _existing_ issue emits `issues.labeled`.
 
 **E2 — Slack ingress event coverage — RESOLVED.** `SlackIngressDeliverySchema.event`
-(`packages/contracts/src/integration.ts:57`) now admits `message_action` alongside `app_mention` and
+(`packages/contracts/src/integration.ts:54`) now admits `message_action` alongside `app_mention` and
 `message`. Spec §4.3 and acceptance criterion 3 require invocation from "a DM, mention, or **message
 action**"; the delivery's existing `channelId`/`threadTs`/`messageTs`/`userId` fields already carry
 everything the shortcut needs.
@@ -441,14 +444,15 @@ silently.
 
 ## Explicit deferrals
 
-| Deferred                                                                        | Rationale                                                                                                                                                                                                                                                                                                |
-| ------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Model data-handling policy (zero-data-retention, approved provider lists)       | Spec §10.2 scopes these to team policy; no Milestone A stream reads them.                                                                                                                                                                                                                                |
-| Rename tracking in `file_change` events                                         | Representable as delete + add; no stream charter needs rename provenance.                                                                                                                                                                                                                                |
-| A shared capability-filtering helper over `ModelCatalogEntry`                   | Filtering logic is S3-internal; only the capability _declaration_ crosses a boundary.                                                                                                                                                                                                                    |
-| New domain event types in `EVENT_TYPES` (`packages/contracts/src/events.ts:50`) | Appending members to the existing array widens `DomainEventType` and the `PendingDomainEvent` union. Streams that need to persist agent-detail or route events should request the addition through the orchestrator with the coherence rules in `validateRunStreamCoherence` updated in the same change. |
-| Editing an already-posted Slack progress message                                | §4.3 and §13.2 require thread-bound progress, not in-place edits; only GitHub mandates a single editable comment.                                                                                                                                                                                        |
-| Factory memory (§16.3) and Eve adapter (§9.4)                                   | Deferred by the master plan's locked decision 7.                                                                                                                                                                                                                                                         |
+| Deferred                                                                          | Rationale                                                                                                                                                                                                                                                                                                |
+| --------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Model data-handling policy (zero-data-retention, approved provider lists)         | Spec §10.2 scopes these to team policy; no Milestone A stream reads them.                                                                                                                                                                                                                                |
+| Rename tracking in `file_change` events                                           | Representable as delete + add; no stream charter needs rename provenance.                                                                                                                                                                                                                                |
+| A shared capability-filtering helper over `ModelCatalogEntry`                     | Filtering logic is S3-internal; only the capability _declaration_ crosses a boundary.                                                                                                                                                                                                                    |
+| New domain event types in `EVENT_TYPES` (`packages/contracts/src/events.ts:50`)   | Appending members to the existing array widens `DomainEventType` and the `PendingDomainEvent` union. Streams that need to persist agent-detail or route events should request the addition through the orchestrator with the coherence rules in `validateRunStreamCoherence` updated in the same change. |
+| Editing an already-posted Slack progress message                                  | §4.3 and §13.2 require thread-bound progress, not in-place edits; only GitHub mandates a single editable comment.                                                                                                                                                                                        |
+| Binding `ModelRouteFallbackSchema.failureCode` to `ModelRoutingFailureCodeSchema` | The field is `StableRefSchema` today. Narrowing it is a breaking change for any recorded fallback carrying a non-taxonomy ref, so it goes through the orchestrator rather than landing with the taxonomy itself.                                                                                         |
+| Factory memory (§16.3) and Eve adapter (§9.4)                                     | Deferred by the master plan's locked decision 7.                                                                                                                                                                                                                                                         |
 
 ## Verification
 
