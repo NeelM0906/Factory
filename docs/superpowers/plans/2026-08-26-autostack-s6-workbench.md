@@ -43,6 +43,20 @@
 - UTF-8, LF, Prettier-formatted. `as-` class prefix in `packages/ui`; unprefixed classes in `packages/client-app/src/app.css`. Small file per concern: no source file over 400 lines without a stated reason.
 - Never push. Merges are orchestrator-owned.
 
+### Single-committer model (adopted 2026-08-27, after the S3 shared-index incident)
+
+S3 hit a shared-index git race twice in one parallel wave: a subagent's plain `git commit` swept a sibling's staged files, and a sibling's `git reset` unstaged another's work. A git index is shared mutable state across every agent in a worktree, and `git add`/`commit`/`reset` are read-modify-write operations on it with no locking. S1–S4 converged on the same model; S6 adopts it here.
+
+**The lead is the only writer.** Implementer subagents:
+
+- **never** run a mutating git command — no `add`, `commit`, `amend`, `reset`, `checkout`, `stash`, `rebase`, `restore`, `clean`. Read-only inspection (`status`, `diff`, `log`, `show`) is fine.
+- write source and test files, run the package's `check` / `test` / `test:coverage` / `format` commands, write their report to `.superpowers/sdd/task-NN-report.md`, and **end their turn**.
+- **cannot message the lead.** Their reports route to the orchestrator, who relays. The report file is the real channel; the brief must say so.
+
+The lead reviews the working tree against the report, then stages and commits. `git commit --amend` is a lead-only operation — **amend-by-subagent is on the deny-list**, because an amend rewrites a commit another agent may already have built on.
+
+**Parallelism rule:** at most one implementer holds the working tree at a time. Independent tasks may be _briefed_ in parallel but are _executed_ serially, until and unless each runs in its own worktree. Task 1's fix loop predated this ruling and ran amend-by-subagent; it was the only agent in this worktree at the time, so no race occurred, and the model is in force from Task 1's final commit onward.
+
 ### Lockfile discipline (note 13)
 
 Three tasks touch `pnpm-lock.yaml`, all unavoidably and all expected: Task 10b adds `axe-core` as a devDependency of `@autostack/web`; Task 11a creates the `packages/observability` workspace entry. `pnpm install --frozen-lockfile` is a CI gate, so the lockfile change is committed **with the task that causes it**, never separately, and no task adds a dependency it does not consume in the same commit.
