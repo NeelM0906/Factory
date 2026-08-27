@@ -90,3 +90,141 @@ describe("LocalArtifactService", () => {
     );
   });
 });
+
+describe("LocalArtifactService verification refusals", () => {
+  const respond = (
+    body: (request: ReturnType<typeof ReadArtifactChunkRequestSchema.parse>) => unknown
+  ) =>
+    new LocalArtifactService({
+      readArtifactRange: async (candidate) =>
+        body(ReadArtifactChunkRequestSchema.parse(candidate)) as never
+    });
+
+  it("rejects a negative artifact size ceiling at construction", () => {
+    expect(() => new LocalArtifactService({ readArtifactRange: async () => ({}) as never }, -1)).toThrow(
+      /Artifact size limit is invalid/
+    );
+  });
+
+  it("refuses an artifact larger than the configured ceiling before reading any bytes", async () => {
+    let reads = 0;
+    const service = new LocalArtifactService(
+      {
+        readArtifactRange: async () => {
+          reads += 1;
+          return {} as never;
+        }
+      },
+      bytes.byteLength - 1
+    );
+
+    await expect(service.verifyFinalizedArtifact(descriptor, ownership)).rejects.toThrow(
+      /artifact verification/i
+    );
+    expect(reads).toBe(0);
+  });
+
+  it("refuses a descriptor candidate that is not a valid artifact descriptor", async () => {
+    const service = respond(() => ({}));
+
+    await expect(
+      service.verifyFinalizedArtifact({ artifactId: "not-an-artifact" }, ownership)
+    ).rejects.toThrow(/artifact verification/i);
+  });
+
+  it("refuses a non-terminal chunk that carries no bytes so the read cannot stall", async () => {
+    const service = respond((request) =>
+      ReadArtifactChunkResponseSchema.parse({
+        artifact: descriptor,
+        offset: request.offset,
+        bytes: "",
+        nextOffset: request.offset,
+        done: false
+      })
+    );
+
+    await expect(service.verifyFinalizedArtifact(descriptor, ownership)).rejects.toThrow(
+      /artifact verification/i
+    );
+  });
+
+  it("refuses a terminal chunk that stops short of the declared byte size", async () => {
+    const truncated = bytes.subarray(0, 4);
+    const service = respond((request) =>
+      ReadArtifactChunkResponseSchema.parse({
+        artifact: descriptor,
+        offset: request.offset,
+        bytes: truncated.toString("base64"),
+        nextOffset: truncated.byteLength,
+        done: true
+      })
+    );
+
+    await expect(service.verifyFinalizedArtifact(descriptor, ownership)).rejects.toThrow(
+      /artifact verification/i
+    );
+  });
+
+  it("propagates a transport failure as a verification failure rather than a raw error", async () => {
+    const service = new LocalArtifactService({
+      readArtifactRange: async () => {
+        throw new Error("private transport failure");
+      }
+    });
+
+    await expect(service.verifyFinalizedArtifact(descriptor, ownership)).rejects.toThrow(
+      /artifact verification/i
+    );
+  });
+
+  it("verifies a non-transcript artifact without scanning it for sensitive material", async () => {
+    const output = Buffer.from("Bearer 0123456789abcdef0123456789abcdef", "utf8");
+    const outputDescriptor = ArtifactDescriptorSchema.parse({
+      ...descriptor,
+      artifactId: "art_123e4567-e89b-42d3-a456-426614174001",
+      kind: "command_output",
+      mediaType: "application/octet-stream",
+      digest: createHash("sha256").update(output).digest("hex"),
+      byteSize: output.byteLength
+    });
+    const service = respond((request) =>
+      ReadArtifactChunkResponseSchema.parse({
+        artifact: outputDescriptor,
+        offset: request.offset,
+        bytes: output.toString("base64"),
+        nextOffset: output.byteLength,
+        done: true
+      })
+    );
+
+    await expect(service.verifyFinalizedArtifact(outputDescriptor, ownership)).resolves.toEqual(
+      outputDescriptor
+    );
+  });
+
+  it("refuses a text transcript whose bytes contain sensitive material", async () => {
+    const leaking = Buffer.from(
+      "AKIAIOSFODNN7EXAMPLE aws_secret_access_key=wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY\n",
+      "utf8"
+    );
+    const leakingDescriptor = ArtifactDescriptorSchema.parse({
+      ...descriptor,
+      artifactId: "art_123e4567-e89b-42d3-a456-426614174002",
+      digest: createHash("sha256").update(leaking).digest("hex"),
+      byteSize: leaking.byteLength
+    });
+    const service = respond((request) =>
+      ReadArtifactChunkResponseSchema.parse({
+        artifact: leakingDescriptor,
+        offset: request.offset,
+        bytes: leaking.toString("base64"),
+        nextOffset: leaking.byteLength,
+        done: true
+      })
+    );
+
+    await expect(service.verifyFinalizedArtifact(leakingDescriptor, ownership)).rejects.toThrow(
+      /artifact verification/i
+    );
+  });
+});
