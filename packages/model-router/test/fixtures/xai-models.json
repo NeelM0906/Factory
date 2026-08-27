@@ -1,0 +1,20 @@
+{
+  "models": [
+    {
+      "id": "grok-2-latest",
+      "input_modalities": ["text", "image"],
+      "output_modalities": ["text"],
+      "pricing": { "prompt": "0.000002", "completion": "0.00001" }
+    },
+    {
+      "id": "grok-2-mini",
+      "input_modalities": ["text"],
+      "output_modalities": ["text"]
+    },
+    {
+      "id": "grok-telepathic",
+      "input_modalities": ["telepathy"],
+      "output_modalities": ["telepathy"]
+    }
+  ]
+}
