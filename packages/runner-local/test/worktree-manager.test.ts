@@ -28,6 +28,11 @@ import {
   gitFixtureCommand
 } from "./fixtures/create-git-repository.js";
 
+// Git-process bound: these cases spawn real `git` and drive real filesystem locking, and measure
+// 1.5-3.3s on an unconstrained dev machine. CI runs `pnpm test:coverage` on a 2-vCPU runner with V8
+// coverage instrumentation, which leaves them no margin against the 5s default. Applied per case so
+// the package-wide default keeps protecting every other test.
+const SLOW_CASE = { timeout: 15_000 } as const;
 const UUID = "123e4567-e89b-42d3-a456-426614174000";
 const roots: string[] = [];
 
@@ -267,110 +272,122 @@ describe("WorktreeManager", () => {
     await expect(manager.listEnvironments()).rejects.toMatchObject({ code: "closed" });
   });
 
-  it("creates the exact locked worktree without changing the source checkout", async () => {
-    const { fixture, dataRoot, request } = await createSetup();
-    const before = await captureSourceCheckoutInvariant(fixture);
-    const manager = await WorktreeManager.create(managerOptions(dataRoot));
+  it(
+    "creates the exact locked worktree without changing the source checkout",
+    SLOW_CASE,
+    async () => {
+      const { fixture, dataRoot, request } = await createSetup();
+      const before = await captureSourceCheckoutInvariant(fixture);
+      const manager = await WorktreeManager.create(managerOptions(dataRoot));
 
-    const prepared = await manager.prepareEnvironment(request);
-    const resolved = await manager.resolvePreparedEnvironment(request.environmentId);
+      const prepared = await manager.prepareEnvironment(request);
+      const resolved = await manager.resolvePreparedEnvironment(request.environmentId);
 
-    expect(prepared).toMatchObject({
-      environmentId: request.environmentId,
-      workspaceId: request.workspaceId,
-      runId: request.runId,
-      repositoryIdentity: request.inspection.repositoryIdentity,
-      sourceCommit: request.sourceCommit,
-      branch: request.branch,
-      authorization: request.authorization,
-      state: "prepared"
-    });
-    expect(Object.isFrozen(prepared)).toBe(true);
-    expect(resolved.environment).toEqual(prepared);
-    expect(resolved.managedPath).toBe(
-      join(
-        dataRoot,
-        "worktrees",
-        request.inspection.repositoryIdentity.slice("local-sha256:".length),
-        Buffer.from(request.environmentId).toString("hex")
-      )
-    );
-    expect(resolved.intentDigest).toMatch(/^[0-9a-f]{64}$/);
-    expect(await gitFixtureCommand(resolved.managedPath, ["rev-parse", "HEAD"])).toBe(
-      request.sourceCommit
-    );
-    expect(await gitFixtureCommand(resolved.managedPath, ["symbolic-ref", "--short", "HEAD"])).toBe(
-      request.branch
-    );
-    expect(
-      await gitFixtureCommand(fixture.sourcePath, ["worktree", "list", "--porcelain"])
-    ).toContain("locked AutoStack");
-    expect(await captureSourceCheckoutInvariant(fixture)).toEqual(before);
-    expect(await manager.listEnvironments()).toEqual([prepared]);
-    await manager.close();
-  });
+      expect(prepared).toMatchObject({
+        environmentId: request.environmentId,
+        workspaceId: request.workspaceId,
+        runId: request.runId,
+        repositoryIdentity: request.inspection.repositoryIdentity,
+        sourceCommit: request.sourceCommit,
+        branch: request.branch,
+        authorization: request.authorization,
+        state: "prepared"
+      });
+      expect(Object.isFrozen(prepared)).toBe(true);
+      expect(resolved.environment).toEqual(prepared);
+      expect(resolved.managedPath).toBe(
+        join(
+          dataRoot,
+          "worktrees",
+          request.inspection.repositoryIdentity.slice("local-sha256:".length),
+          Buffer.from(request.environmentId).toString("hex")
+        )
+      );
+      expect(resolved.intentDigest).toMatch(/^[0-9a-f]{64}$/);
+      expect(await gitFixtureCommand(resolved.managedPath, ["rev-parse", "HEAD"])).toBe(
+        request.sourceCommit
+      );
+      expect(
+        await gitFixtureCommand(resolved.managedPath, ["symbolic-ref", "--short", "HEAD"])
+      ).toBe(request.branch);
+      expect(
+        await gitFixtureCommand(fixture.sourcePath, ["worktree", "list", "--porcelain"])
+      ).toContain("locked AutoStack");
+      expect(await captureSourceCheckoutInvariant(fixture)).toEqual(before);
+      expect(await manager.listEnvironments()).toEqual([prepared]);
+      await manager.close();
+    }
+  );
 
-  it("serializes concurrent identical prepares and keeps casing-distinct IDs isolated", async () => {
-    const { fixture, dataRoot, request } = await createSetup();
-    const before = await captureSourceCheckoutInvariant(fixture);
-    const manager = await WorktreeManager.create(managerOptions(dataRoot));
-    const secondEnvironmentId =
-      request.environmentId.toUpperCase() as PrepareEnvironmentRequest["environmentId"];
-    const secondBranch = `${request.branch}-case`;
-    const secondAuthorization = createAuthorization(
-      request.inspection,
-      secondBranch,
-      secondEnvironmentId
-    );
-    const secondRequest: PrepareEnvironmentRequest = {
-      ...request,
-      environmentId: secondEnvironmentId,
-      branch: secondBranch,
-      authorization: secondAuthorization,
-      idempotency: { key: "prepare-case" }
-    };
-
-    const [first, replay, second, secondReplay] = await Promise.all([
-      manager.prepareEnvironment(request),
-      manager.prepareEnvironment(request),
-      manager.prepareEnvironment(secondRequest),
-      manager.prepareEnvironment(secondRequest)
-    ]);
-
-    expect(replay).toEqual(first);
-    expect(secondReplay).toEqual(second);
-    expect(second.environmentId).not.toBe(first.environmentId);
-    expect((await manager.resolvePreparedEnvironment(first.environmentId)).managedPath).not.toBe(
-      (await manager.resolvePreparedEnvironment(second.environmentId)).managedPath
-    );
-    expect(new Set((await manager.listEnvironments()).map((item) => item.environmentId))).toEqual(
-      new Set([request.environmentId, secondEnvironmentId])
-    );
-    expect(await captureSourceCheckoutInvariant(fixture)).toEqual(before);
-    await manager.close();
-  });
-
-  it("recovers a ready environment after restart and replays the exact request", async () => {
-    const { fixture, dataRoot, request } = await createSetup();
-    const before = await captureSourceCheckoutInvariant(fixture);
-    const first = await WorktreeManager.create(managerOptions(dataRoot));
-    const original = await first.prepareEnvironment(request);
-    await first.close();
-
-    const restarted = await WorktreeManager.create(
-      managerOptions(dataRoot, "2026-08-21T12:02:00.000Z")
-    );
-    expect(await restarted.prepareEnvironment(request)).toEqual(original);
-    expect(await restarted.listEnvironments()).toEqual([original]);
-    await expect(
-      restarted.prepareEnvironment({
+  it(
+    "serializes concurrent identical prepares and keeps casing-distinct IDs isolated",
+    SLOW_CASE,
+    async () => {
+      const { fixture, dataRoot, request } = await createSetup();
+      const before = await captureSourceCheckoutInvariant(fixture);
+      const manager = await WorktreeManager.create(managerOptions(dataRoot));
+      const secondEnvironmentId =
+        request.environmentId.toUpperCase() as PrepareEnvironmentRequest["environmentId"];
+      const secondBranch = `${request.branch}-case`;
+      const secondAuthorization = createAuthorization(
+        request.inspection,
+        secondBranch,
+        secondEnvironmentId
+      );
+      const secondRequest: PrepareEnvironmentRequest = {
         ...request,
-        idempotency: { key: "different" }
-      })
-    ).rejects.toBeInstanceOf(WorktreeManagerError);
-    expect(await captureSourceCheckoutInvariant(fixture)).toEqual(before);
-    await restarted.close();
-  });
+        environmentId: secondEnvironmentId,
+        branch: secondBranch,
+        authorization: secondAuthorization,
+        idempotency: { key: "prepare-case" }
+      };
+
+      const [first, replay, second, secondReplay] = await Promise.all([
+        manager.prepareEnvironment(request),
+        manager.prepareEnvironment(request),
+        manager.prepareEnvironment(secondRequest),
+        manager.prepareEnvironment(secondRequest)
+      ]);
+
+      expect(replay).toEqual(first);
+      expect(secondReplay).toEqual(second);
+      expect(second.environmentId).not.toBe(first.environmentId);
+      expect((await manager.resolvePreparedEnvironment(first.environmentId)).managedPath).not.toBe(
+        (await manager.resolvePreparedEnvironment(second.environmentId)).managedPath
+      );
+      expect(new Set((await manager.listEnvironments()).map((item) => item.environmentId))).toEqual(
+        new Set([request.environmentId, secondEnvironmentId])
+      );
+      expect(await captureSourceCheckoutInvariant(fixture)).toEqual(before);
+      await manager.close();
+    }
+  );
+
+  it(
+    "recovers a ready environment after restart and replays the exact request",
+    SLOW_CASE,
+    async () => {
+      const { fixture, dataRoot, request } = await createSetup();
+      const before = await captureSourceCheckoutInvariant(fixture);
+      const first = await WorktreeManager.create(managerOptions(dataRoot));
+      const original = await first.prepareEnvironment(request);
+      await first.close();
+
+      const restarted = await WorktreeManager.create(
+        managerOptions(dataRoot, "2026-08-21T12:02:00.000Z")
+      );
+      expect(await restarted.prepareEnvironment(request)).toEqual(original);
+      expect(await restarted.listEnvironments()).toEqual([original]);
+      await expect(
+        restarted.prepareEnvironment({
+          ...request,
+          idempotency: { key: "different" }
+        })
+      ).rejects.toBeInstanceOf(WorktreeManagerError);
+      expect(await captureSourceCheckoutInvariant(fixture)).toEqual(before);
+      await restarted.close();
+    }
+  );
 
   it("recovers the exact locked checkout from the post-add pre-ready crash state", async () => {
     const { fixture, dataRoot, inspected, request } = await createSetup();
@@ -498,78 +515,88 @@ describe("WorktreeManager", () => {
     await dirtyManager.close();
   });
 
-  it("disposes only the clean managed checkout, retains its branch, and replays after restart", async () => {
-    const { fixture, dataRoot, request } = await createSetup();
-    const before = await captureSourceCheckoutInvariant(fixture);
-    const manager = await WorktreeManager.create(managerOptions(dataRoot));
-    await manager.prepareEnvironment(request);
-    const resolved = await manager.resolvePreparedEnvironment(request.environmentId);
+  it(
+    "disposes only the clean managed checkout, retains its branch, and replays after restart",
+    SLOW_CASE,
+    async () => {
+      const { fixture, dataRoot, request } = await createSetup();
+      const before = await captureSourceCheckoutInvariant(fixture);
+      const manager = await WorktreeManager.create(managerOptions(dataRoot));
+      await manager.prepareEnvironment(request);
+      const resolved = await manager.resolvePreparedEnvironment(request.environmentId);
 
-    expect(await manager.disposeEnvironment(disposalRequest(request))).toEqual({
-      environmentId: request.environmentId,
-      disposed: true,
-      replayed: false
-    });
-    expect(await gitFixtureCommand(fixture.sourcePath, ["rev-parse", request.branch])).toBe(
-      request.sourceCommit
-    );
-    expect(await captureSourceCheckoutInvariant(fixture)).toEqual(before);
-    expect(await manager.listEnvironments()).toEqual([]);
-    await manager.close();
+      expect(await manager.disposeEnvironment(disposalRequest(request))).toEqual({
+        environmentId: request.environmentId,
+        disposed: true,
+        replayed: false
+      });
+      expect(await gitFixtureCommand(fixture.sourcePath, ["rev-parse", request.branch])).toBe(
+        request.sourceCommit
+      );
+      expect(await captureSourceCheckoutInvariant(fixture)).toEqual(before);
+      expect(await manager.listEnvironments()).toEqual([]);
+      await manager.close();
 
-    const restarted = await WorktreeManager.create(managerOptions(dataRoot));
-    expect(await restarted.disposeEnvironment(disposalRequest(request))).toEqual({
-      environmentId: request.environmentId,
-      disposed: true,
-      replayed: true
-    });
-    await expect(
-      restarted.disposeEnvironment({
-        ...disposalRequest(request),
-        idempotency: { key: "different-dispose" }
-      })
-    ).rejects.toMatchObject({ code: "environment_conflict" });
-    await restarted.close();
-  });
+      const restarted = await WorktreeManager.create(managerOptions(dataRoot));
+      expect(await restarted.disposeEnvironment(disposalRequest(request))).toEqual({
+        environmentId: request.environmentId,
+        disposed: true,
+        replayed: true
+      });
+      await expect(
+        restarted.disposeEnvironment({
+          ...disposalRequest(request),
+          idempotency: { key: "different-dispose" }
+        })
+      ).rejects.toMatchObject({ code: "environment_conflict" });
+      await restarted.close();
+    }
+  );
 
-  it("resumes a durable phase-4 disposal after unlock without inferring absence", async () => {
-    const { fixture, dataRoot, request } = await createSetup();
-    const before = await captureSourceCheckoutInvariant(fixture);
-    const first = await WorktreeManager.create(managerOptions(dataRoot));
-    await first.prepareEnvironment(request);
-    const resolved = await first.resolvePreparedEnvironment(request.environmentId);
-    await first.close();
+  it(
+    "resumes a durable phase-4 disposal after unlock without inferring absence",
+    SLOW_CASE,
+    async () => {
+      const { fixture, dataRoot, request } = await createSetup();
+      const before = await captureSourceCheckoutInvariant(fixture);
+      const first = await WorktreeManager.create(managerOptions(dataRoot));
+      await first.prepareEnvironment(request);
+      const resolved = await first.resolvePreparedEnvironment(request.environmentId);
+      await first.close();
 
-    let tick = 0;
-    const registry = await EnvironmentRegistry.create({
-      dataRoot,
-      now: () => new Date(Date.parse("2026-08-21T12:01:00.000Z") + tick++).toISOString()
-    });
-    const ready = await registry.recoverEnvironment(request.environmentId);
-    expect(ready?.phase).toBe("ready");
-    await registry.recordDisposalIntent({
-      environmentId: request.environmentId,
-      creationAttemptId: ready!.intent.creationAttemptId,
-      disposalRequestDigest: "6".repeat(64),
-      environmentAuthorizationId: request.authorization.id,
-      environmentAuthorizationDigest: request.authorization.digest,
-      terminalRunEvidence: disposalRequest(request).terminalRunEvidence
-    });
-    await gitFixtureCommand(fixture.sourcePath, ["worktree", "unlock", resolved.managedPath]);
+      let tick = 0;
+      const registry = await EnvironmentRegistry.create({
+        dataRoot,
+        now: () => new Date(Date.parse("2026-08-21T12:01:00.000Z") + tick++).toISOString()
+      });
+      const ready = await registry.recoverEnvironment(request.environmentId);
+      expect(ready?.phase).toBe("ready");
+      await registry.recordDisposalIntent({
+        environmentId: request.environmentId,
+        creationAttemptId: ready!.intent.creationAttemptId,
+        disposalRequestDigest: "6".repeat(64),
+        environmentAuthorizationId: request.authorization.id,
+        environmentAuthorizationDigest: request.authorization.digest,
+        terminalRunEvidence: disposalRequest(request).terminalRunEvidence
+      });
+      await gitFixtureCommand(fixture.sourcePath, ["worktree", "unlock", resolved.managedPath]);
 
-    const restarted = await WorktreeManager.create(
-      managerOptions(dataRoot, "2026-08-21T12:02:00.000Z")
-    );
-    expect(await restarted.listEnvironments()).toEqual([]);
-    expect(await gitFixtureCommand(fixture.sourcePath, ["rev-parse", request.branch])).toBe(
-      request.sourceCommit
-    );
-    await expect(gitFixtureCommand(resolved.managedPath, ["rev-parse", "HEAD"])).rejects.toThrow();
-    expect(await captureSourceCheckoutInvariant(fixture)).toEqual(before);
-    await restarted.close();
-  });
+      const restarted = await WorktreeManager.create(
+        managerOptions(dataRoot, "2026-08-21T12:02:00.000Z")
+      );
+      expect(await restarted.listEnvironments()).toEqual([]);
+      expect(await gitFixtureCommand(fixture.sourcePath, ["rev-parse", request.branch])).toBe(
+        request.sourceCommit
+      );
+      await expect(
+        gitFixtureCommand(resolved.managedPath, ["rev-parse", "HEAD"])
+      ).rejects.toThrow();
+      expect(await captureSourceCheckoutInvariant(fixture)).toEqual(before);
+      await restarted.close();
+    }
+  );
 
-  it("rejects repository configuration drift even after durable disposal", async () => {
+  it("rejects repository configuration drift even after durable disposal", SLOW_CASE, async () => {
     const { fixture, dataRoot, request } = await createSetup();
     const manager = await WorktreeManager.create(managerOptions(dataRoot));
     await manager.prepareEnvironment(request);
@@ -582,44 +609,48 @@ describe("WorktreeManager", () => {
     });
   });
 
-  it("never returns historical prepared state after disposal starts or completes", async () => {
-    const { dataRoot, request } = await createSetup();
-    const manager = await WorktreeManager.create(managerOptions(dataRoot));
-    await manager.prepareEnvironment(request);
-    const resolved = await manager.resolvePreparedEnvironment(request.environmentId);
-    const registry = await EnvironmentRegistry.create({
-      dataRoot,
-      now: () => "2026-08-21T12:03:00.000Z"
-    });
-    const ready = await registry.recoverEnvironment(request.environmentId);
-    await registry.recordDisposalIntent({
-      environmentId: request.environmentId,
-      creationAttemptId: ready!.intent.creationAttemptId,
-      disposalRequestDigest: "6".repeat(64),
-      environmentAuthorizationId: request.authorization.id,
-      environmentAuthorizationDigest: request.authorization.digest,
-      terminalRunEvidence: disposalRequest(request).terminalRunEvidence
-    });
+  it(
+    "never returns historical prepared state after disposal starts or completes",
+    SLOW_CASE,
+    async () => {
+      const { dataRoot, request } = await createSetup();
+      const manager = await WorktreeManager.create(managerOptions(dataRoot));
+      await manager.prepareEnvironment(request);
+      const resolved = await manager.resolvePreparedEnvironment(request.environmentId);
+      const registry = await EnvironmentRegistry.create({
+        dataRoot,
+        now: () => "2026-08-21T12:03:00.000Z"
+      });
+      const ready = await registry.recoverEnvironment(request.environmentId);
+      await registry.recordDisposalIntent({
+        environmentId: request.environmentId,
+        creationAttemptId: ready!.intent.creationAttemptId,
+        disposalRequestDigest: "6".repeat(64),
+        environmentAuthorizationId: request.authorization.id,
+        environmentAuthorizationDigest: request.authorization.digest,
+        terminalRunEvidence: disposalRequest(request).terminalRunEvidence
+      });
 
-    await expect(manager.prepareEnvironment(request)).rejects.toMatchObject({
-      code: "environment_conflict"
-    });
-    expect(await gitFixtureCommand(resolved.managedPath, ["rev-parse", "HEAD"])).toBe(
-      request.sourceCommit
-    );
-    expect((await registry.recoverEnvironment(request.environmentId))?.phase).toBe(
-      "disposal_recorded"
-    );
-    await manager.close();
+      await expect(manager.prepareEnvironment(request)).rejects.toMatchObject({
+        code: "environment_conflict"
+      });
+      expect(await gitFixtureCommand(resolved.managedPath, ["rev-parse", "HEAD"])).toBe(
+        request.sourceCommit
+      );
+      expect((await registry.recoverEnvironment(request.environmentId))?.phase).toBe(
+        "disposal_recorded"
+      );
+      await manager.close();
 
-    const finishing = await WorktreeManager.create(
-      managerOptions(dataRoot, "2026-08-21T12:04:00.000Z")
-    );
-    await expect(finishing.prepareEnvironment(request)).rejects.toMatchObject({
-      code: "environment_conflict"
-    });
-    await finishing.close();
-  });
+      const finishing = await WorktreeManager.create(
+        managerOptions(dataRoot, "2026-08-21T12:04:00.000Z")
+      );
+      await expect(finishing.prepareEnvironment(request)).rejects.toMatchObject({
+        code: "environment_conflict"
+      });
+      await finishing.close();
+    }
+  );
 
   it("revalidates every ready environment before listing it", async () => {
     const { fixture, dataRoot, request } = await createSetup();
@@ -633,42 +664,50 @@ describe("WorktreeManager", () => {
     await manager.close();
   });
 
-  it("revalidates branch retention before replaying disposed in the same session", async () => {
-    const { fixture, dataRoot, request } = await createSetup();
-    const manager = await WorktreeManager.create(managerOptions(dataRoot));
-    await manager.prepareEnvironment(request);
-    await manager.disposeEnvironment(disposalRequest(request));
-    await gitFixtureCommand(fixture.sourcePath, ["branch", "-D", request.branch]);
+  it(
+    "revalidates branch retention before replaying disposed in the same session",
+    SLOW_CASE,
+    async () => {
+      const { fixture, dataRoot, request } = await createSetup();
+      const manager = await WorktreeManager.create(managerOptions(dataRoot));
+      await manager.prepareEnvironment(request);
+      await manager.disposeEnvironment(disposalRequest(request));
+      await gitFixtureCommand(fixture.sourcePath, ["branch", "-D", request.branch]);
 
-    await expect(manager.disposeEnvironment(disposalRequest(request))).rejects.toMatchObject({
-      code: "maintenance_required"
-    });
-    await manager.close();
-  });
+      await expect(manager.disposeEnvironment(disposalRequest(request))).rejects.toMatchObject({
+        code: "maintenance_required"
+      });
+      await manager.close();
+    }
+  );
 
-  it("rejects recreation of disposed filesystem and Git administrative state", async () => {
-    const { fixture, dataRoot, request } = await createSetup();
-    const manager = await WorktreeManager.create(managerOptions(dataRoot));
-    await manager.prepareEnvironment(request);
-    const resolved = await manager.resolvePreparedEnvironment(request.environmentId);
-    await manager.disposeEnvironment(disposalRequest(request));
-    await gitFixtureCommand(fixture.sourcePath, [
-      "worktree",
-      "add",
-      "--lock",
-      "--reason",
-      "AutoStack",
-      resolved.managedPath,
-      request.branch
-    ]);
+  it(
+    "rejects recreation of disposed filesystem and Git administrative state",
+    SLOW_CASE,
+    async () => {
+      const { fixture, dataRoot, request } = await createSetup();
+      const manager = await WorktreeManager.create(managerOptions(dataRoot));
+      await manager.prepareEnvironment(request);
+      const resolved = await manager.resolvePreparedEnvironment(request.environmentId);
+      await manager.disposeEnvironment(disposalRequest(request));
+      await gitFixtureCommand(fixture.sourcePath, [
+        "worktree",
+        "add",
+        "--lock",
+        "--reason",
+        "AutoStack",
+        resolved.managedPath,
+        request.branch
+      ]);
 
-    await expect(manager.disposeEnvironment(disposalRequest(request))).rejects.toMatchObject({
-      code: "maintenance_required"
-    });
-    await manager.close();
-  });
+      await expect(manager.disposeEnvironment(disposalRequest(request))).rejects.toMatchObject({
+        code: "maintenance_required"
+      });
+      await manager.close();
+    }
+  );
 
-  it("rejects recreation of only the disposed managed directory", async () => {
+  it("rejects recreation of only the disposed managed directory", SLOW_CASE, async () => {
     const { dataRoot, request } = await createSetup();
     const manager = await WorktreeManager.create(managerOptions(dataRoot));
     await manager.prepareEnvironment(request);
@@ -682,7 +721,7 @@ describe("WorktreeManager", () => {
     await manager.close();
   });
 
-  it("rejects a structurally valid forged phase-5 disposal proof", async () => {
+  it("rejects a structurally valid forged phase-5 disposal proof", SLOW_CASE, async () => {
     const { dataRoot, request } = await createSetup();
     const manager = await WorktreeManager.create(managerOptions(dataRoot));
     await manager.prepareEnvironment(request);
@@ -708,7 +747,7 @@ describe("WorktreeManager", () => {
     expect(outcome).toMatchObject({ code: "maintenance_required" });
   });
 
-  it("verifies terminal evidence exactly once during a disposal attempt", async () => {
+  it("verifies terminal evidence exactly once during a disposal attempt", SLOW_CASE, async () => {
     const { dataRoot, request } = await createSetup();
     let verifierCalls = 0;
     let closeReads = 0;
@@ -743,208 +782,226 @@ describe("WorktreeManager", () => {
     await manager.close();
   });
 
-  it("verifies durable phase-4 evidence exactly once during startup recovery", async () => {
-    const { dataRoot, request } = await createSetup();
-    const first = await WorktreeManager.create(managerOptions(dataRoot));
-    await first.prepareEnvironment(request);
-    await first.close();
-    const registry = await recordPhase4Disposal(dataRoot, request);
-    let verifierCalls = 0;
+  it(
+    "verifies durable phase-4 evidence exactly once during startup recovery",
+    SLOW_CASE,
+    async () => {
+      const { dataRoot, request } = await createSetup();
+      const first = await WorktreeManager.create(managerOptions(dataRoot));
+      await first.prepareEnvironment(request);
+      await first.close();
+      const registry = await recordPhase4Disposal(dataRoot, request);
+      let verifierCalls = 0;
 
-    const recovered = await WorktreeManager.create({
-      ...managerOptions(dataRoot, "2026-08-21T12:02:00.000Z"),
-      verifyTerminalEvidence: async () => {
-        verifierCalls += 1;
-        return true;
-      }
-    });
-
-    expect(verifierCalls).toBe(1);
-    await recovered.resumePendingDisposals();
-    expect(verifierCalls).toBe(1);
-    await recovered.close();
-  });
-
-  it("defers a durable phase-4 disposal and resumes it exactly once under concurrent replay", async () => {
-    const { fixture, dataRoot, request } = await createSetup();
-    const before = await captureSourceCheckoutInvariant(fixture);
-    const first = await WorktreeManager.create(managerOptions(dataRoot));
-    await first.prepareEnvironment(request);
-    const resolved = await first.resolvePreparedEnvironment(request.environmentId);
-    await first.close();
-    const registry = await recordPhase4Disposal(dataRoot, request);
-    const delegate = new BoundedProcessRunner({
-      timeoutMs: 10_000,
-      maximumOutputBytes: 4 * 1024 * 1024
-    });
-    const calls: string[][] = [];
-    const processRunner: ProcessRunner = {
-      async run(processRequest) {
-        calls.push([...processRequest.args]);
-        return delegate.run(processRequest);
-      }
-    };
-    let verifierCalls = 0;
-    let leaseCloseReads = 0;
-    let leaseCloseCalls = 0;
-
-    const deferred = await WorktreeManager.create({
-      ...managerOptions(dataRoot, "2026-08-21T12:02:00.000Z"),
-      deferStartupDisposal: true,
-      gitProcessRunner: processRunner,
-      verifyTerminalEvidence: async () => {
-        verifierCalls += 1;
-        return true;
-      },
-      acquireEnvironmentQuiescence: async () => {
-        const lease = Object.create(null) as { readonly close: () => Promise<void> };
-        Object.defineProperty(lease, "close", {
-          enumerable: true,
-          get: () => {
-            leaseCloseReads += 1;
-            return async () => {
-              leaseCloseCalls += 1;
-            };
-          }
-        });
-        return lease;
-      }
-    });
-
-    const mutationSubcommandsBeforeResume = calls.flatMap((args) => {
-      const worktree = args.indexOf("worktree");
-      return worktree < 0 ? [] : [args[worktree + 1]];
-    });
-    expect(mutationSubcommandsBeforeResume).not.toContain("unlock");
-    expect(mutationSubcommandsBeforeResume).not.toContain("remove");
-    expect(verifierCalls).toBe(0);
-    expect(leaseCloseReads).toBe(0);
-    expect((await registry.recoverEnvironment(request.environmentId))?.phase).toBe(
-      "disposal_recorded"
-    );
-    expect(await gitFixtureCommand(resolved.managedPath, ["rev-parse", "HEAD"])).toBe(
-      request.sourceCommit
-    );
-    expect(await captureSourceCheckoutInvariant(fixture)).toEqual(before);
-    await expect(WorktreeManager.create(managerOptions(dataRoot))).rejects.toMatchObject({
-      code: "root_busy"
-    });
-
-    await Promise.all([deferred.resumePendingDisposals(), deferred.resumePendingDisposals()]);
-
-    expect(verifierCalls).toBe(1);
-    expect(leaseCloseReads).toBe(1);
-    expect(leaseCloseCalls).toBe(1);
-    expect((await registry.recoverEnvironment(request.environmentId))?.phase).toBe("disposed");
-    expect(await deferred.listEnvironments()).toEqual([]);
-    await expect(gitFixtureCommand(resolved.managedPath, ["rev-parse", "HEAD"])).rejects.toThrow();
-    const mutationSubcommands = calls.flatMap((args) => {
-      const worktree = args.indexOf("worktree");
-      return worktree < 0 ? [] : [args[worktree + 1]];
-    });
-    expect(mutationSubcommands.filter((command) => command === "unlock")).toHaveLength(1);
-    expect(mutationSubcommands.filter((command) => command === "remove")).toHaveLength(1);
-    await deferred.resumePendingDisposals();
-    expect(verifierCalls).toBe(1);
-    expect(leaseCloseCalls).toBe(1);
-    expect(await captureSourceCheckoutInvariant(fixture)).toEqual(before);
-    await deferred.close();
-  });
-
-  it("retains phase 4 after a failed deferred resume and retries from the journal", async () => {
-    const { fixture, dataRoot, request } = await createSetup();
-    const before = await captureSourceCheckoutInvariant(fixture);
-    const first = await WorktreeManager.create(managerOptions(dataRoot));
-    await first.prepareEnvironment(request);
-    const resolved = await first.resolvePreparedEnvironment(request.environmentId);
-    await first.close();
-    const registry = await recordPhase4Disposal(dataRoot, request);
-    let acceptEvidence = false;
-    let verifierCalls = 0;
-    let leaseCloseCalls = 0;
-    const deferred = await WorktreeManager.create({
-      ...managerOptions(dataRoot, "2026-08-21T12:02:00.000Z"),
-      deferStartupDisposal: true,
-      verifyTerminalEvidence: async () => {
-        verifierCalls += 1;
-        return acceptEvidence;
-      },
-      acquireEnvironmentQuiescence: async () => ({
-        close: async () => {
-          leaseCloseCalls += 1;
+      const recovered = await WorktreeManager.create({
+        ...managerOptions(dataRoot, "2026-08-21T12:02:00.000Z"),
+        verifyTerminalEvidence: async () => {
+          verifierCalls += 1;
+          return true;
         }
-      })
-    });
+      });
 
-    await expect(deferred.resumePendingDisposals()).rejects.toMatchObject({
-      code: "terminal_evidence_invalid",
-      message: "The terminal run evidence is invalid."
-    });
-    expect((await registry.recoverEnvironment(request.environmentId))?.phase).toBe(
-      "disposal_recorded"
-    );
-    expect(await gitFixtureCommand(resolved.managedPath, ["rev-parse", "HEAD"])).toBe(
-      request.sourceCommit
-    );
-    expect(verifierCalls).toBe(1);
-    expect(leaseCloseCalls).toBe(1);
-    expect(await captureSourceCheckoutInvariant(fixture)).toEqual(before);
+      expect(verifierCalls).toBe(1);
+      await recovered.resumePendingDisposals();
+      expect(verifierCalls).toBe(1);
+      await recovered.close();
+    }
+  );
 
-    acceptEvidence = true;
-    await deferred.resumePendingDisposals();
-    expect((await registry.recoverEnvironment(request.environmentId))?.phase).toBe("disposed");
-    expect(verifierCalls).toBe(2);
-    expect(leaseCloseCalls).toBe(2);
-    expect(await captureSourceCheckoutInvariant(fixture)).toEqual(before);
-    await deferred.close();
-  });
+  it(
+    "defers a durable phase-4 disposal and resumes it exactly once under concurrent replay",
+    SLOW_CASE,
+    async () => {
+      const { fixture, dataRoot, request } = await createSetup();
+      const before = await captureSourceCheckoutInvariant(fixture);
+      const first = await WorktreeManager.create(managerOptions(dataRoot));
+      await first.prepareEnvironment(request);
+      const resolved = await first.resolvePreparedEnvironment(request.environmentId);
+      await first.close();
+      const registry = await recordPhase4Disposal(dataRoot, request);
+      const delegate = new BoundedProcessRunner({
+        timeoutMs: 10_000,
+        maximumOutputBytes: 4 * 1024 * 1024
+      });
+      const calls: string[][] = [];
+      const processRunner: ProcessRunner = {
+        async run(processRequest) {
+          calls.push([...processRequest.args]);
+          return delegate.run(processRequest);
+        }
+      };
+      let verifierCalls = 0;
+      let leaseCloseReads = 0;
+      let leaseCloseCalls = 0;
 
-  it("lets an admitted deferred resume finish before close and rejects replay after close", async () => {
-    const { dataRoot, request } = await createSetup();
-    const first = await WorktreeManager.create(managerOptions(dataRoot));
-    await first.prepareEnvironment(request);
-    await first.close();
-    await recordPhase4Disposal(dataRoot, request);
-    let verifierEntered!: () => void;
-    const entered = new Promise<void>((resolvePromise) => {
-      verifierEntered = resolvePromise;
-    });
-    let releaseVerifier!: () => void;
-    const released = new Promise<void>((resolvePromise) => {
-      releaseVerifier = resolvePromise;
-    });
-    const deferred = await WorktreeManager.create({
-      ...managerOptions(dataRoot, "2026-08-21T12:02:00.000Z"),
-      deferStartupDisposal: true,
-      verifyTerminalEvidence: async () => {
-        verifierEntered();
-        await released;
-        return true;
-      }
-    });
+      const deferred = await WorktreeManager.create({
+        ...managerOptions(dataRoot, "2026-08-21T12:02:00.000Z"),
+        deferStartupDisposal: true,
+        gitProcessRunner: processRunner,
+        verifyTerminalEvidence: async () => {
+          verifierCalls += 1;
+          return true;
+        },
+        acquireEnvironmentQuiescence: async () => {
+          const lease = Object.create(null) as { readonly close: () => Promise<void> };
+          Object.defineProperty(lease, "close", {
+            enumerable: true,
+            get: () => {
+              leaseCloseReads += 1;
+              return async () => {
+                leaseCloseCalls += 1;
+              };
+            }
+          });
+          return lease;
+        }
+      });
 
-    const resuming = deferred.resumePendingDisposals();
-    await entered;
-    const closing = deferred.close();
-    await expect(WorktreeManager.create(managerOptions(dataRoot))).rejects.toMatchObject({
-      code: "root_busy"
-    });
-    releaseVerifier();
-    await resuming;
-    await closing;
+      const mutationSubcommandsBeforeResume = calls.flatMap((args) => {
+        const worktree = args.indexOf("worktree");
+        return worktree < 0 ? [] : [args[worktree + 1]];
+      });
+      expect(mutationSubcommandsBeforeResume).not.toContain("unlock");
+      expect(mutationSubcommandsBeforeResume).not.toContain("remove");
+      expect(verifierCalls).toBe(0);
+      expect(leaseCloseReads).toBe(0);
+      expect((await registry.recoverEnvironment(request.environmentId))?.phase).toBe(
+        "disposal_recorded"
+      );
+      expect(await gitFixtureCommand(resolved.managedPath, ["rev-parse", "HEAD"])).toBe(
+        request.sourceCommit
+      );
+      expect(await captureSourceCheckoutInvariant(fixture)).toEqual(before);
+      await expect(WorktreeManager.create(managerOptions(dataRoot))).rejects.toMatchObject({
+        code: "root_busy"
+      });
 
-    const outcome = await deferred.resumePendingDisposals().then(
-      () => undefined,
-      (error: unknown) => error
-    );
-    expect(outcome).toMatchObject({
-      code: "closed",
-      message: "The worktree manager is closed."
-    });
-    expect(Object.isFrozen(outcome)).toBe(true);
-    const replacement = await WorktreeManager.create(managerOptions(dataRoot));
-    await replacement.close();
-  });
+      await Promise.all([deferred.resumePendingDisposals(), deferred.resumePendingDisposals()]);
+
+      expect(verifierCalls).toBe(1);
+      expect(leaseCloseReads).toBe(1);
+      expect(leaseCloseCalls).toBe(1);
+      expect((await registry.recoverEnvironment(request.environmentId))?.phase).toBe("disposed");
+      expect(await deferred.listEnvironments()).toEqual([]);
+      await expect(
+        gitFixtureCommand(resolved.managedPath, ["rev-parse", "HEAD"])
+      ).rejects.toThrow();
+      const mutationSubcommands = calls.flatMap((args) => {
+        const worktree = args.indexOf("worktree");
+        return worktree < 0 ? [] : [args[worktree + 1]];
+      });
+      expect(mutationSubcommands.filter((command) => command === "unlock")).toHaveLength(1);
+      expect(mutationSubcommands.filter((command) => command === "remove")).toHaveLength(1);
+      await deferred.resumePendingDisposals();
+      expect(verifierCalls).toBe(1);
+      expect(leaseCloseCalls).toBe(1);
+      expect(await captureSourceCheckoutInvariant(fixture)).toEqual(before);
+      await deferred.close();
+    }
+  );
+
+  it(
+    "retains phase 4 after a failed deferred resume and retries from the journal",
+    SLOW_CASE,
+    async () => {
+      const { fixture, dataRoot, request } = await createSetup();
+      const before = await captureSourceCheckoutInvariant(fixture);
+      const first = await WorktreeManager.create(managerOptions(dataRoot));
+      await first.prepareEnvironment(request);
+      const resolved = await first.resolvePreparedEnvironment(request.environmentId);
+      await first.close();
+      const registry = await recordPhase4Disposal(dataRoot, request);
+      let acceptEvidence = false;
+      let verifierCalls = 0;
+      let leaseCloseCalls = 0;
+      const deferred = await WorktreeManager.create({
+        ...managerOptions(dataRoot, "2026-08-21T12:02:00.000Z"),
+        deferStartupDisposal: true,
+        verifyTerminalEvidence: async () => {
+          verifierCalls += 1;
+          return acceptEvidence;
+        },
+        acquireEnvironmentQuiescence: async () => ({
+          close: async () => {
+            leaseCloseCalls += 1;
+          }
+        })
+      });
+
+      await expect(deferred.resumePendingDisposals()).rejects.toMatchObject({
+        code: "terminal_evidence_invalid",
+        message: "The terminal run evidence is invalid."
+      });
+      expect((await registry.recoverEnvironment(request.environmentId))?.phase).toBe(
+        "disposal_recorded"
+      );
+      expect(await gitFixtureCommand(resolved.managedPath, ["rev-parse", "HEAD"])).toBe(
+        request.sourceCommit
+      );
+      expect(verifierCalls).toBe(1);
+      expect(leaseCloseCalls).toBe(1);
+      expect(await captureSourceCheckoutInvariant(fixture)).toEqual(before);
+
+      acceptEvidence = true;
+      await deferred.resumePendingDisposals();
+      expect((await registry.recoverEnvironment(request.environmentId))?.phase).toBe("disposed");
+      expect(verifierCalls).toBe(2);
+      expect(leaseCloseCalls).toBe(2);
+      expect(await captureSourceCheckoutInvariant(fixture)).toEqual(before);
+      await deferred.close();
+    }
+  );
+
+  it(
+    "lets an admitted deferred resume finish before close and rejects replay after close",
+    SLOW_CASE,
+    async () => {
+      const { dataRoot, request } = await createSetup();
+      const first = await WorktreeManager.create(managerOptions(dataRoot));
+      await first.prepareEnvironment(request);
+      await first.close();
+      await recordPhase4Disposal(dataRoot, request);
+      let verifierEntered!: () => void;
+      const entered = new Promise<void>((resolvePromise) => {
+        verifierEntered = resolvePromise;
+      });
+      let releaseVerifier!: () => void;
+      const released = new Promise<void>((resolvePromise) => {
+        releaseVerifier = resolvePromise;
+      });
+      const deferred = await WorktreeManager.create({
+        ...managerOptions(dataRoot, "2026-08-21T12:02:00.000Z"),
+        deferStartupDisposal: true,
+        verifyTerminalEvidence: async () => {
+          verifierEntered();
+          await released;
+          return true;
+        }
+      });
+
+      const resuming = deferred.resumePendingDisposals();
+      await entered;
+      const closing = deferred.close();
+      await expect(WorktreeManager.create(managerOptions(dataRoot))).rejects.toMatchObject({
+        code: "root_busy"
+      });
+      releaseVerifier();
+      await resuming;
+      await closing;
+
+      const outcome = await deferred.resumePendingDisposals().then(
+        () => undefined,
+        (error: unknown) => error
+      );
+      expect(outcome).toMatchObject({
+        code: "closed",
+        message: "The worktree manager is closed."
+      });
+      expect(Object.isFrozen(outcome)).toBe(true);
+      const replacement = await WorktreeManager.create(managerOptions(dataRoot));
+      await replacement.close();
+    }
+  );
 
   it("captures the defer option once and rejects hostile or extra construction values", async () => {
     const { dataRoot } = await createSetup();
@@ -1053,25 +1110,29 @@ describe("WorktreeManager", () => {
     await manager.close();
   });
 
-  it("normalizes a spoofed pure lease-release failure and permanently quarantines work", async () => {
-    const { dataRoot, request } = await createSetup();
-    const manager = await WorktreeManager.create({
-      ...managerOptions(dataRoot),
-      acquireEnvironmentQuiescence: async () => ({
-        close: async () => {
-          throw new WorktreeManagerError("active_commands");
-        }
-      })
-    });
-    await manager.prepareEnvironment(request);
+  it(
+    "normalizes a spoofed pure lease-release failure and permanently quarantines work",
+    SLOW_CASE,
+    async () => {
+      const { dataRoot, request } = await createSetup();
+      const manager = await WorktreeManager.create({
+        ...managerOptions(dataRoot),
+        acquireEnvironmentQuiescence: async () => ({
+          close: async () => {
+            throw new WorktreeManagerError("active_commands");
+          }
+        })
+      });
+      await manager.prepareEnvironment(request);
 
-    await expect(manager.disposeEnvironment(disposalRequest(request))).rejects.toMatchObject({
-      code: "unsafe_state",
-      message: "The worktree operation failed safely."
-    });
-    await expect(manager.listEnvironments()).rejects.toMatchObject({ code: "closed" });
-    await manager.close();
-  });
+      await expect(manager.disposeEnvironment(disposalRequest(request))).rejects.toMatchObject({
+        code: "unsafe_state",
+        message: "The worktree operation failed safely."
+      });
+      await expect(manager.listEnvironments()).rejects.toMatchObject({ code: "closed" });
+      await manager.close();
+    }
+  );
 
   it("revalidates the source binding inside quiescence before phase-4 journaling", async () => {
     const { fixture, dataRoot, request } = await createSetup();
@@ -1223,7 +1284,7 @@ describe("WorktreeManager", () => {
     }
   );
 
-  it("recovers phase 4 after the exact worktree is already absent", async () => {
+  it("recovers phase 4 after the exact worktree is already absent", SLOW_CASE, async () => {
     const { fixture, dataRoot, request } = await createSetup();
     const before = await captureSourceCheckoutInvariant(fixture);
     const first = await WorktreeManager.create(managerOptions(dataRoot));
@@ -1288,73 +1349,81 @@ describe("WorktreeManager", () => {
     await manager.close();
   });
 
-  it("close waits for an admitted operation before releasing the root lock", async () => {
-    const { dataRoot, request } = await createSetup();
-    let enterVerifier!: () => void;
-    const verifierEntered = new Promise<void>((resolvePromise) => {
-      enterVerifier = resolvePromise;
-    });
-    let releaseVerifier!: () => void;
-    const verifierReleased = new Promise<void>((resolvePromise) => {
-      releaseVerifier = resolvePromise;
-    });
-    const manager = await WorktreeManager.create({
-      ...managerOptions(dataRoot),
-      verifyTerminalEvidence: async () => {
-        enterVerifier();
-        await verifierReleased;
-        return true;
-      }
-    });
-    await manager.prepareEnvironment(request);
-    const disposing = manager.disposeEnvironment(disposalRequest(request));
-    await verifierEntered;
-    const closing = manager.close();
+  it(
+    "close waits for an admitted operation before releasing the root lock",
+    SLOW_CASE,
+    async () => {
+      const { dataRoot, request } = await createSetup();
+      let enterVerifier!: () => void;
+      const verifierEntered = new Promise<void>((resolvePromise) => {
+        enterVerifier = resolvePromise;
+      });
+      let releaseVerifier!: () => void;
+      const verifierReleased = new Promise<void>((resolvePromise) => {
+        releaseVerifier = resolvePromise;
+      });
+      const manager = await WorktreeManager.create({
+        ...managerOptions(dataRoot),
+        verifyTerminalEvidence: async () => {
+          enterVerifier();
+          await verifierReleased;
+          return true;
+        }
+      });
+      await manager.prepareEnvironment(request);
+      const disposing = manager.disposeEnvironment(disposalRequest(request));
+      await verifierEntered;
+      const closing = manager.close();
 
-    await expect(WorktreeManager.create(managerOptions(dataRoot))).rejects.toMatchObject({
-      code: "root_busy"
-    });
-    releaseVerifier();
-    await disposing;
-    await closing;
-    const replacement = await WorktreeManager.create(managerOptions(dataRoot));
-    await replacement.close();
-  });
+      await expect(WorktreeManager.create(managerOptions(dataRoot))).rejects.toMatchObject({
+        code: "root_busy"
+      });
+      releaseVerifier();
+      await disposing;
+      await closing;
+      const replacement = await WorktreeManager.create(managerOptions(dataRoot));
+      await replacement.close();
+    }
+  );
 
   it.each([
     "after_disposal_recorded",
     "after_worktree_unlock",
     "after_worktree_remove",
     "before_disposed_publication"
-  ] as const)("recovers after the deterministic disposal crash barrier %s", async (target) => {
-    const { dataRoot, request } = await createSetup();
-    let crashed = false;
-    const manager = await WorktreeManager.create({
-      ...managerOptions(dataRoot),
-      onDisposalBoundary: async (boundary: string) => {
-        if (boundary === target && !crashed) {
-          crashed = true;
-          throw new Error("simulated process death");
+  ] as const)(
+    "recovers after the deterministic disposal crash barrier %s",
+    SLOW_CASE,
+    async (target) => {
+      const { dataRoot, request } = await createSetup();
+      let crashed = false;
+      const manager = await WorktreeManager.create({
+        ...managerOptions(dataRoot),
+        onDisposalBoundary: async (boundary: string) => {
+          if (boundary === target && !crashed) {
+            crashed = true;
+            throw new Error("simulated process death");
+          }
         }
-      }
-    } as never);
-    await manager.prepareEnvironment(request);
+      } as never);
+      await manager.prepareEnvironment(request);
 
-    await expect(manager.disposeEnvironment(disposalRequest(request))).rejects.toMatchObject({
-      code: "unsafe_state"
-    });
-    expect(crashed).toBe(true);
-    const registry = await EnvironmentRegistry.create({ dataRoot });
-    expect((await registry.recoverEnvironment(request.environmentId))?.phase).toBe(
-      "disposal_recorded"
-    );
+      await expect(manager.disposeEnvironment(disposalRequest(request))).rejects.toMatchObject({
+        code: "unsafe_state"
+      });
+      expect(crashed).toBe(true);
+      const registry = await EnvironmentRegistry.create({ dataRoot });
+      expect((await registry.recoverEnvironment(request.environmentId))?.phase).toBe(
+        "disposal_recorded"
+      );
 
-    await expect(manager.disposeEnvironment(disposalRequest(request))).resolves.toMatchObject({
-      disposed: true,
-      replayed: false
-    });
-    await manager.close();
-  });
+      await expect(manager.disposeEnvironment(disposalRequest(request))).resolves.toMatchObject({
+        disposed: true,
+        replayed: false
+      });
+      await manager.close();
+    }
+  );
 
   it.each(["intent.temp-synced", "worktree_added.temp-synced"] as const)(
     "retries prepare after registry publication crash %s",
@@ -1460,7 +1529,7 @@ describe("WorktreeManager", () => {
     await manager.close();
   });
 
-  it("permanently quarantines the manager after unsafe Git process state", async () => {
+  it("permanently quarantines the manager after unsafe Git process state", SLOW_CASE, async () => {
     const { fixture, dataRoot, request } = await createSetup();
     const pidPath = join(fixture.root, "manager-quarantined-child.pid");
     const delegate = new BoundedProcessRunner({
@@ -1662,7 +1731,7 @@ describe("WorktreeManager", () => {
     await manager.close();
   });
 
-  it("rejects actual canonical source and common-directory identity drift", async () => {
+  it("rejects actual canonical source and common-directory identity drift", SLOW_CASE, async () => {
     const canonicalDrift = await createSetup();
     const first = await WorktreeManager.create(managerOptions(canonicalDrift.dataRoot));
     await first.prepareEnvironment(canonicalDrift.request);
@@ -1695,68 +1764,72 @@ describe("WorktreeManager", () => {
     ).rejects.toMatchObject({ code: "environment_conflict" });
   });
 
-  it("captures the exact first-add argv and permits only the mutation allowlist", async () => {
-    const { fixture, dataRoot, request } = await createSetup();
-    const delegate = new BoundedProcessRunner({
-      timeoutMs: 10_000,
-      maximumOutputBytes: 4 * 1024 * 1024
-    });
-    const calls: string[][] = [];
-    const processRunner: ProcessRunner = {
-      async run(processRequest) {
-        calls.push([...processRequest.args]);
-        return delegate.run(processRequest);
-      }
-    };
-    const manager = await WorktreeManager.create({
-      ...managerOptions(dataRoot),
-      gitProcessRunner: processRunner
-    });
-    await manager.prepareEnvironment(request);
-    const resolved = await manager.resolvePreparedEnvironment(request.environmentId);
-    await manager.disposeEnvironment(disposalRequest(request));
-    await manager.close();
+  it(
+    "captures the exact first-add argv and permits only the mutation allowlist",
+    SLOW_CASE,
+    async () => {
+      const { fixture, dataRoot, request } = await createSetup();
+      const delegate = new BoundedProcessRunner({
+        timeoutMs: 10_000,
+        maximumOutputBytes: 4 * 1024 * 1024
+      });
+      const calls: string[][] = [];
+      const processRunner: ProcessRunner = {
+        async run(processRequest) {
+          calls.push([...processRequest.args]);
+          return delegate.run(processRequest);
+        }
+      };
+      const manager = await WorktreeManager.create({
+        ...managerOptions(dataRoot),
+        gitProcessRunner: processRunner
+      });
+      await manager.prepareEnvironment(request);
+      const resolved = await manager.resolvePreparedEnvironment(request.environmentId);
+      await manager.disposeEnvironment(disposalRequest(request));
+      await manager.close();
 
-    const addCall = calls.find((args) => {
-      const worktree = args.indexOf("worktree");
-      return worktree >= 0 && args[worktree + 1] === "add";
-    });
-    expect(addCall).toEqual([
-      "--no-optional-locks",
-      "--no-pager",
-      "-c",
-      "core.hooksPath=/dev/null",
-      "-c",
-      "core.fsmonitor=false",
-      "-c",
-      "core.attributesFile=/dev/null",
-      "-c",
-      "submodule.recurse=false",
-      "-C",
-      fixture.sourcePath,
-      "worktree",
-      "add",
-      "--lock",
-      "--reason",
-      "AutoStack",
-      "-b",
-      request.branch,
-      resolved.managedPath,
-      request.sourceCommit
-    ]);
-    const worktreeSubcommands = calls.flatMap((args) => {
-      const worktree = args.indexOf("worktree");
-      return worktree < 0 ? [] : [args[worktree + 1]];
-    });
-    expect(new Set(worktreeSubcommands)).toEqual(new Set(["list", "add", "unlock", "remove"]));
-    for (const args of calls) {
-      expect(args).not.toContain("--force");
-      expect(args).not.toContain("reset");
-      expect(args).not.toContain("clean");
-      expect(args).not.toContain("stash");
-      expect(args).not.toContain("checkout");
-      const sourceSelector = args.indexOf("-C");
-      expect(sourceSelector < 0 || args[sourceSelector + 2] !== "branch").toBe(true);
+      const addCall = calls.find((args) => {
+        const worktree = args.indexOf("worktree");
+        return worktree >= 0 && args[worktree + 1] === "add";
+      });
+      expect(addCall).toEqual([
+        "--no-optional-locks",
+        "--no-pager",
+        "-c",
+        "core.hooksPath=/dev/null",
+        "-c",
+        "core.fsmonitor=false",
+        "-c",
+        "core.attributesFile=/dev/null",
+        "-c",
+        "submodule.recurse=false",
+        "-C",
+        fixture.sourcePath,
+        "worktree",
+        "add",
+        "--lock",
+        "--reason",
+        "AutoStack",
+        "-b",
+        request.branch,
+        resolved.managedPath,
+        request.sourceCommit
+      ]);
+      const worktreeSubcommands = calls.flatMap((args) => {
+        const worktree = args.indexOf("worktree");
+        return worktree < 0 ? [] : [args[worktree + 1]];
+      });
+      expect(new Set(worktreeSubcommands)).toEqual(new Set(["list", "add", "unlock", "remove"]));
+      for (const args of calls) {
+        expect(args).not.toContain("--force");
+        expect(args).not.toContain("reset");
+        expect(args).not.toContain("clean");
+        expect(args).not.toContain("stash");
+        expect(args).not.toContain("checkout");
+        const sourceSelector = args.indexOf("-C");
+        expect(sourceSelector < 0 || args[sourceSelector + 2] !== "branch").toBe(true);
+      }
     }
-  });
+  );
 });
