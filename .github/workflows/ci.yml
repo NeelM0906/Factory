@@ -51,7 +51,12 @@ jobs:
         run: pnpm check
 
       - name: Test with coverage
-        run: pnpm test:coverage
+        # This runner has 2 vCPUs. Unbounded, turbo starts every workspace package's vitest at
+        # once and each of those forks its own worker per core, so ~24 coverage-instrumented
+        # processes compete for 2 cores and stretch individual cases 15-18x -- which is what timed
+        # tests out in runs 33109728652 and 33111592003, not any single slow test. Bounding turbo
+        # to 2 concurrent packages keeps oversubscription near 1 worker per core.
+        run: pnpm test:coverage --concurrency=2
 
       - name: Build applications
         run: pnpm build

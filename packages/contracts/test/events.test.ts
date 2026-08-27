@@ -585,140 +585,150 @@ describe("domain event contracts", () => {
     ).rejects.toThrow(/immutable/i);
   });
 
-  it("rejects an artifact ID reassigned from one command to another", async () => {
-    const bodies = await localEventBodies();
-    const permissionRequested = bodies.find(
-      (body) =>
-        body.type === "approval.requested" &&
-        "approval" in body.payload &&
-        body.payload.approval.kind === "permission"
-    );
-    const permissionDecided = bodies.find(
-      (body) =>
-        body.type === "approval.decided" && body.payload.approvalId === PERMISSION_APPROVAL_ID
-    );
-    const commandRecorded = bodies.find((body) => body.type === "command.authorization_recorded");
-    const commandIntent = bodies.find((body) => body.type === "command.intent_recorded");
-    const commandStarted = bodies.find((body) => body.type === "command.started");
-    const artifactRecorded = bodies.find((body) => body.type === "artifact.recorded");
-    if (
-      permissionRequested?.type !== "approval.requested" ||
-      permissionDecided?.type !== "approval.decided" ||
-      commandRecorded?.type !== "command.authorization_recorded" ||
-      commandIntent?.type !== "command.intent_recorded" ||
-      commandStarted?.type !== "command.started" ||
-      artifactRecorded?.type !== "artifact.recorded" ||
-      !("approval" in permissionRequested.payload) ||
-      !("authorization" in commandRecorded.payload) ||
-      !("request" in commandIntent.payload) ||
-      !("artifact" in artifactRecorded.payload)
-    ) {
-      throw new TypeError("Fixture is missing command artifact evidence.");
+  // Crypto-digest bound: this case rebuilds and rehashes the artifact evidence for both commands,
+  // and measures 282ms under a local coverage run. It timed out at the 5s default in CI run
+  // 33111592003 under the same contention the pinned case above describes.
+  it(
+    "rejects an artifact ID reassigned from one command to another",
+    { timeout: 15_000 },
+    async () => {
+      const bodies = await localEventBodies();
+      const permissionRequested = bodies.find(
+        (body) =>
+          body.type === "approval.requested" &&
+          "approval" in body.payload &&
+          body.payload.approval.kind === "permission"
+      );
+      const permissionDecided = bodies.find(
+        (body) =>
+          body.type === "approval.decided" && body.payload.approvalId === PERMISSION_APPROVAL_ID
+      );
+      const commandRecorded = bodies.find((body) => body.type === "command.authorization_recorded");
+      const commandIntent = bodies.find((body) => body.type === "command.intent_recorded");
+      const commandStarted = bodies.find((body) => body.type === "command.started");
+      const artifactRecorded = bodies.find((body) => body.type === "artifact.recorded");
+      if (
+        permissionRequested?.type !== "approval.requested" ||
+        permissionDecided?.type !== "approval.decided" ||
+        commandRecorded?.type !== "command.authorization_recorded" ||
+        commandIntent?.type !== "command.intent_recorded" ||
+        commandStarted?.type !== "command.started" ||
+        artifactRecorded?.type !== "artifact.recorded" ||
+        !("approval" in permissionRequested.payload) ||
+        !("authorization" in commandRecorded.payload) ||
+        !("request" in commandIntent.payload) ||
+        !("artifact" in artifactRecorded.payload)
+      ) {
+        throw new TypeError("Fixture is missing command artifact evidence.");
+      }
+
+      const secondCommandId = "cmd_123e4567-e89b-42d3-a456-426614174099";
+      const secondAuthorizationId = "cmdauth_123e4567-e89b-42d3-a456-426614174099";
+      const secondApprovalId = "apr_123e4567-e89b-42d3-a456-426614174099";
+      const secondScope = {
+        ...commandRecorded.payload.authorization.scope,
+        commandId: secondCommandId
+      };
+      const secondAuthorization = {
+        ...commandRecorded.payload.authorization,
+        id: secondAuthorizationId,
+        approvalId: secondApprovalId,
+        approvalEvidenceDigest: await digestCommandScope(secondScope),
+        scope: secondScope,
+        digest: "0".repeat(64)
+      };
+      secondAuthorization.digest = await digestCommandAuthorization(secondAuthorization);
+      const secondApproval = {
+        ...permissionRequested.payload.approval,
+        id: secondApprovalId,
+        evidenceDigest: secondAuthorization.approvalEvidenceDigest
+      };
+      const secondCommandAuthorizationPayload = {
+        ...commandRecorded.payload,
+        commandId: secondCommandId,
+        authorization: secondAuthorization,
+        phaseKey: `command:${secondCommandId}:authorization`
+      };
+      const secondIntentRequest = {
+        ...commandIntent.payload.request,
+        commandId: secondCommandId,
+        authorization: secondAuthorization
+      };
+      const secondIntentPayload = {
+        ...commandIntent.payload,
+        request: secondIntentRequest,
+        phaseKey: `command:${secondCommandId}:intent`
+      };
+      const secondStartedPayload = {
+        ...commandStarted.payload,
+        commandId: secondCommandId,
+        phaseKey: `command:${secondCommandId}:started`
+      };
+      const secondArtifactPayload = {
+        ...artifactRecorded.payload,
+        commandId: secondCommandId,
+        artifact: { ...artifactRecorded.payload.artifact, commandId: secondCommandId },
+        phaseKey: `command:${secondCommandId}:artifact:${artifactRecorded.payload.artifact.artifactId}`
+      };
+
+      await expect(
+        validateRunStreamCoherence([
+          ...bodies.slice(0, 11).map((body) => ({ ...context, ...body })),
+          { ...context, ...permissionRequested, payload: { approval: secondApproval } },
+          {
+            ...context,
+            ...permissionDecided,
+            payload: {
+              ...permissionDecided.payload,
+              approvalId: secondApprovalId,
+              evidenceDigest: secondApproval.evidenceDigest
+            }
+          },
+          {
+            ...context,
+            ...commandRecorded,
+            payload: {
+              ...secondCommandAuthorizationPayload,
+              phaseDigest: await digestLocalExecutionPhase(
+                "command.authorization_recorded",
+                secondCommandAuthorizationPayload
+              )
+            }
+          },
+          {
+            ...context,
+            ...commandIntent,
+            payload: {
+              ...secondIntentPayload,
+              phaseDigest: await digestLocalExecutionPhase(
+                "command.intent_recorded",
+                secondIntentPayload
+              )
+            }
+          },
+          {
+            ...context,
+            ...commandStarted,
+            payload: {
+              ...secondStartedPayload,
+              phaseDigest: await digestLocalExecutionPhase("command.started", secondStartedPayload)
+            }
+          },
+          {
+            ...context,
+            ...artifactRecorded,
+            payload: {
+              ...secondArtifactPayload,
+              phaseDigest: await digestLocalExecutionPhase(
+                "artifact.recorded",
+                secondArtifactPayload
+              )
+            }
+          }
+        ])
+      ).rejects.toThrow(/artifact.*(?:owner|immutable)/i);
     }
-
-    const secondCommandId = "cmd_123e4567-e89b-42d3-a456-426614174099";
-    const secondAuthorizationId = "cmdauth_123e4567-e89b-42d3-a456-426614174099";
-    const secondApprovalId = "apr_123e4567-e89b-42d3-a456-426614174099";
-    const secondScope = {
-      ...commandRecorded.payload.authorization.scope,
-      commandId: secondCommandId
-    };
-    const secondAuthorization = {
-      ...commandRecorded.payload.authorization,
-      id: secondAuthorizationId,
-      approvalId: secondApprovalId,
-      approvalEvidenceDigest: await digestCommandScope(secondScope),
-      scope: secondScope,
-      digest: "0".repeat(64)
-    };
-    secondAuthorization.digest = await digestCommandAuthorization(secondAuthorization);
-    const secondApproval = {
-      ...permissionRequested.payload.approval,
-      id: secondApprovalId,
-      evidenceDigest: secondAuthorization.approvalEvidenceDigest
-    };
-    const secondCommandAuthorizationPayload = {
-      ...commandRecorded.payload,
-      commandId: secondCommandId,
-      authorization: secondAuthorization,
-      phaseKey: `command:${secondCommandId}:authorization`
-    };
-    const secondIntentRequest = {
-      ...commandIntent.payload.request,
-      commandId: secondCommandId,
-      authorization: secondAuthorization
-    };
-    const secondIntentPayload = {
-      ...commandIntent.payload,
-      request: secondIntentRequest,
-      phaseKey: `command:${secondCommandId}:intent`
-    };
-    const secondStartedPayload = {
-      ...commandStarted.payload,
-      commandId: secondCommandId,
-      phaseKey: `command:${secondCommandId}:started`
-    };
-    const secondArtifactPayload = {
-      ...artifactRecorded.payload,
-      commandId: secondCommandId,
-      artifact: { ...artifactRecorded.payload.artifact, commandId: secondCommandId },
-      phaseKey: `command:${secondCommandId}:artifact:${artifactRecorded.payload.artifact.artifactId}`
-    };
-
-    await expect(
-      validateRunStreamCoherence([
-        ...bodies.slice(0, 11).map((body) => ({ ...context, ...body })),
-        { ...context, ...permissionRequested, payload: { approval: secondApproval } },
-        {
-          ...context,
-          ...permissionDecided,
-          payload: {
-            ...permissionDecided.payload,
-            approvalId: secondApprovalId,
-            evidenceDigest: secondApproval.evidenceDigest
-          }
-        },
-        {
-          ...context,
-          ...commandRecorded,
-          payload: {
-            ...secondCommandAuthorizationPayload,
-            phaseDigest: await digestLocalExecutionPhase(
-              "command.authorization_recorded",
-              secondCommandAuthorizationPayload
-            )
-          }
-        },
-        {
-          ...context,
-          ...commandIntent,
-          payload: {
-            ...secondIntentPayload,
-            phaseDigest: await digestLocalExecutionPhase(
-              "command.intent_recorded",
-              secondIntentPayload
-            )
-          }
-        },
-        {
-          ...context,
-          ...commandStarted,
-          payload: {
-            ...secondStartedPayload,
-            phaseDigest: await digestLocalExecutionPhase("command.started", secondStartedPayload)
-          }
-        },
-        {
-          ...context,
-          ...artifactRecorded,
-          payload: {
-            ...secondArtifactPayload,
-            phaseDigest: await digestLocalExecutionPhase("artifact.recorded", secondArtifactPayload)
-          }
-        }
-      ])
-    ).rejects.toThrow(/artifact.*(?:owner|immutable)/i);
-  });
+  );
 
   it("rejects a local command completion that lacks prior durable intent and artifact evidence", async () => {
     const payload = {
@@ -839,8 +849,12 @@ describe("domain event contracts", () => {
 
   // Crypto-digest bound: this case hashes the whole local-execution evidence stream and runs a
   // few seconds of real SHA-256, which has no margin under the 5s default when the suite's files
-  // run in parallel.
-  it("accepts one ordered local execution evidence stream", { timeout: 15_000 }, async () => {
+  // run in parallel. It measures 2635ms under a local coverage run and still blew this 15s pin in
+  // CI run 33111592003, where unbounded turbo concurrency stretched cases 15-18x -- 2635ms x 17.5
+  // is ~46s, so no reasonable pin would have held. With the verify job now bounding turbo to 2
+  // concurrent packages the stretch should fall to roughly 3x, i.e. ~8s, and 30s keeps a margin
+  // that does not depend on that estimate being exact.
+  it("accepts one ordered local execution evidence stream", { timeout: 30_000 }, async () => {
     const localBodies = await localEventBodies();
     const disposalIndex = localBodies.findIndex((body) => body.type === "environment.disposed");
     if (disposalIndex === -1) throw new TypeError("Fixture is missing disposal evidence.");

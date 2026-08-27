@@ -385,26 +385,35 @@ describe("manual run API", () => {
     await store.close();
   });
 
-  it("returns bounded, cursor-addressable run summary pages after 500 events", async () => {
-    const { authenticated, store } = await makeHarness();
-    for (let index = 0; index < 251; index += 1) {
-      const response = await authenticated("/v1/runs", {
-        method: "POST",
-        headers: { "Content-Type": "application/json", "Idempotency-Key": `page-${index}` },
-        body: JSON.stringify({ title: `Run ${index}` })
-      });
-      expect(response.status).toBe(201);
-    }
+  // Event-volume bound: this case drives 251 real run creations through the store and pages the
+  // resulting 500+ events, and measures 1191ms under a local coverage run. In CI run 33111592003
+  // it reported 12939ms against the 5s default -- it blocks the event loop long enough that the
+  // timeout timer itself fires late, so the recorded duration understates nothing and overstates
+  // the budget. Same contention as the contracts cases; same per-case remedy.
+  it(
+    "returns bounded, cursor-addressable run summary pages after 500 events",
+    { timeout: 15_000 },
+    async () => {
+      const { authenticated, store } = await makeHarness();
+      for (let index = 0; index < 251; index += 1) {
+        const response = await authenticated("/v1/runs", {
+          method: "POST",
+          headers: { "Content-Type": "application/json", "Idempotency-Key": `page-${index}` },
+          body: JSON.stringify({ title: `Run ${index}` })
+        });
+        expect(response.status).toBe(201);
+      }
 
-    const list = ListRunsResponseSchema.parse(await (await authenticated("/v1/runs")).json());
-    expect(list.items).toHaveLength(100);
-    expect(list.items[0]?.title).toBe("Run 250");
-    expect(list.nextCursor).toBeTypeOf("number");
-    const second = ListRunsResponseSchema.parse(
-      await (await authenticated(`/v1/runs?cursor=${String(list.nextCursor)}`)).json()
-    );
-    expect(second.items).toHaveLength(100);
-    expect(new Set([...list.items, ...second.items].map(({ runId }) => runId)).size).toBe(200);
-    await store.close();
-  });
+      const list = ListRunsResponseSchema.parse(await (await authenticated("/v1/runs")).json());
+      expect(list.items).toHaveLength(100);
+      expect(list.items[0]?.title).toBe("Run 250");
+      expect(list.nextCursor).toBeTypeOf("number");
+      const second = ListRunsResponseSchema.parse(
+        await (await authenticated(`/v1/runs?cursor=${String(list.nextCursor)}`)).json()
+      );
+      expect(second.items).toHaveLength(100);
+      expect(new Set([...list.items, ...second.items].map(({ runId }) => runId)).size).toBe(200);
+      await store.close();
+    }
+  );
 });
