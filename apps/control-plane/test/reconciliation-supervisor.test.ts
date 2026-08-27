@@ -1,9 +1,15 @@
-import { describe, expect, it } from "vitest";
+import { beforeAll, describe, expect, it } from "vitest";
 
-import { ReadCommandEventsRequestSchema, type StartCommandRequest } from "@autostack/contracts";
+import {
+  ReadCommandEventsRequestSchema,
+  type PrepareEnvironmentRequest,
+  type StartCommandRequest
+} from "@autostack/contracts";
 
 import { CommandReconciliationSupervisor } from "../src/reconciliation-supervisor.js";
 import { ControlPlaneShutdown } from "../src/shutdown.js";
+
+import { localExecutionRequests } from "./fixtures/seed-approved-run.js";
 
 const ids = {
   workspaceId: "ws_123e4567-e89b-42d3-a456-426614174000",
@@ -191,5 +197,247 @@ describe("CommandReconciliationSupervisor", () => {
     void supervisor.trackAccepted(start);
     await expect(shutdown.close()).rejects.toThrow("Reconciliation drain failed.");
     expect(persistenceClosed).toBe(false);
+  });
+
+  it("rejects a negative failure limit at construction rather than supervising unbounded retries", () => {
+    const dependencies = {
+      recovery: {
+        listPendingCommandStarts: async () => [],
+        resolveReconciliationEvents: async () =>
+          ReadCommandEventsRequestSchema.parse({ ...ids, after: 0 })
+      },
+      host: { startCommand: async () => ({}) as never },
+      reconciler: { reconcile: async () => "completed" as const }
+    };
+
+    expect(() => new CommandReconciliationSupervisor({ ...dependencies, maximumFailures: -1 })).toThrow(
+      /Reconciliation failure limit is invalid/
+    );
+    expect(
+      () => new CommandReconciliationSupervisor({ ...dependencies, maximumFailures: 1.5 })
+    ).toThrow(/Reconciliation failure limit is invalid/);
+  });
+});
+
+describe("CommandReconciliationSupervisor preparation recovery", () => {
+  let preparation: PrepareEnvironmentRequest;
+
+  beforeAll(async () => {
+    preparation = (await localExecutionRequests(700)).prepare;
+  });
+
+  it("replays an interrupted preparation against the host and records the prepared evidence", async () => {
+    const operations: string[] = [];
+    const supervisor = new CommandReconciliationSupervisor({
+      recovery: {
+        listPendingPreparations: async () => [preparation],
+        listPendingCommandStarts: async () => [],
+        resolveReconciliationEvents: async () =>
+          ReadCommandEventsRequestSchema.parse({ ...ids, after: 0 }),
+        recordPrepared: async (request, result) => {
+          expect(request).toEqual(preparation);
+          operations.push(`recorded:${String((result as { replayed: boolean }).replayed)}`);
+        }
+      },
+      host: {
+        prepareEnvironment: async (request) => {
+          expect(request).toEqual(preparation);
+          operations.push("host-prepare");
+          return { environment: {}, replayed: true } as never;
+        },
+        startCommand: async () => ({}) as never
+      },
+      reconciler: { reconcile: async () => "completed" },
+      sleep: async () => undefined
+    });
+
+    await supervisor.recover();
+    await supervisor.drain();
+    expect(operations).toEqual(["host-prepare", "recorded:true"]);
+  });
+
+  it("retries a failing host preparation and succeeds within the failure budget", async () => {
+    let attempts = 0;
+    let recorded = 0;
+    const supervisor = new CommandReconciliationSupervisor({
+      recovery: {
+        listPendingPreparations: async () => [preparation],
+        listPendingCommandStarts: async () => [],
+        resolveReconciliationEvents: async () =>
+          ReadCommandEventsRequestSchema.parse({ ...ids, after: 0 }),
+        recordPrepared: async () => void (recorded += 1)
+      },
+      host: {
+        prepareEnvironment: async () => {
+          attempts += 1;
+          if (attempts < 3) throw new Error("private host failure");
+          return { environment: {}, replayed: false } as never;
+        },
+        startCommand: async () => ({}) as never
+      },
+      reconciler: { reconcile: async () => "completed" },
+      sleep: async () => undefined
+    });
+
+    await supervisor.recover();
+    await expect(supervisor.drain()).resolves.toBeUndefined();
+    expect(attempts).toBe(3);
+    expect(recorded).toBe(1);
+  });
+
+  it("fails the drain when a host without preparation support cannot replay the intent", async () => {
+    const supervisor = new CommandReconciliationSupervisor({
+      recovery: {
+        listPendingPreparations: async () => [preparation],
+        listPendingCommandStarts: async () => [],
+        resolveReconciliationEvents: async () =>
+          ReadCommandEventsRequestSchema.parse({ ...ids, after: 0 })
+      },
+      host: { startCommand: async () => ({}) as never },
+      reconciler: { reconcile: async () => "completed" },
+      maximumFailures: 0,
+      sleep: async () => undefined
+    });
+
+    await supervisor.recover();
+    await expect(supervisor.drain()).rejects.toThrow("Reconciliation drain failed.");
+  });
+
+  it("rejects a durable preparation intent that does not parse as a prepare request", async () => {
+    const supervisor = new CommandReconciliationSupervisor({
+      recovery: {
+        listPendingPreparations: async () => [
+          { ...preparation, marker: "tampered" } as unknown as PrepareEnvironmentRequest
+        ],
+        listPendingCommandStarts: async () => [],
+        resolveReconciliationEvents: async () =>
+          ReadCommandEventsRequestSchema.parse({ ...ids, after: 0 }),
+        recordPrepared: async () => undefined
+      },
+      host: {
+        prepareEnvironment: async () => ({ environment: {}, replayed: false }) as never,
+        startCommand: async () => ({}) as never
+      },
+      reconciler: { reconcile: async () => "completed" },
+      sleep: async () => undefined
+    });
+
+    await expect(supervisor.recover()).rejects.toThrow();
+  });
+});
+
+describe("CommandReconciliationSupervisor supervision keys", () => {
+  const base = {
+    recovery: {
+      listPendingCommandStarts: async () => [],
+      resolveReconciliationEvents: async () =>
+        ReadCommandEventsRequestSchema.parse({ ...ids, after: 0 })
+    },
+    host: { startCommand: async () => ({}) as never },
+    sleep: async () => undefined
+  };
+
+  it("shares one supervision task between two identical accepted starts", async () => {
+    let attempts = 0;
+    const supervisor = new CommandReconciliationSupervisor({
+      ...base,
+      reconciler: {
+        reconcile: async () => {
+          attempts += 1;
+          return "completed";
+        }
+      }
+    });
+
+    const first = supervisor.trackAccepted(start);
+    const second = supervisor.trackAccepted(start);
+    expect(second).toBe(first);
+    await supervisor.drain();
+    expect(attempts).toBe(1);
+  });
+
+  it("fails the drain when the same command id is supervised under conflicting durable evidence", async () => {
+    const supervisor = new CommandReconciliationSupervisor({
+      ...base,
+      reconciler: {
+        reconcile: async () => {
+          await new Promise((resolve) => setTimeout(resolve, 0));
+          return "completed";
+        }
+      }
+    });
+
+    void supervisor.trackAccepted(start);
+    void supervisor.trackAccepted({ ...start, marker: "different evidence" } as never);
+
+    await expect(supervisor.drain()).rejects.toThrow("Reconciliation drain failed.");
+  });
+
+  it("abandons an in-flight reconciliation that fails after stop was requested without recording a failure", async () => {
+    let attempts = 0;
+    let release!: () => void;
+    const inFlight = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const supervisor = new CommandReconciliationSupervisor({
+      ...base,
+      reconciler: {
+        reconcile: async () => {
+          attempts += 1;
+          await inFlight;
+          throw new Error("private evidence failure");
+        }
+      },
+      maximumFailures: 0
+    });
+
+    void supervisor.trackAccepted(start);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    const stopping = supervisor.stop();
+    release();
+
+    await expect(stopping).resolves.toBeUndefined();
+    expect(attempts).toBe(1);
+    await expect(supervisor.drain()).resolves.toBeUndefined();
+  });
+
+  it("does not begin reconciling a command accepted after stop was requested", async () => {
+    let attempts = 0;
+    const supervisor = new CommandReconciliationSupervisor({
+      ...base,
+      reconciler: {
+        reconcile: async () => {
+          attempts += 1;
+          return "completed";
+        }
+      }
+    });
+
+    await supervisor.stop();
+    await supervisor.trackAccepted(start);
+    expect(attempts).toBe(0);
+  });
+
+  it("returns the same stop promise for repeated shutdown requests", async () => {
+    const supervisor = new CommandReconciliationSupervisor({
+      ...base,
+      reconciler: { reconcile: async () => "completed" }
+    });
+
+    const first = supervisor.stop();
+    expect(supervisor.stop()).toBe(first);
+    await first;
+  });
+
+  it("treats a repeated quiesce as a no-op and still drains cleanly", async () => {
+    const supervisor = new CommandReconciliationSupervisor({
+      ...base,
+      reconciler: { reconcile: async () => "completed" }
+    });
+
+    supervisor.quiesce();
+    supervisor.quiesce();
+    await expect(supervisor.drain()).resolves.toBeUndefined();
+    expect(supervisor.drain()).toBe(supervisor.drain());
   });
 });

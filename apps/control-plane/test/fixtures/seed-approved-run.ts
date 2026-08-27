@@ -8,7 +8,9 @@ import {
   EnvironmentAuthorizationSchema,
   EventIdSchema,
   PendingDomainEventSchema,
+  PrepareEnvironmentRequestSchema,
   RepositoryInspectionSchema,
+  StartCommandRequestSchema,
   createId,
   digestCommandAuthorization,
   digestCommandScope,
@@ -60,11 +62,11 @@ export interface SeedApprovedRunOptions {
 }
 
 /**
- * Seeds a durable run whose stream carries an approved plan, an approved command permission and
- * both authorizations — the exact precondition `EventBackedLocalExecutionState` reconciles from.
+ * Builds the digest-consistent identity and authorization pair a run stream would carry, without
+ * touching a store — enough to construct real `PrepareEnvironmentRequest`/`StartCommandRequest`
+ * values for components that only parse them.
  */
-export const seedApprovedRun = async (options: SeedApprovedRunOptions = {}): Promise<SeededRun> => {
-  const offset = options.seedOffset ?? 0;
+export const authorizedIdentity = async (offset = 0) => {
   const workspaceId = createId("workspace", uuid(0));
   const runId = createId("run", uuid(offset + 2));
   const workItemId = createId("workItem", uuid(offset + 1));
@@ -144,6 +146,53 @@ export const seedApprovedRun = async (options: SeedApprovedRunOptions = {}): Pro
     ...commandEnvelope,
     digest: await digestCommandAuthorization(commandEnvelope)
   });
+
+  return {
+    workspaceId,
+    runId,
+    workItemId,
+    environmentId,
+    environmentAuthorization,
+    planApprovalId,
+    commandId,
+    commandAuthorization,
+    commandApprovalId,
+    command,
+    branchSlug,
+    branch,
+    inspection: RepositoryInspectionSchema.parse({
+      repositoryIdentity: REPOSITORY_IDENTITY,
+      canonicalSourcePath: "/repo",
+      repositoryCommonDirectory: "/repo/.git",
+      resolvedBaseRef: "main",
+      sourceCommit: SOURCE_COMMIT,
+      dirty: false,
+      diagnostics: []
+    })
+  };
+};
+
+/**
+ * Seeds a durable run whose stream carries an approved plan, an approved command permission and
+ * both authorizations — the exact precondition `EventBackedLocalExecutionState` reconciles from.
+ */
+export const seedApprovedRun = async (options: SeedApprovedRunOptions = {}): Promise<SeededRun> => {
+  const offset = options.seedOffset ?? 0;
+  const {
+    workspaceId,
+    runId,
+    workItemId,
+    environmentId,
+    environmentAuthorization,
+    planApprovalId,
+    commandId,
+    commandAuthorization,
+    commandApprovalId,
+    command,
+    branchSlug,
+    branch,
+    inspection
+  } = await authorizedIdentity(offset);
 
   let directory = options.reuse?.directory;
   let store = options.reuse?.store;
@@ -301,21 +350,40 @@ export const seedApprovedRun = async (options: SeedApprovedRunOptions = {}): Pro
     command,
     branchSlug,
     branch,
-    inspection: RepositoryInspectionSchema.parse({
-      repositoryIdentity: REPOSITORY_IDENTITY,
-      canonicalSourcePath: "/repo",
-      repositoryCommonDirectory: "/repo/.git",
-      resolvedBaseRef: "main",
-      sourceCommit: SOURCE_COMMIT,
-      dirty: false,
-      diagnostics: []
-    })
+    inspection
   };
 };
 
 export const closeSeededRun = async (seeded: SeededRun): Promise<void> => {
   await seeded.store.close();
   await rm(seeded.directory, { recursive: true, force: true });
+};
+
+/** A schema-valid prepare/start pair, built without a store, for parse-only collaborators. */
+export const localExecutionRequests = async (offset = 0) => {
+  const identity = await authorizedIdentity(offset);
+  const prepare = PrepareEnvironmentRequestSchema.parse({
+    workspaceId: identity.workspaceId,
+    runId: identity.runId,
+    environmentId: identity.environmentId,
+    inspection: identity.inspection,
+    sourceCommit: identity.environmentAuthorization.scope.sourceCommit,
+    branch: identity.branch,
+    authorization: identity.environmentAuthorization,
+    idempotency: { key: `prepare-${offset}` }
+  });
+  const start = StartCommandRequestSchema.parse({
+    workspaceId: identity.workspaceId,
+    runId: identity.runId,
+    environmentId: identity.environmentId,
+    commandId: identity.commandId,
+    command: identity.command,
+    environmentAuthorizationId: identity.environmentAuthorization.id,
+    environmentAuthorizationDigest: identity.environmentAuthorization.digest,
+    authorization: identity.commandAuthorization,
+    idempotency: { key: `start-${offset}` }
+  });
+  return { identity, prepare, start };
 };
 
 /** The prepared-environment body a host returns for a seeded preparation request. */
