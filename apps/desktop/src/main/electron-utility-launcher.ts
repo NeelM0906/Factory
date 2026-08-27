@@ -11,6 +11,7 @@ import {
 } from "@autostack/contracts";
 import { utilityProcess, type UtilityProcess } from "electron";
 
+import { createChildLogForwarder } from "./child-log.js";
 import type { RuntimeChild, RuntimeSupervisorOptions } from "./runtime-supervisor.js";
 
 type Service = Parameters<RuntimeSupervisorOptions["launch"]>[0];
@@ -63,6 +64,8 @@ interface TerminalEvidenceAuthorizedResponse {
 
 export interface ElectronUtilityLauncherOptions {
   readonly utilityRoot?: string;
+  /** Where a utility child's bounded, redacted output goes. Injected so tests can read it. */
+  readonly writeChildLog?: (line: string) => void;
   readonly resolveRepository: (id: RepositoryCapabilityId) => string | Promise<string>;
   readonly authorizeTerminalEvidence: (request: unknown) => Promise<void>;
 }
@@ -363,11 +366,26 @@ export const createElectronUtilityLauncher =
   async (service, environment) => {
     const utilityRoot = options.utilityRoot ?? join(import.meta.dirname, "../utility");
     const modulePath = join(utilityRoot, service === "host" ? "host.js" : "control-plane.js");
+    // `stdio: "ignore"` discarded the only account a utility child can give of itself. The host
+    // daemon reports a startup failure as an exit code and nothing else, so with the streams thrown
+    // away a git-executable rejection -- or any other fail-closed startup -- reached the e2e pipe
+    // and nowhere else, leaving the shipped application undiagnosable. Piping obliges us to drain:
+    // the forwarder below reads both streams, redacts every line, and holds them to a fixed budget,
+    // which is the plan's "child logs are redacted and bounded".
     const child = utilityProcess.fork(modulePath, [], {
       env: environment,
       serviceName: service === "host" ? "AutoStack Host Daemon" : "AutoStack Control Plane",
-      stdio: "ignore"
+      stdio: "pipe"
     });
+    const forwarder = createChildLogForwarder({
+      service,
+      write: options.writeChildLog ?? ((line) => console.error(line))
+    });
+    for (const stream of [child.stdout, child.stderr]) {
+      stream?.setEncoding("utf8");
+      stream?.on("data", (chunk: string) => forwarder.push(chunk));
+    }
+    child.once("exit", () => forwarder.flush());
     return new ElectronRuntimeChild(
       service,
       child,
