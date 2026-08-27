@@ -66,7 +66,7 @@ unique. The existing `AgentHarnessDescriptorSchema` is unchanged and still valid
 
 Sequencing is fine: every agent event carries a positive `sequence`
 (`packages/contracts/src/agent.ts:107`), and clients already resume domain streams from
-`ListEventsResponseSchema.nextSequence` (`packages/contracts/src/api.ts:73`).
+`ListEventsResponseSchema.nextSequence` (`packages/contracts/src/api.ts:83`).
 
 Coverage is not. `AgentSessionEventSchema` (`packages/contracts/src/agent.ts:112`) covers `started`,
 `output`, `permission_requested`, `waiting`, `completed`, `failed`, and `cancelled`. Spec §9.1
@@ -83,7 +83,7 @@ combined union adapters emit and clients consume. `file_change.path` reuses
 `RelativeWorkspacePathSchema`, so an agent cannot report a change outside the managed worktree.
 
 **Revision 3 — the port could not carry them.** Declaring the union was not enough.
-`AgentHarnessPort.start`/`resume` (`packages/contracts/src/agent.ts:408`) still returned
+`AgentHarnessPort.start`/`resume` (`packages/contracts/src/agent.ts:411`) still returned
 `AsyncIterable<AgentSessionEvent>`, the narrower lifecycle union, and revision 1 deliberately left the
 port untouched. Async iterable element types are covariant, so `AsyncIterable<AgentSessionStreamEvent>`
 is not assignable to it: no adapter could emit a single detail event through the only boundary it has,
@@ -93,19 +93,19 @@ consumers that switch on `type` gain members to handle. No consumer existed when
 
 ### 3. Permission request/response round trip — GAP
 
-`permission_requested` (`packages/contracts/src/agent.ts:130`) carries a `permissionRef`, a summary,
+`permission_requested` (`packages/contracts/src/agent.ts:131`) carries a `permissionRef`, a summary,
 and an evidence digest — but no options and no response shape, so neither the S1 conformance suite
 nor the pipeline's approval machinery could complete the round trip.
 
 **Addition:** `AgentPermissionOptionSchema`, `AgentPermissionRequestSchema`
-(`packages/contracts/src/agent.ts:229`), `AgentPermissionResponseSchema`
-(`packages/contracts/src/agent.ts:260`), and `admitAgentPermissionResponse`
-(`packages/contracts/src/agent.ts:364`). The response carries an `ApprovalId`, which is how the
+(`packages/contracts/src/agent.ts:232`), `AgentPermissionResponseSchema`
+(`packages/contracts/src/agent.ts:263`), and `admitAgentPermissionResponse`
+(`packages/contracts/src/agent.ts:368`). The response carries an `ApprovalId`, which is how the
 pipeline's `Approval` record (`kind: "permission"`, `packages/contracts/src/entities.ts:274`) binds to
 it. The admission helper rejects a response from a different session, a response to a different
 `permissionRef`, a response against a stale evidence digest, or a selection the request never offered.
 A request must offer at least one denial option. `AgentPermissionResponderPort`
-(`packages/contracts/src/agent.ts:420`) is a separate interface so adapters that do not declare
+(`packages/contracts/src/agent.ts:423`) is a separate interface so adapters that do not declare
 `capabilities.permissions` simply do not implement it — `AgentHarnessPort` is untouched.
 
 ### 4. Installed vs authenticated status — GAP
@@ -115,7 +115,7 @@ status probing", S2's requires an `isInstalled()`/`isAuthenticated()` probe per 
 acceptance criterion 6 surfaces it in the UI.
 
 **Addition:** the `availability` block of `AgentHarnessProfileSchema`
-(`packages/contracts/src/agent.ts:178`) — `installed`, `authenticated`, an optional non-secret
+(`packages/contracts/src/agent.ts:181`) — `installed`, `authenticated`, an optional non-secret
 `detail`, and `checkedAt`. A refinement rejects `authenticated: true` while `installed: false`.
 
 ### 5. Session interruption / host loss — GAP
@@ -201,7 +201,7 @@ enum would have become a de-facto cross-stream interface without ever being revi
 is exactly what the Task 0.2 fake did before this was added.
 
 **Addition:** `MODEL_ROUTING_FAILURE_CODES` and `ModelRoutingFailureSchema`
-(`packages/contracts/src/model.ts:245`, `:264`) declare the shared vocabulary — `capability_unavailable`,
+(`packages/contracts/src/model.ts:220`, `:264`) declare the shared vocabulary — `capability_unavailable`,
 `route_disabled`, `provider_error`, `rate_limited`, `budget_exceeded` — with secret-safe operator
 text, a `retryable` flag, and optional `routeRef`/`requestedModel` attribution.
 `ModelRoutingError` (`:299`) is the throwable form, and it admits its input in the constructor so an
@@ -325,7 +325,7 @@ desktop answer are the same contract.
 `head`, and `finalDiffDigest`, and `canonicalizePublishScopeForDigest` (`:354`) puts exactly those in
 the digest, so §14.2's staleness rule already holds. `admitPublicationEvidenceBundle` (`:375`)
 re-derives the digest and rejects a mismatch, and `admitDraftPullRequestRequest`
-(`packages/contracts/src/integration.ts:149`) rejects a PR outside the approved scope. No addition.
+(`packages/contracts/src/integration.ts:150`) rejects a PR outside the approved scope. No addition.
 
 ## Integration contract — spec §13, stream S5
 
@@ -333,7 +333,7 @@ re-derives the digest and rejects a mismatch, and `admitDraftPullRequestRequest`
 
 Both ingress variants carry `deliveryId` and `deduplicationKey`
 (`packages/contracts/src/integration.ts:28`, `:50`), and `IntegrationIngressPort.accept`
-(`:260`) returns `{ replayed }`, which is what §15's duplicate-delivery rule and S4's intake
+(`:261`) returns `{ replayed }`, which is what §15's duplicate-delivery rule and S4's intake
 deduplication need. Socket Mode ack semantics are a transport concern above this contract: the
 envelope is acked, then the durable queue processes the deduplicated delivery (§13.2). No addition.
 
@@ -350,7 +350,7 @@ event", which needs comment identity in the contract.
 **Addition:** `GitHubProgressCommentRequestSchema` (`packages/contracts/src/integration.ts:173`) —
 omit `commentId` to create, supply it to edit that comment in place — plus
 `GitHubProgressCommentResultSchema` (`:186`) and the `GitHubProgressIntegrationPort` interface
-(`:270`). S5 implements `DeliveryIntegrationPort & GitHubProgressIntegrationPort`;
+(`:271`). S5 implements `DeliveryIntegrationPort & GitHubProgressIntegrationPort`;
 `DeliveryIntegrationPort` itself is unchanged.
 
 ### 17. Draft-PR content — GAP
@@ -399,12 +399,12 @@ names four routes it must serve and S6 must build its approval inbox and compose
 schemas before S4 merges.
 
 **Addition (all in `packages/contracts/src/api.ts`):** `ApprovalSummarySchema` (`:117`),
-`ListApprovalsQuerySchema` (`:125`, defaulting to `status: "pending"` with a coerced numeric `limit`
+`ListApprovalsQuerySchema` (`:132`, defaulting to `status: "pending"` with a coerced numeric `limit`
 since query values arrive as strings), `ListApprovalsResponseSchema` (`:140`),
-`ApprovalDecisionRequestSchema` (`:139`, which requires the `evidenceDigest` being approved so a stale
-decision is detectable) and `ApprovalDecisionResponseSchema` (`:148`, with `replayed` for idempotent
-re-decision), `SteerRunRequestSchema`/`SteerRunResponseSchema` (`:158`, `:162`), and
-`CancelRunRequestSchema`/`CancelRunResponseSchema` (`:166`, `:170`).
+`ApprovalDecisionRequestSchema` (`:147`, which requires the `evidenceDigest` being approved so a stale
+decision is detectable) and `ApprovalDecisionResponseSchema` (`:156`, with `replayed` for idempotent
+re-decision), `SteerRunRequestSchema`/`SteerRunResponseSchema` (`:168`, `:172`), and
+`CancelRunRequestSchema`/`CancelRunResponseSchema` (`:176`, `:180`).
 
 `ListApprovalsQuerySchema` also carries an optional `cursor` (coerced positive integer) so a client
 can feed `ListApprovalsResponseSchema.nextCursor` back in and page past the first window — the
@@ -416,7 +416,7 @@ vocabulary, so the HTTP surface cannot drift from the domain entity.
 `ApprovalDecisionResponseSchema.status` keeps its own narrower enum on purpose — a decided approval
 can never be `pending`.
 
-`ApiErrorSchema`'s code enum (`:80`) gains nothing: `run_not_found`, `invalid_request`,
+`ApiErrorSchema`'s code enum (`:91`) gains nothing: `run_not_found`, `invalid_request`,
 `version_conflict`, and `idempotency_conflict` already cover approval failures, and adding members to
 an existing enum is outside the append-only mandate.
 
