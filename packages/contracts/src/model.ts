@@ -204,6 +204,13 @@ export const ModelUsageRecordSchema = z
     cost: ModelCostSchema,
     latencyMs: z.number().int().nonnegative(),
     outcome: z.enum(["succeeded", "failed", "cancelled"]),
+    /**
+     * Orders the records a retried request produces. A router that falls back keeps one
+     * `idempotencyKey` across attempts — the caller asked once — so without an ordinal the
+     * per-attempt records would be indistinguishable and cost would be attributed to whichever
+     * arrived last.
+     */
+    attempt: z.number().int().nonnegative().optional(),
     recordedAt: TimestampSchema
   })
   .strict();

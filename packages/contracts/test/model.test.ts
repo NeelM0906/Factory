@@ -346,3 +346,74 @@ describe("model routing failures", () => {
     expect(() => new ModelRoutingError({ ...failure(), code: "kaput" })).toThrow();
   });
 });
+
+describe("model usage unknown-expressibility", () => {
+  const usageRecord = () => ({
+    schemaVersion: 1 as const,
+    idempotencyKey: "model-usage:run:implement:1",
+    ...attribution,
+    stage: "implement" as const,
+    adapterId: "agent-native.implement",
+    routeRef: "route.gateway.default",
+    requested: { provider: "anthropic", model: "anthropic/claude-sonnet-4" },
+    actual: {
+      provider: "anthropic",
+      model: "anthropic/claude-sonnet-4",
+      providerRequestId: "req-1"
+    },
+    tokens: {
+      input: { state: "reported" as const, value: 1_200 },
+      output: { state: "reported" as const, value: 340 },
+      cachedInput: { state: "unknown" as const },
+      reasoning: { state: "unknown" as const }
+    },
+    cost: { state: "unknown" as const },
+    latencyMs: 812,
+    outcome: "succeeded" as const,
+    recordedAt: "2026-08-23T12:00:01.000Z"
+  });
+
+  it("records unknown provider usage instead of estimating it as zero", () => {
+    const record = ModelUsageRecordSchema.parse(usageRecord());
+    expect(record.tokens.cachedInput).toEqual({ state: "unknown" });
+    expect(record.cost).toEqual({ state: "unknown" });
+  });
+
+  it("cannot express the same thing through the exact-count usage shape", () => {
+    const exact = {
+      schemaVersion: 1,
+      idempotencyKey: "model-usage:run:implement:1",
+      routeRef: "route.gateway.default",
+      providerRequestId: "req-1",
+      provider: "anthropic",
+      model: "anthropic/claude-sonnet-4",
+      tokens: { input: 1_200, output: 340 },
+      cost: { currency: "USD", micros: 4_200 },
+      latencyMs: 812,
+      recordedAt: "2026-08-23T12:00:01.000Z"
+    };
+    // The missing counts silently become zero rather than staying unknown, which is the whole
+    // reason ModelUsageRecordSchema exists alongside this shape.
+    expect(ModelUsageSchema.parse(exact).tokens).toEqual({
+      input: 1_200,
+      output: 340,
+      cachedInput: 0,
+      reasoning: 0
+    });
+    expect(() =>
+      ModelUsageSchema.parse({
+        ...exact,
+        tokens: { ...exact.tokens, cachedInput: { state: "unknown" } }
+      })
+    ).toThrow();
+    expect(() => ModelUsageSchema.parse({ ...exact, cost: { state: "unknown" } })).toThrow();
+  });
+
+  it("orders the per-attempt records that share one idempotency key", () => {
+    expect(ModelUsageRecordSchema.parse(usageRecord()).attempt).toBeUndefined();
+    expect(ModelUsageRecordSchema.parse({ ...usageRecord(), attempt: 0 }).attempt).toBe(0);
+    expect(ModelUsageRecordSchema.parse({ ...usageRecord(), attempt: 2 }).attempt).toBe(2);
+    expect(() => ModelUsageRecordSchema.parse({ ...usageRecord(), attempt: -1 })).toThrow();
+    expect(() => ModelUsageRecordSchema.parse({ ...usageRecord(), attempt: 1.5 })).toThrow();
+  });
+});
