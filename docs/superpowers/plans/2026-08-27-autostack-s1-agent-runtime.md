@@ -2,13 +2,13 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Date:** 2026-08-27
+**Date:** 2026-08-27 · **Revision 2** (folds the orchestrator's APPROVE-WITH-CHANGES review of 2026-08-27)
 **Stream:** S1 (Wave 1) · **Worktree:** `/Users/zidane/factory-s1` · **Branch:** `codex/milestone-a-s1-agent-runtime` · **Base:** `02e5cff`
 **Charter:** `docs/superpowers/plans/2026-08-26-autostack-milestone-a-parallel.md` § "Stream S1: Agent runtime and native agent"
-**Spec:** `docs/superpowers/specs/2026-08-20-autostack-design.md` §8.2, §8.3, §9.1, §9.4, §10.2, §14.1, §14.4, §15, §16.2
-**Contract map:** `docs/development/milestone-a-contract-audit.md` items 1–5, 8–11, 21
+**Spec:** `docs/superpowers/specs/2026-08-20-autostack-design.md` §8.1, §8.2, §8.3, §9.1, §9.4, §10.2, §14.1, §14.4, §15, §16.2
+**Contract map:** `docs/development/milestone-a-contract-audit.md` items 1–5, 8–11, 21, plus Wave 0 Task 0.12
 
-**Goal:** Deliver the two packages that make an agent teammate a supervised, normalized, evidence-producing session: `@autostack/agent-runtime` (harness registry with installed/authenticated probing, sequence-ordered session relay, durable interruption marking on host loss, bounded cancellation) and `@autostack/agent-native` (one `AgentHarnessPort` implementation configured into the triage, plan, and review roles, producing schema-valid station evidence from versioned prompts through `ModelRouterPort`, with no provider SDK and no credential anywhere in the stream).
+**Goal:** Deliver the two packages that make an agent teammate a supervised, normalized, evidence-producing session: `@autostack/agent-runtime` (harness registry with installed/authenticated probing, sequence-ordered session relay, interruption marking on host loss, bounded cancellation) and `@autostack/agent-native` (one `AgentHarnessPort` implementation configured into the triage, plan, and review roles, producing schema-valid station evidence from versioned prompts through `ModelRouterPort` and `ModelInferencePort`, with no provider SDK and no credential anywhere in the stream).
 
 **Architecture:** `agent-runtime` consumes `AgentHarnessPort` and never implements it; `agent-native` implements `AgentHarnessPort` and never consumes another adapter. The one shared primitive is the sequence-ordered event relay, which lives in `agent-runtime` and is imported by `agent-native` (direction: `agent-native` → `agent-runtime`, never the reverse, so the supervisor stays adapter-agnostic). A native session is a supervised producer that writes contract-validated `AgentSessionStreamEvent`s into a relay; `start` and `resume` are readers over that relay, which is what lets `resume` continue the _same_ session rather than replay a transcript into a new one (spec §9.1). Every model response is admitted by a Zod schema before it becomes evidence; a response that fails admission is a classified failure with a code from a fixed table, never a crash and never an unbounded re-ask. Every string that leaves the model and enters an event passes the shared redactor first, and a value that cannot be made safe fails the session closed.
 
@@ -16,133 +16,45 @@
 
 ---
 
-## Escalations — read before Task 6
+## Execution order
 
-Per the stream-lead protocol ("if a contract shape blocks you, STOP that task and report"), these are reported with the plan rather than worked around. Tasks 1–5 and 7 are unblocked and proceed regardless; Tasks 6 and 8–11 depend on E1, E2, and E3.
+Task numbers are stable identities (they are how the orchestrator and this stream refer to work); the document is ordered for reading, and this is the order of execution:
 
-### E1 — BLOCKING, high: no contract port can call a model
+**T1 → T4 → T5 → T7 → T6 → T2 → T3 → T13 → T8 → T9 → T10 → T11 → T12**
 
-`ModelRouterPort` (`packages/contracts/src/model.ts:372`) is `resolve` / `getRoute` / `recordUsage`. It selects a route; nothing in `@autostack/contracts` turns a `routeRef` into a model response. The contract audit's items 6–10 and 21 all describe routing, never inference, and `createFakeModelRouter` (`packages/domain/src/testing/fake-model-router.ts:113`) works around the hole by attaching a scripted `ModelUsageRecord` to `resolve`, as if selecting a route were making a call.
+The reorder is a required change from the plan review: T7 (context assembly) builds the unit that T6's conformance fixture needs to script a genuine permission gate, so building the harness core first would have meant scripting the gate before the thing that gates. T2/T3 (registry and supervisor) follow the harness because T13's cross-package composition test — the check that catches interruption-ownership drift before I1 — needs all three.
 
-S1 cannot produce a `TriageReport`, `PlanDocument`, or `ReviewReport` without a model response, and turning a `ModelRoute` into a callable model requires the route's `credentialRefId` — which my charter names explicitly as S3's lane ("if you find yourself needing an API key, you have crossed into S3's lane — stop and escalate").
+**Unblocked now:** T1, T4, T5, T7. **Gated on the Task 0.12 rebase:** T6, T8, T9, T10, T11 (and T13, which composes them).
 
-**Proposed append-only addition** to `packages/contracts/src/model.ts`, with a matching `createFakeModelInference` in `@autostack/domain/testing`:
+---
 
-```ts
-export const ModelMessageSchema = z
-  .object({
-    role: z.enum(["system", "user", "assistant"]),
-    text: SafeMetadataStringSchema.max(200_000)
-  })
-  .strict();
+## Contract dependencies resolved by Wave 0 Task 0.12
 
-export const ModelResponseFormatSchema = z.discriminatedUnion("kind", [
-  z.object({ kind: z.literal("text") }).strict(),
-  z
-    .object({ kind: z.literal("json"), schemaRef: StableRefSchema, jsonSchema: SafeJsonObject })
-    .strict()
-]);
+The three blocking escalations raised with revision 1 were approved and land on the base branch as Task 0.12. This stream rebases when told, then unblocks T6 and the role tasks. What 0.12 delivers, and what this plan therefore assumes:
 
-export const ModelInferenceRequestSchema = z
-  .object({
-    schemaVersion: VersionSchema,
-    idempotencyKey: IdempotencyKeySchema,
-    routeRef: StableRefSchema,
-    messages: z.array(ModelMessageSchema).min(1).max(100),
-    responseFormat: ModelResponseFormatSchema,
-    maxOutputTokens: z.number().int().positive().optional(),
-    reasoningLevel: ModelReasoningLevelSchema.optional()
-  })
-  .strict();
+- **`ModelInferencePort`** (E1) — reconciled with S3's seam. `ModelRouterPort` resolves a route; the inference port executes one resolved route and raises `ModelRoutingError` so the taxonomy survives the call. Its result carries unknown-preserving `ModelTokenUsage`/`ModelCost`, which is the only reason §10.2's "missing provider usage is recorded as unknown" can hold at the boundary that knows it. A matching fake lands in `@autostack/domain/testing`. No tool-calling round trip and no token streaming (see the E5 ruling below).
+- **`producedBy` provenance** (E2) — an optional provenance object on `TriageReportSchema`, `PlanDocumentSchema`, and `ReviewReportSchema` recording `adapterId`, `promptRef`, `promptVersion`, and `routeRef`, excluded from `canonicalizePlanDocumentForDigest` on the same reasoning the contract already applies to `producedAt` (§14.2 invalidates an approval on _material_ change; re-planning byte-identical content under a new prompt version is not one). This is what makes spec §16.2's stored prompt version real rather than aspirational.
+- **Triage and review digest helpers** (E3) — `canonicalize`/`digest`/`admit` for `TriageReport` and `ReviewReport`, mirroring the verification-report rule. `agent-native` defines no canonicalization of its own.
+- **`workItemId` on `AgentInvocationRequestSchema`** (review finding 2a) — append-only and **optional** in the contract, because other adapters may not have one. The native roles treat it as **required at admission and fail closed when absent**: the three station documents all carry `workItemId` in their identity shape, and the only alternative source would be the model, which must never be able to supply identity for a document it authors.
 
-export const ModelInferenceResultSchema = z
-  .object({
-    schemaVersion: VersionSchema,
-    idempotencyKey: IdempotencyKeySchema,
-    routeRef: StableRefSchema,
-    actual: z
-      .object({
-        provider: StableRefSchema,
-        model: StableRefSchema,
-        providerRequestId: StableRefSchema.optional()
-      })
-      .strict(),
-    text: SafeMetadataStringSchema.max(400_000),
-    tokens: ModelTokenUsageSchema,
-    cost: ModelCostSchema,
-    latencyMs: z.number().int().nonnegative(),
-    finishReason: z.enum(["stop", "length", "content_filter", "error"]),
-    completedAt: TimestampSchema
-  })
-  .strict();
+### Rulings folded into this plan
 
-/** Executes one resolved route. Raises `ModelRoutingError` so the taxonomy survives the call. */
-export interface ModelInferencePort {
-  generate(request: ModelInferenceRequest): Promise<ModelInferenceResult>;
-}
-```
-
-Deliberately excluded: model-driven tool calling (see E5) and streaming deltas (no §18 acceptance criterion requires token-level streaming from a native role; the harness streams normalized events, not tokens). `tokens`/`cost` reuse the unknown-preserving unions so §10.2's "missing provider usage is recorded as unknown" holds at the only boundary that knows it.
-
-**If declined:** the fallback is a local `NativeModelInvoker` function type in `agent-native`, wired by I1 to an S3 adapter. That makes an un-reviewed cross-stream interface, which is exactly what the audit's item 21 rationale argues against, so it is the worse option and I am not choosing it unilaterally.
-
-### E2 — BLOCKING for one exit criterion, medium: nothing carries a prompt version into evidence
-
-Spec §16.2 requires a stored version "for every workflow, prompt, policy, adapter, and model route used by a run", and my charter requires "prompts stored as versioned artifacts with a version recorded in produced evidence". `TriageReportSchema`, `PlanDocumentSchema`, and `ReviewReportSchema` are `.strict()` and have no provenance field; `AgentSessionStreamEvent` has none either.
-
-**Proposed append-only addition** to `packages/contracts/src/station-evidence.ts`: an optional `producedBy` on all three documents —
-
-```ts
-const StationProvenanceSchema = z
-  .object({
-    adapterId: StableRefSchema,
-    promptRef: StableRefSchema,
-    promptVersion: z.number().int().positive(),
-    routeRef: StableRefSchema.optional()
-  })
-  .strict();
-```
-
-— left **out** of `canonicalizePlanDocumentForDigest`, on the same reasoning the existing comment gives for `producedAt`: §14.2 invalidates an approval on _material_ change, and re-planning byte-identical content under a new prompt version is not a material change to what the human approved. Adding an optional field to a `.strict()` object is append-only and breaks no existing parse.
-
-**If declined:** I record the provenance in a `structured` `output` event at session start and note the §16.2 obligation as met at the stream level but not on the documents.
-
-### E3 — BLOCKING for triage/review evidence digests, medium: two of the four station documents have no digest helper
-
-`station-evidence.ts` exports `canonicalize`/`digest`/`admit` for `PlanDocument` and `VerificationReport` only. But `AgentSessionEvent.completed.evidenceDigests` requires at least one digest per session, and `ReviewReportSchema` requires a `verificationReportDigest`, so triage and review both need addressable digests. My dispatch is explicit that I must not re-derive canonicalization rules locally.
-
-**Proposed append-only addition:** `canonicalizeTriageReportForDigest` / `digestTriageReport` / `admitTriageReport`, and `canonicalizeReviewReportForDigest` / `digestReviewReport`, mirroring the verification-report rule (cover every field including `producedAt`, since both are evidence of one execution rather than approved content).
-
-**If declined or deferred:** Task 8 and Task 10 stop at the digest step and the roles ship producing documents without self-addressing digests, which would fail my exit criterion. I would rather wait than invent domains.
-
-### E4 — informational: schema names in the charter do not exist
-
-The master plan's S1 exit criteria name `TriageEvidenceSchema`, `PlanEvidenceSchema`, `ReviewEvidenceSchema`. The real exports are `TriageReportSchema`, `PlanDocumentSchema`, `ReviewReportSchema` (`packages/contracts/src/station-evidence.ts:44`, `:90`, `:216`). My dispatch already uses two of the three correct names. This plan binds to the real exports; no action needed beyond noting the drift.
-
-### E5 — design ruling requested, medium: deterministic context assembly instead of model-driven tool calling
-
-Spec §9.4 says the native adapter gives "direct access to AutoStack tools". Milestone A's native roles are all _analysis_ roles (§8.2: triage classifies, plan inspects a read-only checkout, review reads the diff and verification evidence); the role that actually edits a repository is the CLI harness in S2. Supporting model-driven tool calls would require a tool-definition and tool-result round trip in E1's inference contract — a large surface that no §18 acceptance criterion exercises for a native role.
-
-**Proposed:** the harness performs its own bounded, deterministic context assembly through an injected read-only reader, emits a real `tool_call` event pair per read, gates any read outside the declared scope behind a `permission_requested`, and then makes one structured-output model call. The `tool_call` events are honest — the harness did call a tool — and the permission round trip is genuine, not staged for the conformance suite. Requesting confirmation before Task 7.
-
-### E6 — informational: intra-stream package dependency
-
-`@autostack/agent-native` will depend on `@autostack/agent-runtime` for the session relay primitive. `agent-runtime` will never import `agent-native`; the registry is populated by injection, so composition (I1) is the only place the two meet. The alternative — duplicating the relay in both — was rejected as the worse trade.
-
-### E7 — informational: `recordUsage` cannot express unknown usage
-
-`ModelRouterPort.recordUsage` takes `ModelUsageSchema`, whose token counts and cost are exact non-negative integers. The conformance suite requires the harness to emit `usage` events in which unreported figures are `{ state: "unknown" }`, and §10.2 forbids estimating them. The native harness therefore emits unknown-preserving `usage` events and does **not** call `recordUsage`; writing `ModelUsageRecord` (which _can_ express unknowns) is left to whoever owns persistence. Flagging so S3/S4 do not assume S1 writes usage.
+- **Finding 2b — upstream documents.** The reviewer role receives the `PlanDocument` and `VerificationReport` it reviews through an explicit per-invocation `NativeRoleInputs` provider in `NativeHarnessDeps`. S4 holds those documents at invocation time; the provider is recorded as a Wave 2 I1 composition interface. There is no evidence-retrieval port in Milestone A.
+- **Finding 4 — steering.** Ruled as this stream's call within the honesty rule; the decision and its reasoning are in T6 Step 2.
+- **Finding 5 — interruption ownership.** Single owner: the adapter emits `interrupted` when it can, and the supervisor synthesizes one **only** when a stream ends with neither a lifecycle terminal nor an `interrupted` event. Idempotence is asserted in T3.
+- **Finding 12 — usage.** Unknown-preserving `usage` **events** satisfy §18's live observation. Durable `ModelUsageRecord` persistence is Wave 2 I1's, with S3's `recordUsage` as the sink. This stream does not call `recordUsage` — `ModelUsageSchema` takes exact integers and cannot express `{ state: "unknown" }`, so calling it would mean fabricating zeros.
+- **Finding 13 — digest domains.** The two digest domains this stream mints for its own use (`autostack.native-prompt`, `autostack.agent-session-transcript`) are noted in the package READMEs as potential future contract surface.
 
 ---
 
 ## Global constraints (inherited; every task holds all of them)
 
 - TypeScript strict. No unchecked `any`, no non-null assertions, no `as` casts that bypass validation, no TODO or placeholder implementations, no disabled tests.
-- No provider SDK, no credential, no API key, no network call anywhere in either package — including tests. If a task seems to need one, stop and escalate (E1).
+- No provider SDK, no credential, no API key, no network call anywhere in either package — including tests.
 - Every cross-boundary value is Zod-validated. No new public types outside `@autostack/contracts`; the two packages export functions and their own local option types only.
 - Every model-produced string passes `redactSensitiveText` before entering an event or a document, and a string that still trips `containsSensitiveMaterial` fails the session closed rather than being emitted.
-- Untrusted input (objective text, repository contents, model output) never grants a permission, never selects a route, and never changes a capability declaration (spec §14.1).
-- Injected clock (`now: () => string`), injected ID factory, injected inference port, injected reader. No `Date.now()`, no `crypto.randomUUID()`, no `setTimeout` outside an injected timer in production code.
+- Untrusted input (objective text, repository contents, model output) never grants a permission, never selects a route, never supplies identity, and never changes a capability declaration (spec §14.1).
+- Injected clock (`now: () => string`), injected ID factory, injected inference port, injected reader, injected timer. No `Date.now()`, no `crypto.randomUUID()`, no bare `setTimeout` in production code.
 - Failure codes come from fixed exported tables and match `^[a-z][a-z0-9_]{0,63}$` so lifting them into `WorkflowFailure` is a no-op. Error classes carry a non-enumerable `cause`; messages and codes come only from the tables.
 - Files stay small and single-concern (200–400 lines typical, 800 hard max), matching `packages/runner-local/src/`.
 - TDD per step: write the failing test, run it, observe the stated failure, implement minimally, re-run focused, then run the package's full suite before the task's commit. Conventional-commit message per task.
@@ -163,7 +75,9 @@ Spec §9.4 says the native adapter gives "direct access to AutoStack tools". Mil
 
 - [ ] **Step 1: Scaffold the two packages**
 
-Mirror `packages/domain/package.json` exactly in shape. `@autostack/agent-runtime` declares `exports: { ".": "./src/index.ts", "./session": "./src/session/index.ts" }`, dependencies `@autostack/contracts` (workspace) only. `@autostack/agent-native` declares `exports: { ".": "./src/index.ts" }`, dependencies `@autostack/contracts` and `@autostack/agent-runtime` (both workspace). Both get the four standard scripts (`build`, `check`, `test`, `test:coverage`) with `tsc -p tsconfig.json --noEmit` for build and check, `tsconfig.json` extending `../../tsconfig.base.json` with `"types": ["node", "vitest/globals"]` and `include: ["src/**/*.ts", "test/**/*.ts"]`, and a `vitest.config.ts` that re-exports the root shared config unchanged (no `fileParallelism: false` — neither package touches machine-wide resources).
+Mirror `packages/domain/package.json` exactly in shape. `@autostack/agent-runtime` declares `exports: { ".": "./src/index.ts" }`, dependency `@autostack/contracts` (workspace), devDependency `@autostack/domain` (workspace — its `./testing` entry supplies `createFakeAgentHarness` and the conformance suite, which are test-only and must not become a runtime dependency). `@autostack/agent-native` declares `exports: { ".": "./src/index.ts" }`, dependencies `@autostack/contracts` and `@autostack/agent-runtime`, devDependency `@autostack/domain` for the same reason.
+
+Both get the four standard scripts (`build`, `check`, `test`, `test:coverage`) with `tsc -p tsconfig.json --noEmit` for build and check, a `tsconfig.json` extending `../../tsconfig.base.json` with `"types": ["node", "vitest/globals"]` and `include: ["src/**/*.ts", "test/**/*.ts"]`, and a `vitest.config.ts` that re-exports the root shared config unchanged (no `fileParallelism: false` — neither package touches machine-wide resources).
 
 Both are picked up automatically: `pnpm-workspace.yaml` globs `packages/*`, `turbo.json` defines the tasks generically, and CI's ubuntu job uses exclusion filters (`.github/workflows/ci.yml:73`, `:85`), so no root or CI file changes. Verify that claim:
 
@@ -184,7 +98,7 @@ Write `test/session-event-relay.test.ts` asserting:
 3. `read({ after: 0 })` yields every event; `read({ after: n })` yields only events with `sequence > n`.
 4. A reader attached before any append blocks (its `next()` stays pending) until an append arrives, then yields it.
 5. Appending a lifecycle terminal (`completed` / `failed` / `cancelled`) closes the relay: every open reader ends after delivering the terminal, and a further `append` raises `agent_session_already_terminal`.
-6. `interrupted` does **not** close the relay as a terminal, but does mark it interrupted; a subsequent `append` of anything other than nothing raises `agent_session_interrupted`, and readers end after the `interrupted` event with no lifecycle terminal (spec §15, and the conformance suite's evidence case).
+6. `interrupted` does **not** close the relay as a lifecycle terminal, but does mark it interrupted: readers end after the `interrupted` event with no lifecycle terminal, and **after `interrupted`, every further append raises** `agent_session_interrupted` (spec §15, and the conformance suite's evidence case).
 7. Two concurrent readers observe identical sequences.
 8. `close()` is idempotent and ends open readers.
 
@@ -200,8 +114,6 @@ Expected failure: `Cannot find module '../src/session-event-relay.js'`.
 export interface SessionEventRelayOptions {
   readonly sessionId: AgentSessionId;
   readonly now: () => string;
-  /** Exclusive lower bound on the first sequence number; a resumed session passes its last. */
-  readonly startAfter?: number;
 }
 
 export type SessionEventTemplate = DistributiveOmit<
@@ -218,6 +130,8 @@ export interface SessionEventRelay {
 }
 ```
 
+There is deliberately no `startAfter` construction option: a resumed session reads the _same_ relay from a cursor (`read({ after })`), so a second relay that starts mid-sequence would only exist to serve a resume this design does not perform.
+
 Buffer every appended event (bounded at 10_000; exceeding it raises `agent_session_stream_overflow` rather than dropping evidence silently). Readers are async generators over the buffer plus a waiter set, exactly the notify/`waitUntil` shape `createFakeAgentHarness` uses (`packages/domain/src/testing/fake-agent-harness.ts:94`) — that shape is already proven against the conformance suite's pause detection.
 
 - [ ] **Step 4: Implement the error table**
@@ -231,6 +145,240 @@ pnpm --filter @autostack/agent-runtime test && pnpm check --filter @autostack/ag
 ```
 
 Commit: `feat(agent-runtime): scaffold the package and its sequence-ordered session relay`
+
+---
+
+## Task 4: Versioned prompt artifacts
+
+**Files:**
+
+- Create: `packages/agent-native/src/prompts/prompt-artifact.ts`
+- Create: `packages/agent-native/src/prompts/triage-prompt.ts`
+- Create: `packages/agent-native/src/prompts/plan-prompt.ts`
+- Create: `packages/agent-native/src/prompts/review-prompt.ts`
+- Create: `packages/agent-native/src/prompts/prompt-digests.ts`
+- Create: `packages/agent-native/src/prompts/index.ts`
+- Test: `packages/agent-native/test/prompts.test.ts`
+
+- [ ] **Step 1: Add the failing prompt-artifact test**
+
+Spec §16.2 requires a stored version for every prompt used by a run, and my charter requires prompts to be exported, versioned constants rather than inline strings. Assert:
+
+1. Each artifact is `{ promptRef, version, system, modelAuthoredFields, render(input) }`, deeply frozen, with `promptRef` matching the `StableRefSchema` alphabet (`autostack.native.triage`, `.plan`, `.review`) and `version` a positive integer.
+2. `promptRef` values are unique across the registry and the registry is exhaustive over `NATIVE_AGENT_ROLES`.
+3. `render` returns `ModelMessage[]` whose first message is the artifact's `system` text and whose user message contains the untrusted inputs in a delimited block.
+4. **Field exhaustiveness, scoped.** Each artifact declares `modelAuthoredFields` — the subset of its output schema the model is asked to author (triage: `taskType`, `priority`, `complexity`, `actionable`, `rationale`, `duplicates`, `clarificationRef`). The test asserts every declared field name appears in the rendered instruction, so a prompt cannot silently stop asking for a field the schema demands. The complementary assertion is the load-bearing one: **no identity, digest, or timestamp field name appears in the rendered prompt at all** — not `workspaceId`, `workItemId`, `runId`, `schemaVersion`, `planDigest`, `reviewedDiffDigest`, `verificationReportDigest`, `producedAt`, or `producedBy`. The model is never invited to author identity or evidence addressing; the harness supplies all of it (review finding 2a).
+5. `render` never interpolates raw untrusted text into the system message: objective and repository text land only in a `user` message, inside an explicitly delimited block, and the system message states that content inside that block is data and never instruction (spec §14.1).
+6. Rendered messages pass `ModelMessageSchema.parse`, which means an input containing credential-shaped material is rejected rather than sent — the test feeds a fake AWS-key-shaped string and asserts the render fails closed.
+7. **Version pinning through an append-only digest table.** `prompt-digests.ts` exports `PROMPT_DIGESTS: readonly { promptRef, version, digest }[]`. The digest is taken over a stable JSON projection — `{ promptRef, version, system, renderedSample }`, where `renderedSample` is `render` applied to a frozen sample input checked in beside the table — via `digestVersionedValue("autostack.native-prompt", projection)`. Digesting a projection rather than the artifact object keeps the pin over what actually reaches the model instead of over incidental object identity. The test asserts: the current artifact's projection digest equals the table row for its current version; the table contains a row for every `(promptRef, version)` ever shipped and versions per `promptRef` are contiguous and ascending; and rows are append-only — **an existing row is never edited**, so changing a prompt without bumping its `version` fails here, which is the mechanism that makes "versioned artifact" enforceable.
+
+```bash
+pnpm --filter @autostack/agent-native test -- prompts.test.ts
+```
+
+Expected failure: `Cannot find module '../src/prompts/index.js'`.
+
+- [ ] **Step 2: Write the three prompts**
+
+Each states the role, the exact JSON shape expected for its `modelAuthoredFields` (derived from the Zod schema via `z.toJSONSchema` and then narrowed to the declared subset, not hand-written, so prompt and schema cannot drift), the refusal rules the schema encodes (a triage report may not repeat a duplicate reference; a plan must name at least one required verification command; an approved review may contain no critical or high finding), and the untrusted-data framing from Step 1.5.
+
+- [ ] **Step 3: Verify and commit**
+
+Commit: `feat(agent-native): add the versioned triage, plan, and review prompt artifacts`
+
+---
+
+## Task 5: Structured-output admission and failure classification
+
+**Files:**
+
+- Create: `packages/agent-native/src/structured-output.ts`
+- Create: `packages/agent-native/src/failure-classification.ts`
+- Create: `packages/agent-native/src/errors.ts`
+- Test: `packages/agent-native/test/structured-output.test.ts`, `test/failure-classification.test.ts`
+
+- [ ] **Step 1: Add the failing structured-output test**
+
+Parse-don't-trust, with the retry policy visible in the signature rather than buried:
+
+```ts
+export interface StructuredOutputPolicy {
+  /** Re-asks allowed after an admission failure. 0 or 1; the policy is a ceiling, not a loop. */
+  readonly maxRepairAttempts: 0 | 1;
+}
+
+export type StructuredOutputOutcome<T> =
+  | { readonly kind: "admitted"; readonly value: T; readonly attempts: number }
+  | { readonly kind: "rejected"; readonly failure: NativeAgentFailure; readonly attempts: number };
+```
+
+Assert:
+
+1. Well-formed JSON matching the schema is admitted on attempt 1.
+2. Text that is not JSON at all is rejected with code `malformed_model_output`, `retryable: false`, and the failure message names the role and the parse position — never the model's raw text, which is untrusted and may be enormous.
+3. Valid JSON that fails the Zod schema is rejected with the same code, and the failure carries the _schema paths_ that failed (`issue.path.join(".")`), not the offending values.
+4. A response wrapped in a markdown fence is admitted after fence stripping; a response with prose before and after a single JSON object is admitted; a response with two top-level JSON objects is **rejected**, because guessing which one the model meant is exactly the trust this discipline exists to withhold.
+5. With `maxRepairAttempts: 1`, one admission failure triggers exactly one re-ask carrying the schema paths that failed, and a second failure is terminal — asserted by counting inference calls, so a silent retry loop cannot pass.
+6. With `maxRepairAttempts: 0`, no re-ask happens at all.
+7. An admitted value whose string fields trip `containsSensitiveMaterial` is rejected with `model_output_unsafe`, not sanitized into acceptance.
+
+- [ ] **Step 2: Add the failing classification test**
+
+A frozen table maps every `ModelRoutingFailureCode` to a native failure. Assert:
+
+1. The table is exhaustive over `MODEL_ROUTING_FAILURE_CODES` — a test iterates the exported const array, so adding a taxonomy code makes this fail rather than fall through to a default.
+2. `retryable` is preserved from the `ModelRoutingError`, never recomputed: the taxonomy's refinement (`packages/contracts/src/model.ts:274`) already forbids a retryable `budget_exceeded`, and re-deriving it locally would be a second source of truth.
+3. Every native code matches `^[a-z][a-z0-9_]{0,63}$` and `WorkflowFailureSchema.parse` accepts its lifted form — the same normalization identity the conformance suite asserts.
+4. A non-`ModelRoutingError` throwable classifies as `native_agent_internal_error`, `retryable: false`, with its message drawn from the table and never from the throwable — and with the original attached as a non-enumerable `cause`.
+5. Codes are distinct from messages (the conformance suite asserts `code !== message`).
+
+Native codes: `malformed_model_output`, `model_output_unsafe`, `native_agent_internal_error`, `native_context_unavailable`, `native_permission_denied`, `native_invocation_incomplete` (the fail-closed code for a missing `workItemId`), plus the five taxonomy codes carried through unchanged.
+
+- [ ] **Step 3: Implement both, then verify and commit**
+
+Commit: `feat(agent-native): admit structured model output and classify native failures`
+
+---
+
+## Task 7: Bounded context assembly with permission gating
+
+Moved ahead of T6 per the plan review: T6's conformance fixture scripts a genuine permission gate, and this is the unit that gates. Built standalone against injected `emit` and `requestPermission` callbacks, so it is fully testable before the harness exists.
+
+**Files:**
+
+- Create: `packages/agent-native/src/context-assembly.ts`
+- Create: `packages/agent-native/src/context-scope.ts`
+- Test: `packages/agent-native/test/context-assembly.test.ts`
+
+- [ ] **Step 1: Add the failing context test**
+
+```ts
+export interface NativeContextReader {
+  list(request: { readonly prefix: string }): Promise<readonly string[]>;
+  read(request: { readonly path: string }): Promise<string>;
+}
+
+export interface ContextAssemblyDeps {
+  readonly reader: NativeContextReader;
+  readonly emit: (template: SessionEventTemplate) => void;
+  /** Absent when the configuration is unpermissioned; an out-of-scope read is then denied. */
+  readonly requestPermission?: (request: OutOfScopeRead) => Promise<"allow" | "deny">;
+  readonly limits: { readonly maxFiles: number; readonly maxBytes: number };
+}
+```
+
+Assert:
+
+1. Every path the reader is asked for passes `RelativeWorkspacePathSchema` first; an absolute path, a traversal, or a NUL byte is rejected before the reader is called at all (the reader is never the security boundary).
+2. Each read emits a `tool_call` pair — `phase: "started"` then `"completed"` — with a stable `toolCallRef` and `name: "read_file"`; a failing read emits `phase: "failed"` and classifies as `native_context_unavailable`.
+3. A read inside the declared scope proceeds without a permission request. A read outside it, **when `requestPermission` is supplied**, emits `permission_requested` with an `allow_once`/`deny_once` option pair and blocks until the decision arrives; an allow proceeds and emits `permission_resolved`; a deny skips the read, emits `permission_resolved`, and continues with the context it has — a denied permission is a normal outcome, not a failure (spec §14.1: untrusted input never grants permission, and denial must be safe).
+4. **When `requestPermission` is absent, an out-of-scope read is denied deterministically** — no permission event is emitted, no decision is awaited, assembly continues with the in-scope context it has, and the omission is recorded in the assembled context so the prompt can say the context is partial. This is the behavioral half of the unpermissioned configuration (review required change 3); the structural half is asserted in T6.
+5. Assembly is bounded: at most `maxFiles` reads and `maxBytes` total; exceeding either truncates deterministically (sorted path order, never reader order) and records the truncation in the assembled context. Two runs over the same reader produce byte-identical context.
+6. Every file's content passes `redactSensitiveText` before entering the assembled context.
+
+- [ ] **Step 2: Implement, verify, commit**
+
+Commit: `feat(agent-native): assemble bounded role context behind the permission gate`
+
+---
+
+## Task 6 — GATED ON THE 0.12 REBASE: native harness core and the conformance suite
+
+**Files:**
+
+- Create: `packages/agent-native/src/native-harness.ts`
+- Create: `packages/agent-native/src/native-session.ts`
+- Create: `packages/agent-native/src/harness-config.ts`
+- Modify: `packages/agent-native/src/index.ts`
+- Test: `packages/agent-native/test/fixtures/native-harness-fixture.ts`
+- Test: `packages/agent-native/test/fixtures/async-native-harness-fixture.ts`
+- Test: `packages/agent-native/test/native-harness-conformance.test.ts`
+- Test: `packages/agent-native/test/native-harness.test.ts`
+- Test: `packages/agent-native/test/native-harness-capability-knobs.test.ts`
+
+Rebase onto the base branch carrying Task 0.12 and re-run `pnpm check` before Step 1.
+
+- [ ] **Step 1: Add the conformance fixture and the failing suite run**
+
+This is the exit criterion, so it lands with the harness core rather than at the end. Write `test/native-harness-conformance.test.ts` as:
+
+```ts
+describeAgentHarnessConformance("native agent harness", nativeHarnessConformanceFixture);
+describeAgentHarnessConformance(
+  "native agent harness over an asynchronous transport",
+  asyncNativeHarnessConformanceFixture
+);
+```
+
+The async fixture is a macrotask decorator over the in-process one, mirroring `packages/domain/test/fixtures/async-agent-harness.ts` (it is a test fixture in another package, so it is re-implemented rather than imported; the duplication is deliberate and noted in a comment). The suite must pass identically against both — that is the standing guard that the harness's pause behaviour is event-driven rather than calibrated to microtask timing.
+
+The fixture builds each of the five scenarios from a _scripted inference fake_, not from a scripted harness:
+
+- `completes` — one successful structured response whose usage leaves `cachedInput`, `reasoning`, and `cost` unknown.
+- `fails` — a `ModelRoutingError` with code `provider_error`.
+- `pauses` — for the full subject, the interactive pre-call wait described in Step 2, released by a steer whose text becomes observable in a later `message`; for the minimal subject, an inference fake that never resolves, released only by cancel. Both are the engine's real wait states, not scripted stalls.
+- `requests_permission` — a context read outside the declared scope on a permissioned configuration, so T7's gate is exercised through the port.
+- `interrupted` — the injected host-loss signal resolves after the first evidence-bearing event.
+
+The full-capability subject configures `{ resumable: true, steerable: true, permissioned: true }`; the minimal one configures all three false and declares no out-of-scope reads.
+
+```bash
+pnpm --filter @autostack/agent-native test -- native-harness-conformance.test.ts
+```
+
+Expected failure: `Cannot find module '../src/native-harness.js'`.
+
+- [ ] **Step 2: Implement the harness core**
+
+```ts
+export interface NativeHarnessConfig {
+  readonly adapterId: string;
+  readonly role: NativeAgentRole;
+  readonly session: { readonly resumable: boolean; readonly steerable: boolean };
+  readonly permissioned: boolean;
+}
+
+export interface NativeHarnessDeps {
+  readonly router: ModelRouterPort;
+  readonly inference: ModelInferencePort;
+  readonly reader: NativeContextReader;
+  /** Per-invocation upstream documents (review finding 2b); an I1 composition interface. */
+  readonly roleInputs: NativeRoleInputsProvider;
+  readonly now: () => string;
+  readonly newProviderSessionRef: () => string;
+  readonly structuredOutput: StructuredOutputPolicy;
+  readonly hostLoss?: Promise<void>;
+}
+```
+
+The descriptor is _derived_, never handed in: `kind: "native"`, `capabilities: { resume: config.session.resumable, steering: config.session.steerable, permissions: config.permissioned, structuredPlans: config.role === "plan" }`. `respondToPermission` is spread onto the returned object only when `config.permissioned` is true, exactly as the reference fake does (`packages/domain/src/testing/fake-agent-harness.ts:292`), so descriptor honesty is structural.
+
+`start` creates the session's relay and returns `relay.read()`; the session engine runs as a supervised producer independent of the reader. `resume` requires `capabilities.resume`, requires the same `sessionId`, requires the session to be neither cancelled nor disposed, and returns `relay.read({ after: <last sequence the caller observed> })` over the _same_ relay — the continuation of one session, not a replay into a new one (spec §9.1). This is why `resume: true` is honest here and only here: it serves spec §15's "client disconnection never cancels a run; clients resume from event sequence". It is **not** a claim to survive host loss — host loss produces `interrupted`, which is precisely the outcome that says the session cannot be resumed.
+
+**Steering — finding 4 ruling, this stream's call.** The engine has a real wait state for steering: when `steerable: true` the session pauses after context assembly and before the model call, emits `waiting`, and blocks for an operator instruction, which is folded into the prompt and echoed in a `message` event. That is interactive mode — the workbench's steer affordance (spec §4.1) applied to the expensive step, where an operator who has just seen what context was gathered can narrow it before it is spent. **Shipped pipeline role configurations set `steerable: false`** (a pipeline stage has no operator standing by, and a stage that blocked forever waiting for one would be a defect); the workbench-driven interactive planner sets it `true`. Both map to real engine behaviour, so the full-capability conformance subject is a supported configuration rather than a conformance prop, which is the condition the ruling attaches. The alternative wait — a clarification round trip (`ClarificationRequestSchema`, spec §8.2) — is genuinely S4's, and is not built here.
+
+- [ ] **Step 3: Add the per-knob disable invariant tests**
+
+Required change 3: each knob's `false` must be a structural absence, not a runtime refusal that could drift.
+
+1. `permissioned: false` — the harness object has no `respondToPermission`; `createNativeHarness` **throws at construction** when the configuration also declares any out-of-scope read source, mirroring the reference fake's construction-time refusal (`packages/domain/src/testing/fake-agent-harness.ts:72`); a `permission_requested` event is unconstructable because the session engine passes no `requestPermission` into context assembly at all; and an out-of-scope read is denied deterministically (T7 Step 1.4) rather than escalated.
+2. `steerable: false` — no steer queue and no pause state exist; `steer` rejects; the session never emits `waiting`; and the test asserts the engine reaches its model call without an intervening wait.
+3. `resumable: false` — `resume` rejects; the relay is still readable from a cursor internally, but no port surface exposes it.
+4. For each knob, the descriptor bit and the port surface are asserted together, so a descriptor that claims a capability the surface lacks (or the reverse) fails here rather than at registration.
+
+- [ ] **Step 4: Add the harness unit tests the conformance suite does not reach**
+
+`start` twice on one harness raises; `steer` on a terminated session raises; a disposed harness refuses `start`, `resume`, `steer`, `cancel`, and `respondToPermission`; the descriptor for each of the three roles is asserted field by field (in particular `structuredPlans` false for triage and review, with a corresponding assertion that neither ever emits a `plan` event); and an invocation lacking `workItemId` fails closed with `native_invocation_incomplete` before any model call.
+
+- [ ] **Step 5: Verify and commit**
+
+```bash
+pnpm --filter @autostack/agent-native test && pnpm check --filter @autostack/agent-native
+```
+
+Expected: both conformance runs green, unmodified suite.
+
+Commit: `feat(agent-native): implement the native agent harness against the conformance suite`
 
 ---
 
@@ -325,7 +473,7 @@ Assert against a `createFakeAgentHarness` subject:
 1. `supervise(invocation)` relays every adapter event into the relay, re-validating each through `AgentSessionStreamEventSchema` — an adapter that emits an invalid event terminates the session `failed` with code `agent_event_invalid`, and the invalid event never reaches a reader.
 2. Sequence numbers in the relayed stream are strictly increasing and the adapter's own numbering is _not_ trusted: the supervisor re-stamps, so two adapters with different numbering conventions are indistinguishable downstream.
 3. `persist` is called with each batch before the events are visible to readers; a rejecting `persist` ends the session `interrupted` (evidence preserved, not `completed`) — "artifact upload failure prevents a stage from reporting success when that artifact is required evidence" (spec §15).
-4. `snapshot()` reports `{ state, lastSequence, evidenceDigests }` where state is one of `running | completed | failed | cancelled | interrupted`, and never reports `completed` for a session whose terminal was anything else.
+4. `snapshot()` reports `{ state, lastSequence }` where state is one of `running | completed | failed | cancelled | interrupted`, and never reports `completed` for a session whose terminal was anything else. It deliberately does not carry `evidenceDigests`: no consumer in this stream reads them, and the digests are already in the relayed events, which is the one place they cannot go stale.
 5. A second `supervise` call for the same `agentSessionId` raises `agent_session_already_supervised`.
 
 - [ ] **Step 2: Add the failing cancellation test**
@@ -337,9 +485,16 @@ Spec §15: "sends a graceful adapter cancellation, waits a bounded interval, ter
 3. Cancellation after a terminal is a no-op that neither throws nor appends a second terminal.
 4. A `completed` event that arrives after cancellation was issued is dropped, not relayed: a cancelled session must never end in the success shape.
 
-- [ ] **Step 3: Add the failing interruption test**
+- [ ] **Step 3: Add the failing interruption test — single ownership**
 
-Assert: when `hostLoss` resolves mid-session, the supervisor appends exactly one `interrupted` event carrying the digests of the evidence observed so far (`evidenceDigests` has `min(1)`, so a session with no evidence yet contributes the digest of its own partial transcript, computed with `digestVersionedValue("autostack.agent-session-transcript", …)`); the stream then ends with **no** lifecycle terminal; `snapshot().state === "interrupted"`; and `persist` received the `interrupted` event. Mirror the conformance suite's evidence assertions (`packages/domain/src/testing/agent-harness-conformance-evidence.ts:96`) so the supervisor and the adapters agree on what interruption looks like.
+Finding 5 ruling: the adapter owns `interrupted` when it can emit one; the supervisor synthesizes one **only** when a stream ends with neither a lifecycle terminal nor an `interrupted` event. Assert:
+
+1. **Adapter-emitted.** A subject whose stream ends with its own `interrupted` event is relayed unchanged: exactly one `interrupted` event reaches readers, the supervisor adds nothing, and `snapshot().state === "interrupted"`.
+2. **Supervisor-synthesized.** A stream that simply ends — no terminal, no `interrupted` — gets exactly one synthesized `interrupted` carrying the digests of the evidence observed so far (`evidenceDigests` has `min(1)`, so a session with no evidence yet contributes the digest of its own partial transcript via `digestVersionedValue("autostack.agent-session-transcript", …)`), and the stream ends with **no** lifecycle terminal.
+3. **Idempotence.** Host loss resolving after the adapter has already emitted `interrupted` adds nothing; host loss resolving twice adds nothing; a stream ending after a synthesized `interrupted` adds nothing. In every case exactly one `interrupted` event exists — asserted by counting, which is the check that catches double-ownership drift.
+4. `persist` received the `interrupted` event in all cases.
+
+Mirror the conformance suite's evidence assertions (`packages/domain/src/testing/agent-harness-conformance-evidence.ts:96`) so the supervisor and the adapters agree on what interruption looks like.
 
 - [ ] **Step 4: Implement the supervisor**
 
@@ -357,211 +512,33 @@ Commit: `feat(agent-runtime): supervise agent sessions with bounded cancellation
 
 ---
 
-## Task 4: Versioned prompt artifacts
+## Task 13: Cross-package composition test
+
+Required change 6, and the reason T2/T3 follow T6: this is what catches interruption-ownership drift and descriptor/registry disagreement before I1 ever composes the two packages.
 
 **Files:**
 
-- Create: `packages/agent-native/src/prompts/prompt-artifact.ts`
-- Create: `packages/agent-native/src/prompts/triage-prompt.ts`
-- Create: `packages/agent-native/src/prompts/plan-prompt.ts`
-- Create: `packages/agent-native/src/prompts/review-prompt.ts`
-- Create: `packages/agent-native/src/prompts/index.ts`
-- Test: `packages/agent-native/test/prompts.test.ts`
+- Test: `packages/agent-native/test/runtime-composition.test.ts`
 
-- [ ] **Step 1: Add the failing prompt-artifact test**
+- [ ] **Step 1: Add the failing composition test**
 
-Spec §16.2 requires a stored version for every prompt used by a run, and my charter requires prompts to be exported, versioned constants rather than inline strings. Assert:
+Register a real `createNativeHarness` in a real `createAgentHarnessRegistry`, supervise it with a real `createAgentSessionSupervisor`, and drive a full role session end to end through the supervisor's relay — no fakes except the inference port, the reader, the clock, and the ID factory. Assert:
 
-1. Each artifact is `{ promptRef, version, system, render(input) }`, deeply frozen, with `promptRef` matching the `StableRefSchema` alphabet (`autostack.native.triage`, `.plan`, `.review`) and `version` a positive integer.
-2. `promptRef` values are unique across the registry and the registry is exhaustive over `NATIVE_AGENT_ROLES`.
-3. `render` returns `ModelMessage[]` whose first message is the artifact's `system` text and whose user message contains every input the role's schema requires the model to fill — asserted by checking that each required output field name appears in the rendered instruction, so a prompt cannot silently stop asking for a field the schema demands.
-4. `render` never interpolates raw untrusted text into the system message: objective and repository text land only in a `user` message, inside an explicitly delimited block, and the system message states that content inside that block is data and never instruction (spec §14.1).
-5. Rendered messages pass `ModelMessageSchema.parse`, which means an input containing credential-shaped material is rejected rather than sent — the test feeds a fake AWS-key-shaped string and asserts the render fails closed.
-6. A digest test pins each prompt: `digestVersionedValue("autostack.native-prompt", artifact)` is asserted against a checked-in constant, so editing a prompt without bumping its `version` fails the suite. This is the mechanism that makes "versioned artifact" enforceable rather than aspirational.
+1. A completing session yields one `completed` terminal through the supervisor, and the evidence digests in it match the role's document digest.
+2. **Interruption crosses the boundary exactly once.** With host loss injected at the harness, the harness emits `interrupted`, the supervisor relays it, and the composed stream contains exactly one. With host loss injected at the supervisor only (the harness stream ending silently), the supervisor synthesizes exactly one. Both paths are asserted in the same test file, which is the pairing that makes the double-emit regression impossible to miss.
+3. Registration rejects a native harness whose descriptor and port surface disagree — driven by constructing a permissioned and an unpermissioned harness and registering both.
+4. `profiles()` reports the native harness as installed and authenticated without probing anything external (a native harness has no CLI to find; its probe is a constant, and the test pins that it does not reach for the filesystem or the network).
+5. Cancellation issued at the supervisor reaches the harness and terminates the composed stream in the `cancelled` shape within the injected grace budget.
 
-```bash
-pnpm --filter @autostack/agent-native test -- prompts.test.ts
-```
+The test lives in `agent-native` because that is the package that depends on both; `agent-runtime` must not import `agent-native`, not even in tests.
 
-Expected failure: `Cannot find module '../src/prompts/index.js'`.
+- [ ] **Step 2: Fix whatever it catches, verify, commit**
 
-- [ ] **Step 2: Write the three prompts**
-
-Each states the role, the exact JSON shape expected (derived from the Zod schema via `z.toJSONSchema`, not hand-written, so the two cannot drift), the refusal rules the schema encodes (a triage report may not repeat a duplicate reference; a plan must name at least one required verification command; an approved review may contain no critical or high finding), and the untrusted-data framing from Step 1.4.
-
-- [ ] **Step 3: Verify and commit**
-
-Commit: `feat(agent-native): add the versioned triage, plan, and review prompt artifacts`
+Commit: `test(agent-native): compose the native harness with the runtime registry and supervisor`
 
 ---
 
-## Task 5: Structured-output admission and failure classification
-
-**Files:**
-
-- Create: `packages/agent-native/src/structured-output.ts`
-- Create: `packages/agent-native/src/failure-classification.ts`
-- Create: `packages/agent-native/src/errors.ts`
-- Test: `packages/agent-native/test/structured-output.test.ts`, `test/failure-classification.test.ts`
-
-- [ ] **Step 1: Add the failing structured-output test**
-
-Parse-don't-trust, with the retry policy visible in the signature rather than buried:
-
-```ts
-export interface StructuredOutputPolicy {
-  /** Re-asks allowed after an admission failure. 0 or 1; the policy is a ceiling, not a loop. */
-  readonly maxRepairAttempts: 0 | 1;
-}
-
-export type StructuredOutputOutcome<T> =
-  | { readonly kind: "admitted"; readonly value: T; readonly attempts: number }
-  | { readonly kind: "rejected"; readonly failure: NativeAgentFailure; readonly attempts: number };
-```
-
-Assert:
-
-1. Well-formed JSON matching the schema is admitted on attempt 1.
-2. Text that is not JSON at all is rejected with code `malformed_model_output`, `retryable: false`, and the failure message names the role and the parse position — never the model's raw text, which is untrusted and may be enormous.
-3. Valid JSON that fails the Zod schema is rejected with the same code, and the failure carries the _schema paths_ that failed (`issue.path.join(".")`), not the offending values.
-4. A response wrapped in a markdown fence is admitted after fence stripping; a response with prose before and after a single JSON object is admitted; a response with two top-level JSON objects is **rejected**, because guessing which one the model meant is exactly the trust this discipline exists to withhold.
-5. With `maxRepairAttempts: 1`, one admission failure triggers exactly one re-ask carrying the schema paths that failed, and a second failure is terminal — asserted by counting inference calls, so a silent retry loop cannot pass.
-6. With `maxRepairAttempts: 0`, no re-ask happens at all.
-7. An admitted value whose string fields trip `containsSensitiveMaterial` is rejected with `model_output_unsafe`, not sanitized into acceptance.
-
-- [ ] **Step 2: Add the failing classification test**
-
-A frozen table maps every `ModelRoutingFailureCode` to a native failure. Assert:
-
-1. The table is exhaustive over `MODEL_ROUTING_FAILURE_CODES` — a test iterates the exported const array, so adding a taxonomy code makes this fail rather than fall through to a default.
-2. `retryable` is preserved from the `ModelRoutingError`, never recomputed: the taxonomy's refinement (`packages/contracts/src/model.ts:274`) already forbids a retryable `budget_exceeded`, and re-deriving it locally would be a second source of truth.
-3. Every native code matches `^[a-z][a-z0-9_]{0,63}$` and `WorkflowFailureSchema.parse` accepts its lifted form — the same normalization identity the conformance suite asserts.
-4. A non-`ModelRoutingError` throwable classifies as `native_agent_internal_error`, `retryable: false`, with its message drawn from the table and never from the throwable — and with the original attached as a non-enumerable `cause`.
-5. Codes are distinct from messages (the conformance suite asserts `code !== message`).
-
-Native codes: `malformed_model_output`, `model_output_unsafe`, `native_agent_internal_error`, `native_context_unavailable`, `native_permission_denied`, plus the five taxonomy codes carried through unchanged.
-
-- [ ] **Step 3: Implement both, then verify and commit**
-
-Commit: `feat(agent-native): admit structured model output and classify native failures`
-
----
-
-## Task 6 — GATED ON E1: native harness core and the conformance suite
-
-**Files:**
-
-- Create: `packages/agent-native/src/native-harness.ts`
-- Create: `packages/agent-native/src/native-session.ts`
-- Create: `packages/agent-native/src/harness-config.ts`
-- Modify: `packages/agent-native/src/index.ts`
-- Test: `packages/agent-native/test/fixtures/native-harness-fixture.ts`
-- Test: `packages/agent-native/test/fixtures/async-native-harness-fixture.ts`
-- Test: `packages/agent-native/test/native-harness-conformance.test.ts`
-- Test: `packages/agent-native/test/native-harness.test.ts`
-
-Do not start until E1 is resolved and the base branch carries the inference contract (or its ruled alternative). If it is resolved as proposed, rebase first and re-run `pnpm check` before Step 1.
-
-- [ ] **Step 1: Add the conformance fixture and the failing suite run**
-
-This is the exit criterion, so it lands here rather than at the end. Write `test/native-harness-conformance.test.ts` as:
-
-```ts
-describeAgentHarnessConformance("native agent harness", nativeHarnessConformanceFixture);
-describeAgentHarnessConformance(
-  "native agent harness over an asynchronous transport",
-  asyncNativeHarnessConformanceFixture
-);
-```
-
-The async fixture is a macrotask decorator over the in-process one, mirroring `packages/domain/test/fixtures/async-agent-harness.ts` (it is a test fixture in another package, so it is re-implemented rather than imported; the duplication is deliberate and noted in a comment). The suite must pass identically against both — that is the standing guard that the harness's pause behaviour is event-driven rather than calibrated to microtask timing.
-
-The fixture builds each of the five scenarios from a _scripted inference fake_, not from a scripted harness: `completes` scripts one successful structured response whose usage leaves `cachedInput`, `reasoning`, and `cost` unknown; `fails` scripts a `ModelRoutingError` with code `provider_error`; `pauses` scripts a role whose context assembly needs a steer before it proceeds; `requests_permission` scripts a context read outside the declared scope, so the permission gate is genuine; `interrupted` resolves the injected host-loss signal after the first evidence-bearing event. The full-capability subject configures `{ resumable: true, steerable: true, permissioned: true }`; the minimal one configures all three false and gets no permissioned tool.
-
-```bash
-pnpm --filter @autostack/agent-native test -- native-harness-conformance.test.ts
-```
-
-Expected failure: `Cannot find module '../src/native-harness.js'`.
-
-- [ ] **Step 2: Implement the harness core**
-
-```ts
-export interface NativeHarnessConfig {
-  readonly adapterId: string;
-  readonly role: NativeAgentRole;
-  readonly session: { readonly resumable: boolean; readonly steerable: boolean };
-  readonly permissioned: boolean;
-}
-
-export interface NativeHarnessDeps {
-  readonly router: ModelRouterPort;
-  readonly inference: ModelInferencePort;
-  readonly reader: NativeContextReader;
-  readonly now: () => string;
-  readonly newProviderSessionRef: () => string;
-  readonly structuredOutput: StructuredOutputPolicy;
-  readonly hostLoss?: Promise<void>;
-}
-
-export const createNativeHarness: (
-  config: NativeHarnessConfig,
-  deps: NativeHarnessDeps
-) => AgentHarnessPort & Partial<AgentPermissionResponderPort>;
-```
-
-The descriptor is _derived_, never handed in: `kind: "native"`, `capabilities: { resume: config.session.resumable, steering: config.session.steerable, permissions: config.permissioned, structuredPlans: config.role === "plan" }`. `respondToPermission` is spread onto the returned object only when `config.permissioned` is true, exactly as the reference fake does (`packages/domain/src/testing/fake-agent-harness.ts:292`), so descriptor honesty is structural.
-
-`start` creates the session's relay and returns `relay.read()`; the session engine runs as a supervised producer independent of the reader. `resume` requires `capabilities.resume`, requires the same `sessionId`, requires the session to be neither cancelled nor disposed, and returns `relay.read({ after: <last sequence the caller observed> })` over the _same_ relay — the continuation of one session, not a replay into a new one (spec §9.1). `steer` requires `capabilities.steering` and pushes the instruction into the engine's queue; the engine makes the instruction text observable in a later event, which is what the capability suite asserts (`agent-harness-conformance-capabilities.ts:100`).
-
-- [ ] **Step 3: Add the harness unit tests the conformance suite does not reach**
-
-`start` twice on one harness raises; `steer` on a session that has terminated raises; a disposed harness refuses `start`, `resume`, `steer`, `cancel`, and `respondToPermission`; the descriptor for each of the three roles is asserted field by field (in particular `structuredPlans` false for triage and review, and a corresponding assertion that neither ever emits a `plan` event).
-
-- [ ] **Step 4: Verify and commit**
-
-```bash
-pnpm --filter @autostack/agent-native test && pnpm check --filter @autostack/agent-native
-```
-
-Expected: both conformance runs green, unmodified suite.
-
-Commit: `feat(agent-native): implement the native agent harness against the conformance suite`
-
----
-
-## Task 7 — GATED ON E5: bounded context assembly with permission gating
-
-**Files:**
-
-- Create: `packages/agent-native/src/context-assembly.ts`
-- Create: `packages/agent-native/src/context-scope.ts`
-- Test: `packages/agent-native/test/context-assembly.test.ts`
-
-- [ ] **Step 1: Add the failing context test**
-
-```ts
-export interface NativeContextReader {
-  list(request: { readonly prefix: string }): Promise<readonly string[]>;
-  read(request: { readonly path: string }): Promise<string>;
-}
-```
-
-Assert:
-
-1. Every path the reader is asked for passes `RelativeWorkspacePathSchema` first; an absolute path, a traversal, or a NUL byte is rejected before the reader is called at all (the reader is never the security boundary).
-2. Each read emits a `tool_call` pair — `phase: "started"` then `"completed"` — with a stable `toolCallRef` and `name: "read_file"`; a failing read emits `phase: "failed"` and classifies as `native_context_unavailable`.
-3. A read inside the invocation's declared scope proceeds without a permission request; a read outside it emits `permission_requested` with an `allow_once`/`deny_once` option pair and blocks until the decision arrives. An `allow` proceeds and emits `permission_resolved`; a `deny` skips the read, emits `permission_resolved`, and continues with the context it has — a denied permission is a normal outcome, not a failure (spec §14.1: untrusted input never grants permission, and denial must be safe).
-4. Assembly is bounded: at most `maxFiles` reads and `maxBytes` total; exceeding either truncates deterministically (sorted path order, never reader order) and records the truncation in the assembled context so the prompt can say the context is partial. Two runs over the same reader produce byte-identical context.
-5. Every file's content passes `redactSensitiveText` before entering the prompt.
-
-- [ ] **Step 2: Implement, verify, commit**
-
-Commit: `feat(agent-native): assemble bounded role context behind the permission gate`
-
----
-
-## Task 8 — GATED ON E1/E2/E3: the triage role
+## Task 8 — GATED ON THE 0.12 REBASE: the triage role
 
 **Files:**
 
@@ -574,10 +551,10 @@ Commit: `feat(agent-native): assemble bounded role context behind the permission
 
 Assert, with a scripted inference fake and the Wave 0 `createFakeModelRouter`:
 
-1. The role resolves its route through `ModelRouterPort.resolve` with `stage: "triage"` and `requiredCapabilities: ["text", "structured_output"]`, and calls `inference.generate` with the resolved `routeRef` — a role that calls inference without resolving first fails the test.
-2. A well-formed model response becomes a `TriageReportSchema`-valid `TriageReport` carrying the run identity from the invocation (never from the model — a model that returns a different `runId` is rejected, because untrusted output must not redirect evidence to another run).
-3. `producedBy` records the triage prompt's `promptRef` and `version` and the resolved `routeRef` (E2).
-4. The session emits, in order: `started`, `message`, `tool_call` pairs for any context reads, `usage` (unknown-preserving, taken from the inference result verbatim), and `completed` whose `evidenceDigests` contains `await digestTriageReport(report)` (E3).
+1. The role resolves its route through `ModelRouterPort.resolve` with **`stage: "triage"`** and `requiredCapabilities: ["text", "structured_output"]`, and calls `inference.generate` with the resolved `routeRef` — a role that calls inference without resolving first fails the test.
+2. A well-formed model response becomes a `TriageReportSchema`-valid `TriageReport` whose `workspaceId`, `workItemId`, and `runId` come from the invocation and never from the model; a response that supplies any of them is rejected rather than merged, and an invocation missing `workItemId` fails closed with `native_invocation_incomplete` before the model call.
+3. `producedBy` records the triage prompt's `promptRef` and `version`, the `adapterId`, and the resolved `routeRef`.
+4. The session emits, in order: `started`, `message`, `tool_call` pairs for any context reads, `usage` (unknown-preserving, taken from the inference result verbatim), and `completed` whose `evidenceDigests` contains `await digestTriageReport(report)`.
 5. Duplicate detection round-trips: a response naming two duplicates with the same `reference` is rejected by the schema refinement and classified `malformed_model_output`, not silently deduplicated.
 6. `actionable: false` still produces a complete report and a `completed` terminal; triage deciding "not actionable" is a successful triage.
 7. A `clarificationRef` in the response is carried through unchanged.
@@ -588,13 +565,13 @@ A `capability_unavailable` from `resolve` terminates the session `failed` with t
 
 - [ ] **Step 3: Implement `role-config.ts`, `triage-role.ts`, `evidence.ts`; verify; commit**
 
-`role-config.ts` holds the shared shape (prompt artifact, `ModelRouteContext` stage, output schema, admission function, digest function) so the three roles differ in data, not in control flow. `evidence.ts` wraps the contracts' digest helpers — it defines no canonicalization of its own.
+`role-config.ts` holds the shared shape (prompt artifact, `ModelRouteContext` stage, `modelAuthoredFields`, output schema, admission function, digest function) so the three roles differ in data, not in control flow. `evidence.ts` wraps the contracts' digest helpers — it defines no canonicalization of its own.
 
 Commit: `feat(agent-native): produce triage reports through the routed native role`
 
 ---
 
-## Task 9 — GATED ON E1/E2: the planner role
+## Task 9 — GATED ON THE 0.12 REBASE: the planner role
 
 **Files:**
 
@@ -603,10 +580,10 @@ Commit: `feat(agent-native): produce triage reports through the routed native ro
 
 - [ ] **Step 1: Add the failing planner test**
 
-The digest is the point of this role: S4 verifies approval staleness against it.
+The digest is the point of this role: S4 verifies approval staleness against it. The route stage is **`"plan"`**.
 
 1. The produced document admits through `admitPlanDocument` — the strongest available assertion, since it recomputes the digest from the canonical fields and rejects a mismatch.
-2. The role computes `planDigest` with `digestPlanDocument` and never with a local rule; a test mutates one canonical field (`summary`) and asserts admission now fails, and mutates one excluded field (`producedAt`) and asserts the digest is **unchanged** — pinning the material-change semantics the contract comment describes (`packages/contracts/src/station-evidence.ts:280`).
+2. The role computes `planDigest` with `digestPlanDocument` and never with a local rule; a test mutates one canonical field (`summary`) and asserts admission now fails, and mutates one excluded field (`producedAt`) and asserts the digest is **unchanged** — pinning the material-change semantics the contract comment describes (`packages/contracts/src/station-evidence.ts:280`). A third case mutates `producedBy` and asserts the digest is likewise unchanged, pinning 0.12's exclusion decision.
 3. A `plan` detail event is emitted carrying that same `planDigest` and a summary; this is the only role whose descriptor declares `structuredPlans: true`.
 4. `verificationCommands` are `executable` + `args`; a response whose command carries a shell string in `executable` (`"pnpm test && pnpm build"`) is rejected — the schema permits `usesShell`, but a command that smuggles shell syntax into `executable` while declaring `usesShell: false` is a lie about what will execute, and the role rejects it as `malformed_model_output`.
 5. A response with no `required: true` command is rejected by the schema refinement and classified, not repaired by promoting one.
@@ -619,23 +596,35 @@ Commit: `feat(agent-native): produce digest-admissible plan documents from the p
 
 ---
 
-## Task 10 — GATED ON E1/E2/E3: the reviewer role
+## Task 10 — GATED ON THE 0.12 REBASE: the reviewer role
 
 **Files:**
 
 - Create: `packages/agent-native/src/roles/review-role.ts`
+- Create: `packages/agent-native/src/roles/role-inputs.ts`
 - Test: `packages/agent-native/test/review-role.test.ts`
 
 - [ ] **Step 1: Add the failing reviewer test**
 
-`ReviewReportSchema` binds the review to a plan and a verification report, so the role's inputs include both.
+`ReviewReportSchema` binds the review to a plan and a verification report. Per finding 2b those arrive through `NativeRoleInputsProvider` — a per-invocation provider supplied by composition, not a retrieval port:
+
+```ts
+export interface NativeRoleInputsProvider {
+  forInvocation(request: AgentInvocationRequest): Promise<NativeRoleInputs>;
+}
+```
+
+The route stage is **`"isolated_review"`** — `ModelRouteContextSchema` has no `"review"` stage, and the name is the point: spec §8.2 requires a session isolated from the implementer's hidden reasoning.
+
+Assert:
 
 1. The produced report admits through `admitReviewReport(review, plan, verificationReport)` — which transitively re-admits both inputs and checks the verification digest, so a review of stale evidence cannot pass.
-2. `verdict: "approved"` alongside a `critical` or `high` finding is rejected by the schema refinement and classified `malformed_model_output`. The role does not "fix" the verdict — spec §8.2: a failed review "never silently marks itself passed", and its inverse (silently downgrading an approval) is the same defect.
-3. Duplicate `findingRef`s are rejected.
-4. A finding `location` outside the reviewed diff's paths is rejected; the model may not attribute a finding to a file the run never touched.
-5. The reviewer's session carries no input from the implementer's hidden reasoning — asserted structurally: the role's context assembly is given only the plan, the diff, the verification report, and repository context, and the test asserts the rendered prompt contains none of the implementer transcript it is also handed as a decoy (spec §8.2, "a session isolated from the implementer's hidden reasoning").
-6. `completed.evidenceDigests` contains `await digestReviewReport(report)`.
+2. The provider's documents are admitted **before** the model call; a provider returning a plan whose digest does not admit fails the session closed with `native_context_unavailable` and never reaches the model.
+3. A provider whose documents belong to a different run (identity mismatch against the invocation) fails closed — the reviewer will not review another run's evidence.
+4. `verdict: "approved"` alongside a `critical` or `high` finding is rejected by the schema refinement and classified `malformed_model_output`. The role does not "fix" the verdict — spec §8.2: a failed review "never silently marks itself passed", and its inverse, silently downgrading an approval, is the same defect.
+5. Duplicate `findingRef`s are rejected; a finding `location` outside the reviewed diff's paths is rejected, since the model may not attribute a finding to a file the run never touched.
+6. The reviewer's context carries no implementer transcript: the test hands the provider one as a decoy and asserts it appears in no rendered message.
+7. `completed.evidenceDigests` contains `await digestReviewReport(report)`.
 
 - [ ] **Step 2: Implement, verify, commit**
 
@@ -656,6 +645,7 @@ One table-driven suite over `["triage", "plan", "review"]` × every failure mode
 - each `ModelRoutingFailureCode` raised from `resolve` and again from `generate`;
 - non-JSON output, schema-invalid output, double-object output, credential-shaped output;
 - `finishReason: "length"` (a truncated structured response classifies as `malformed_model_output`, never as a partial document);
+- a missing `workItemId` on the invocation (`native_invocation_incomplete`);
 - host loss mid-role → exactly one `interrupted` event, evidence digests preserved, no lifecycle terminal;
 - cancellation mid-role → `cancelled` terminal, no `completed`.
 
@@ -672,13 +662,17 @@ Commit: `test(agent-native): pin the routing and malformed-output matrix across 
 **Files:**
 
 - Modify: `packages/agent-runtime/src/index.ts`, `packages/agent-native/src/index.ts`
-- Create: `packages/agent-runtime/README.md`, `packages/agent-native/README.md` (short: what the package is, what it refuses to do)
+- Create: `packages/agent-runtime/README.md`, `packages/agent-native/README.md`
 
 - [ ] **Step 1: Curate the public surface**
 
-Export only what a consumer needs: `createAgentHarnessRegistry`, `createAgentSessionSupervisor`, the relay factory and its types, the runtime error class and failure table; `createNativeHarness`, `NATIVE_AGENT_ROLES`, the prompt registry, the native failure table. Nothing internal. Assert the surface in a test that imports the package root and compares `Object.keys` against a checked-in list, so an accidental export is a failing test rather than a review catch.
+Export only what a consumer needs: `createAgentHarnessRegistry`, `createAgentSessionSupervisor`, the relay factory and its types, the runtime error class and failure table; `createNativeHarness`, `NATIVE_AGENT_ROLES`, the prompt registry, the `NativeRoleInputsProvider` type, the native failure table. Nothing internal. Assert the surface in a test that imports the package root and compares `Object.keys` against a checked-in list, so an accidental export is a failing test rather than a review catch.
 
-- [ ] **Step 2: Run the full gate suite**
+- [ ] **Step 2: Write the two READMEs**
+
+Each says what the package is and what it refuses to do. Both record, per finding 13, the two digest domains this stream mints for its own use — `autostack.native-prompt` (T4's version pin) and `autostack.agent-session-transcript` (T3's partial-evidence digest) — as **potential future contract surface**: they are internal today because no other stream reads them, and the moment one does they belong in `@autostack/contracts` alongside the station-evidence helpers.
+
+- [ ] **Step 3: Run the full gate suite**
 
 ```bash
 cd /Users/zidane/factory-s1
@@ -692,9 +686,9 @@ pnpm test
 
 Expected: all green; coverage ≥80% on statements, branches, functions, and lines for both owned packages; the known runner-local flake re-run once and noted if it trips.
 
-- [ ] **Step 3: Self-review pass**
+- [ ] **Step 4: Self-review pass**
 
-Re-read every file added by this stream against: scope creep (anything not traceable to the charter), TODO/placeholder code, disabled or weakened tests, `any`/non-null assertions, hand-rolled canonicalization, any string interpolation of untrusted text into a system prompt, any timer or clock that is not injected, any export that leaks an internal type. Record the pass in `.superpowers/sdd/stream-report.md`.
+Re-read every file added by this stream against: scope creep, TODO/placeholder code, disabled or weakened tests, `any`/non-null assertions, hand-rolled canonicalization, any string interpolation of untrusted text into a system prompt, any timer or clock that is not injected, any export that leaks an internal type. Record the pass in `.superpowers/sdd/stream-report.md`.
 
 Commit: `docs(agent-runtime,agent-native): document the stream's public surface`
 
@@ -705,10 +699,10 @@ Commit: `docs(agent-runtime,agent-native): document the stream's public surface`
 - Native harness passes `describeAgentHarnessConformance` unmodified, in both the in-process and the macrotask-transport runs.
 - Triage, plan, and review outputs validate against `TriageReportSchema`, `PlanDocumentSchema`, `ReviewReportSchema`; the plan document admits through `admitPlanDocument`; the review admits through `admitReviewReport`.
 - Fixture-driven tests cover all three roles including every malformed-model-output and routing-failure path.
-- The registry probes installed/authenticated status and fails closed; the supervisor marks interruption on host loss and cancels within a bounded, injected budget.
+- The registry probes installed/authenticated status and fails closed; the supervisor marks interruption on host loss exactly once and cancels within a bounded, injected budget; the cross-package composition test pins both.
 - No provider SDK, credential, API key, network call, or shell string anywhere in either package.
 - `pnpm format:check`, `pnpm check`, `pnpm build --filter='!@autostack/desktop'`, both `test:coverage` runs, and full `pnpm test` green.
 
 ## Ledger
 
-Task-by-task status, commits, and review outcomes are recorded in `.superpowers/sdd/progress.md` in this worktree.
+Task-by-task status, commits, and review outcomes are recorded in `.superpowers/sdd/progress.md` in this worktree; the stream's running status, including the export-name drift I1 composes against, is in `.superpowers/sdd/stream-report.md`.
