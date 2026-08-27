@@ -51,12 +51,26 @@ jobs:
         run: pnpm check
 
       - name: Test with coverage
-        # This runner has 2 vCPUs. Unbounded, turbo starts every workspace package's vitest at
-        # once and each of those forks its own worker per core, so ~24 coverage-instrumented
-        # processes compete for 2 cores and stretch individual cases 15-18x -- which is what timed
-        # tests out in runs 33109728652 and 33111592003, not any single slow test. Bounding turbo
-        # to 2 concurrent packages keeps oversubscription near 1 worker per core.
-        run: pnpm test:coverage --concurrency=2
+        # `--concurrency=2`: this runner has 2 vCPUs. Unbounded, turbo starts every workspace
+        # package's vitest at once and each of those forks its own worker per core, so ~24
+        # coverage-instrumented processes compete for 2 cores and stretch individual cases 15-18x
+        # -- which is what timed tests out in runs 33109728652 and 33111592003, not any single
+        # slow test. Bounding turbo to 2 concurrent packages keeps oversubscription near 1 worker
+        # per core.
+        #
+        # `--filter=!@autostack/runner-local`: that package is macOS-only by design, not by
+        # accident. Milestone A is scoped to "one developer on macOS Apple Silicon"
+        # (docs/superpowers/specs/2026-08-20-autostack-design.md, section 3.1), Linux desktop
+        # packaging is explicitly a separate later project, and runner-local ships only inside the
+        # desktop app. The package refuses to construct off the target platform
+        # (local-runner-provider.ts:198), reads darwin-only open flags O_NOFOLLOW_ANY and O_UNIQUE
+        # (path-security.ts:24-27), skips an entire capability assertion off darwin
+        # (path-security.ts:215), and classifies child termination against a darwin signal table
+        # (darwin-process-signals.ts). Its suite asserts APFS semantics the source documents, such
+        # as a file entry moving a directory's link count (data-root-lock.ts:519). Running it on
+        # ubuntu tests an unsupported platform; it runs for real in the macOS job below. Its
+        # `check` task still runs here, because `test:coverage` dependsOn `^check`.
+        run: pnpm test:coverage --concurrency=2 --filter='!@autostack/runner-local'
 
       - name: Build applications
         run: pnpm build
@@ -105,6 +119,14 @@ jobs:
 
       - name: Verify Electron UI, restart, and accessibility
         run: pnpm desktop:e2e
+
+      - name: Test the macOS-only local runner with coverage
+        # runner-local is excluded from the ubuntu job because it is implemented against darwin and
+        # APFS (see the rationale on that job's test step). This is where it actually runs: native
+        # Apple Silicon, the platform Milestone A targets. Placed last so the two composition gates
+        # above -- which are this job's purpose and finish in minutes -- fail fast before this
+        # ~5-minute suite. Local serialized runtime is ~273s, well inside the 60-minute budget.
+        run: pnpm test:coverage --filter=@autostack/runner-local
 
       - name: Upload sanitized Electron evidence
         if: always()
