@@ -76,6 +76,58 @@ describe("AutoStack CLI", () => {
     expect(harness.dependencies.fetch).not.toHaveBeenCalled();
   });
 
+  it("routes local subcommands through an authenticated client", async () => {
+    const harness = makeDependencies();
+    harness.dependencies.environment = {
+      AUTOSTACK_URL: "http://127.0.0.1:4318",
+      AUTOSTACK_LOCAL_API_TOKEN: TOKEN
+    };
+    harness.dependencies.fetch = vi.fn(async (_input: string | URL | Request) =>
+      Response.json({
+        repositoryIdentity: "github:example/repo",
+        canonicalSourcePath: "/repo",
+        repositoryCommonDirectory: "/repo/.git",
+        resolvedBaseRef: "main",
+        sourceCommit: "b".repeat(40),
+        dirty: false,
+        diagnostics: []
+      })
+    ) as never;
+
+    expect(
+      await runCli(["local", "inspect", "--repo", "/repo", "--base", "main"], harness.dependencies)
+    ).toBe(0);
+    const [url, init] = harness.dependencies.fetch.mock.calls[0] ?? [];
+    expect(String(url)).toBe("http://127.0.0.1:4318/v1/local/repositories/inspect");
+    expect(new Headers(init?.headers).get("Authorization")).toBe(`Bearer ${TOKEN}`);
+    expect(JSON.stringify(harness.values())).not.toContain(TOKEN);
+  });
+
+  it.each([
+    ["no environment token", {}],
+    ["an empty environment token", { AUTOSTACK_LOCAL_API_TOKEN: "" }],
+    [
+      "a non-loopback plaintext URL",
+      { AUTOSTACK_URL: "http://example.com", AUTOSTACK_LOCAL_API_TOKEN: TOKEN }
+    ],
+    [
+      "credentials embedded in the URL",
+      { AUTOSTACK_URL: "http://user:secret@127.0.0.1:4318", AUTOSTACK_LOCAL_API_TOKEN: TOKEN }
+    ],
+    [
+      "a URL that is not HTTP",
+      { AUTOSTACK_URL: "file:///etc/passwd", AUTOSTACK_LOCAL_API_TOKEN: TOKEN }
+    ],
+    ["a URL that does not parse", { AUTOSTACK_URL: "::::", AUTOSTACK_LOCAL_API_TOKEN: TOKEN }]
+  ])("refuses to run a local subcommand with %s", async (_label, environment) => {
+    const harness = makeDependencies();
+    harness.dependencies.environment = environment;
+
+    expect(await runCli(["local", "inspect", "--repo", "/repo"], harness.dependencies)).toBe(1);
+    expect(harness.dependencies.fetch).not.toHaveBeenCalled();
+    expect(harness.values().stderr).toContain("Usage error");
+  });
+
   it.each([["unknown"], ["doctor", "extra"]])(
     "returns a stable usage error for invalid arguments",
     async (...arguments_) => {
