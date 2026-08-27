@@ -55,8 +55,7 @@ export const describeError = (error: unknown): StartupFailureLink => {
     message,
     code: typeof rawCode === "string" && SAFE_CODE.test(rawCode) ? rawCode : null,
     // A stack opens with its own message, so it is exactly as publishable as that message was.
-    stack:
-      message === null ? null : publishable(error.stack ?? "", MAXIMUM_STACK_CHARACTERS, true)
+    stack: message === null ? null : publishable(error.stack ?? "", MAXIMUM_STACK_CHARACTERS, true)
   };
 };
 

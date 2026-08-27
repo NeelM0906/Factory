@@ -50,9 +50,7 @@ export const createChildLogForwarder = ({
     });
     if (written + record.length > CHILD_LOG_LIMITS.maximumTotalCharacters) {
       stopped = true;
-      write(
-        JSON.stringify({ level: "error", event: "utility_child_log_truncated", service })
-      );
+      write(JSON.stringify({ level: "error", event: "utility_child_log_truncated", service }));
       return;
     }
     written += record.length;
