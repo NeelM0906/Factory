@@ -73,7 +73,16 @@ jobs:
         run: pnpm test:coverage --concurrency=2 --filter='!@autostack/runner-local'
 
       - name: Build applications
-        run: pnpm build
+        # `--filter=!@autostack/desktop` for the same section 3.1 reason as the test step above.
+        # The desktop build ends in `node scripts/build-runtime-manifest.mjs`, which describes a
+        # staged native runtime: it realpaths `dist/runtime/native`, asserts ownership and
+        # permissions on it, and loads it under Electron. Only `pnpm desktop:build` stages that
+        # directory, via `rebuild:native`, and the macOS job below is the only job that runs it.
+        # Building the desktop app here would mean compiling node-pty against Electron on
+        # linux-x64 -- node-pty ships no linux prebuild -- to produce a manifest for an app this
+        # platform never runs. Its `check` task still runs here through `^check`, and the macOS job
+        # builds it for real.
+        run: pnpm build --filter='!@autostack/desktop'
 
       - name: Upload coverage
         if: always()
