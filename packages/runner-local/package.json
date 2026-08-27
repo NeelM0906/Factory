@@ -16,6 +16,7 @@
   },
   "dependencies": {
     "@autostack/contracts": "workspace:*",
+    "@autostack/domain": "workspace:*",
     "node-pty": "1.1.0"
   }
 }

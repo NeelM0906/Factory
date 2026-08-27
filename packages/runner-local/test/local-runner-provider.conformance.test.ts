@@ -11,7 +11,7 @@ import {
   describeRunnerProviderConformance,
   type LocalRunnerLifecycleConformanceFixture,
   type RunnerProviderConformanceFixture
-} from "../../domain/src/testing/runner-provider-conformance.js";
+} from "@autostack/domain/testing";
 
 import {
   CommandAuthorizationSchema,

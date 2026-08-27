@@ -157,7 +157,9 @@ export const ApprovalDecisionResponseSchema = z
   .object({
     approvalId: ApprovalIdSchema,
     runId: RunIdSchema,
-    status: z.enum(["approved", "rejected", "stale"]),
+    // Derived so the decided statuses cannot drift from the approval entity's own vocabulary; a
+    // decision response is every approval status except the one it leaves behind.
+    status: ApprovalSchema.shape.status.exclude(["pending"]),
     decidedAt: z.iso.datetime(),
     replayed: z.boolean()
   })

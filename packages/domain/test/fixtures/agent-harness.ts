@@ -123,7 +123,7 @@ const FAILURE_SCRIPT: FakeHarnessScript = [
     kind: "emit",
     event: {
       type: "failed",
-      code: "provider.rate_limited",
+      code: "provider_rate_limited",
       message: "The provider rejected the request.",
       retryable: true
     }

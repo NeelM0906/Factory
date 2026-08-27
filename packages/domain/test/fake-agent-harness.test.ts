@@ -346,7 +346,7 @@ describe("fake agent harness failure injection and resumption", () => {
         kind: "emit",
         event: {
           type: "failed",
-          code: "provider.rate_limited",
+          code: "provider_rate_limited",
           message: "The provider rejected the request.",
           retryable: true
         }
@@ -358,7 +358,7 @@ describe("fake agent harness failure injection and resumption", () => {
 
     expect((await iterator.next()).value).toMatchObject({
       type: "failed",
-      code: "provider.rate_limited",
+      code: "provider_rate_limited",
       retryable: true
     });
     await expect(iterator.next()).rejects.toBe(injected);

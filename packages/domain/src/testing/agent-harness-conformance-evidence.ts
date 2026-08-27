@@ -64,14 +64,19 @@ export const describeAgentHarnessEvidenceConformance = (
         expect(terminal?.type).toBe("failed");
         if (terminal?.type !== "failed") throw new TypeError("unreachable");
 
+        // The contract requires `code` to already be in the workflow-failure alphabet, so lifting
+        // it must be a no-op: a code that changes under normalization is one the adapter owes a
+        // mapping for, not one the retry policy can branch on.
         expect(
-          WorkflowFailureSchema.parse({
-            code: toWorkflowFailureCode(terminal.code),
-            name: terminal.code,
-            message: terminal.message,
-            retryable: terminal.retryable
-          })
-        ).toBeDefined();
+          toWorkflowFailureCode(terminal.code),
+          `the failure code "${terminal.code}" must already match ^[a-z][a-z0-9_]{0,63}$ (lowercase snake_case, at most 64 characters); a code that normalization has to rewrite — a JSON-RPC numeric code such as -32601, or a dotted "provider.rate_limited" — must be mapped by the adapter before it is emitted`
+        ).toBe(terminal.code);
+        WorkflowFailureSchema.parse({
+          code: terminal.code,
+          name: terminal.code,
+          message: terminal.message,
+          retryable: terminal.retryable
+        });
         // A code is an identifier a policy branches on, not a restatement of the operator message.
         expect(terminal.code).not.toBe(terminal.message);
 

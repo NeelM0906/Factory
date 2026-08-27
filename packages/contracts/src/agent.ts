@@ -12,6 +12,7 @@ import {
 import { ModelCostSchema, ModelTokenUsageSchema } from "./model.js";
 import { RelativeWorkspacePathSchema } from "./runner.js";
 import { SafeMetadataStringSchema } from "./secret-safety.js";
+import { WorkflowFailureCodeSchema } from "./workflow-failure.js";
 
 const VersionSchema = z.literal(1);
 const TimestampSchema = z.iso.datetime();
@@ -151,7 +152,9 @@ export const AgentSessionEventSchema = z.discriminatedUnion("type", [
     .object({
       ...AgentEventContextShape,
       type: z.literal("failed"),
-      code: StableRefSchema,
+      // The workflow-failure alphabet: a code that does not survive normalization unchanged (a
+      // JSON-RPC `-32601`, a dotted `provider.rate_limited`) must be mapped by the adapter first.
+      code: WorkflowFailureCodeSchema,
       message: SafeMetadataStringSchema.max(2_000),
       retryable: z.boolean(),
       evidenceDigest: DigestSchema.optional()
@@ -336,7 +339,7 @@ const AgentSessionDetailEventOptions = [
       type: z.literal("interrupted"),
       reason: SafeMetadataStringSchema.max(2_000),
       retryable: z.boolean(),
-      evidenceDigests: z.array(DigestSchema).max(100)
+      evidenceDigests: z.array(DigestSchema).min(1).max(100)
     })
     .strict()
 ] as const;

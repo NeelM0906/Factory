@@ -217,7 +217,7 @@ describe("model route fallback", () => {
       ...attribution,
       from: { routeRef: "route.gateway.default", model: "anthropic/claude-sonnet-4" },
       to: { routeRef: "route.openrouter.default", model: "anthropic/claude-sonnet-4" },
-      failureCode: "provider_rate_limited",
+      failureCode: "rate_limited",
       reason: "Gateway returned 429 for the requested provider.",
       occurredAt: "2026-08-23T12:00:01.000Z"
     });
@@ -232,6 +232,21 @@ describe("model route fallback", () => {
         ...attribution,
         from: { routeRef: "route.gateway.default", model: "anthropic/claude-sonnet-4" },
         to: { routeRef: "route.gateway.default", model: "anthropic/claude-sonnet-4" },
+        failureCode: "rate_limited",
+        reason: "Gateway returned 429 for the requested provider.",
+        occurredAt: "2026-08-23T12:00:01.000Z"
+      })
+    ).toThrow();
+  });
+
+  it("rejects a failure code outside the routing taxonomy", () => {
+    expect(() =>
+      ModelRouteFallbackSchema.parse({
+        schemaVersion: 1,
+        idempotencyKey: "model-fallback:run:plan:1",
+        ...attribution,
+        from: { routeRef: "route.gateway.default", model: "anthropic/claude-sonnet-4" },
+        to: { routeRef: "route.openrouter.default", model: "anthropic/claude-sonnet-4" },
         failureCode: "provider_rate_limited",
         reason: "Gateway returned 429 for the requested provider.",
         occurredAt: "2026-08-23T12:00:01.000Z"

@@ -28,7 +28,11 @@ import type {
  *   arrives, gating at least one observable side effect (`tool_call`, `file_change`, or the
  *   terminal event) behind it. The request must offer an `allow_once` or `allow_always` option.
  * - `fails`: terminates in a `failed` event whose `code` classifies the failure for the retry
- *   policy, and which is classified identically every time the same scenario is replayed.
+ *   policy, and which is classified identically every time the same scenario is replayed. The code
+ *   must already be in the workflow-failure alphabet — `^[a-z][a-z0-9_]{0,63}$`, lowercase
+ *   snake_case, at most 64 characters — so that lifting it into `WorkflowFailure` for the retry
+ *   policy is a no-op normalization. A JSON-RPC numeric code such as `-32601` does not survive
+ *   that normalization, so an ACP adapter must map such codes to the alphabet before emitting.
  * - `interrupted`: emits at least one evidence-bearing event, then an `interrupted` event carrying
  *   the digests of that partial evidence, and ends without a lifecycle terminal (spec §15).
  */

@@ -141,6 +141,28 @@ describe("agent harness contracts", () => {
       })
     ).toThrow();
   });
+
+  it("requires a failure code that survives workflow-failure normalization", () => {
+    const failure = {
+      schemaVersion: 1,
+      sessionId: ids.agentSessionId,
+      sequence: 4,
+      occurredAt: "2026-08-23T12:00:00.000Z",
+      type: "failed",
+      message: "The adapter exited before finishing",
+      retryable: true
+    };
+    expect(AgentSessionEventSchema.parse({ ...failure, code: "provider_rate_limited" }).type).toBe(
+      "failed"
+    );
+    expect(() =>
+      AgentSessionEventSchema.parse({ ...failure, code: "provider.rate_limited" })
+    ).toThrow();
+    expect(() => AgentSessionEventSchema.parse({ ...failure, code: "-32601" })).toThrow();
+    expect(() =>
+      AgentSessionEventSchema.parse({ ...failure, code: "Provider_Rate_Limited" })
+    ).toThrow();
+  });
 });
 
 describe("agent harness profile contracts", () => {
@@ -321,6 +343,23 @@ describe("normalized agent session detail events", () => {
     ).toBe("thought_summary");
     expect(() =>
       AgentSessionStreamEventSchema.parse({ ...eventContext, sequence: 0, type: "cancelled" })
+    ).toThrow();
+  });
+
+  it("requires an interrupted event to carry the evidence it did produce", () => {
+    const interrupted = {
+      ...eventContext,
+      sequence: 8,
+      type: "interrupted",
+      reason: "Host daemon lost the agent process",
+      retryable: true
+    };
+    expect(
+      AgentSessionDetailEventSchema.parse({ ...interrupted, evidenceDigests: ["e".repeat(64)] })
+        .type
+    ).toBe("interrupted");
+    expect(() =>
+      AgentSessionDetailEventSchema.parse({ ...interrupted, evidenceDigests: [] })
     ).toThrow();
   });
 

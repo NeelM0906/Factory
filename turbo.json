@@ -11,11 +11,13 @@
     },
     "test": {
       "dependsOn": ["^check"],
-      "outputs": []
+      "outputs": [],
+      "cache": false
     },
     "test:coverage": {
       "dependsOn": ["^check"],
-      "outputs": ["coverage/**"]
+      "outputs": ["coverage/**"],
+      "cache": false
     },
     "dev": {
       "cache": false,

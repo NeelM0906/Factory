@@ -212,31 +212,6 @@ const ModelRouteTargetSchema = z
   .object({ routeRef: StableRefSchema, model: StableRefSchema })
   .strict();
 
-/** A provider or model fallback, recorded so cost and evaluation reflect reality (spec §15). */
-export const ModelRouteFallbackSchema = z
-  .object({
-    schemaVersion: VersionSchema,
-    idempotencyKey: IdempotencyKeySchema,
-    workspaceId: WorkspaceIdSchema,
-    runId: RunIdSchema,
-    stageRunId: StageRunIdSchema,
-    from: ModelRouteTargetSchema,
-    to: ModelRouteTargetSchema,
-    failureCode: StableRefSchema,
-    reason: SafeMetadataStringSchema.max(2_000),
-    occurredAt: TimestampSchema
-  })
-  .strict()
-  .superRefine((value, context) => {
-    if (value.from.routeRef === value.to.routeRef && value.from.model === value.to.model) {
-      context.addIssue({
-        code: "custom",
-        path: ["to"],
-        message: "A fallback must change the route or the model."
-      });
-    }
-  });
-
 /**
  * The shared vocabulary for a route that could not be resolved (spec §8.3, §10.1). Every stream
  * that raises or classifies a routing failure uses these codes, so the retry decision is read from
@@ -250,6 +225,31 @@ export const MODEL_ROUTING_FAILURE_CODES = [
   "budget_exceeded"
 ] as const;
 export const ModelRoutingFailureCodeSchema = z.enum(MODEL_ROUTING_FAILURE_CODES);
+
+/** A provider or model fallback, recorded so cost and evaluation reflect reality (spec §15). */
+export const ModelRouteFallbackSchema = z
+  .object({
+    schemaVersion: VersionSchema,
+    idempotencyKey: IdempotencyKeySchema,
+    workspaceId: WorkspaceIdSchema,
+    runId: RunIdSchema,
+    stageRunId: StageRunIdSchema,
+    from: ModelRouteTargetSchema,
+    to: ModelRouteTargetSchema,
+    failureCode: ModelRoutingFailureCodeSchema,
+    reason: SafeMetadataStringSchema.max(2_000),
+    occurredAt: TimestampSchema
+  })
+  .strict()
+  .superRefine((value, context) => {
+    if (value.from.routeRef === value.to.routeRef && value.from.model === value.to.model) {
+      context.addIssue({
+        code: "custom",
+        path: ["to"],
+        message: "A fallback must change the route or the model."
+      });
+    }
+  });
 
 /** Codes that describe the request itself, not the moment: retrying the same request cannot help. */
 const DETERMINISTIC_ROUTING_FAILURE_CODES = new Set<ModelRoutingFailureCode>([
