@@ -252,14 +252,14 @@ export const MODEL_ROUTING_FAILURE_CODES = [
 export const ModelRoutingFailureCodeSchema = z.enum(MODEL_ROUTING_FAILURE_CODES);
 
 /** Codes that describe the request itself, not the moment: retrying the same request cannot help. */
-const DETERMINISTIC_ROUTING_FAILURE_CODES = new Set<string>([
+const DETERMINISTIC_ROUTING_FAILURE_CODES = new Set<ModelRoutingFailureCode>([
   "capability_unavailable",
   "route_disabled",
   "budget_exceeded"
 ]);
 
 /** Codes that describe the moment, not the request: the same request can succeed later. */
-const TRANSIENT_ROUTING_FAILURE_CODES = new Set<string>(["rate_limited"]);
+const TRANSIENT_ROUTING_FAILURE_CODES = new Set<ModelRoutingFailureCode>(["rate_limited"]);
 
 export const ModelRoutingFailureSchema = z
   .object({
