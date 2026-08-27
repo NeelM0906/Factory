@@ -310,13 +310,11 @@ describe("fake delivery integration failure injection", () => {
     expect(replay).toEqual(first);
     expect(integration.pullRequests).toHaveLength(1);
 
-    const secondScope = await draftPullRequestInput();
-    await expect(
-      integration.createDraftPullRequest({
-        ...secondScope,
-        idempotencyKey: "draft-pr:run:2"
-      } as unknown as DraftPullRequestRequest)
-    ).rejects.toBe(injected);
+    const second = await admitDraftPullRequestRequest({
+      ...(await draftPullRequestInput()),
+      idempotencyKey: "draft-pr:run:2"
+    });
+    await expect(integration.createDraftPullRequest(second)).rejects.toBe(injected);
   });
 
   it("hands out copies so a consumer cannot mutate recorded state", async () => {
@@ -332,11 +330,10 @@ describe("fake delivery integration failure injection", () => {
       integration.branches
     ]) {
       expect(view).toHaveLength(1);
-      view.slice().pop();
     }
-    expect(integration.slackProgress).toHaveLength(1);
-    expect(integration.comments).toHaveLength(1);
-    expect(integration.pullRequests).toHaveLength(1);
+    expect(integration.slackProgress).not.toBe(integration.slackProgress);
+    expect(integration.comments).not.toBe(integration.comments);
+    expect(integration.pullRequests).not.toBe(integration.pullRequests);
     expect(integration.branches).not.toBe(integration.branches);
   });
 

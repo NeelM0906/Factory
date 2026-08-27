@@ -281,7 +281,6 @@ describe("fake model router usage accounting", () => {
     const router = createRouter([]);
     await router.recordUsage(usage);
 
-    router.recordedUsage.slice().pop();
     const view = router.recordedUsage;
     expect(view).toEqual([usage]);
     expect(router.recordedUsage).not.toBe(view);

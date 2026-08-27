@@ -447,7 +447,6 @@ describe("fake agent harness detail events and view copies", () => {
     await harness.steer(steer);
 
     const view = harness.sentMessages;
-    view.slice().pop();
     expect(harness.sentMessages).toEqual([steer]);
     expect(harness.sentMessages).not.toBe(view);
     expect(harness.permissionResponses).not.toBe(harness.permissionResponses);
