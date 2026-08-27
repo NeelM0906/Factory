@@ -59,6 +59,7 @@ The three blocking escalations raised with revision 1 were approved and land on 
 - Files stay small and single-concern (200–400 lines typical, 800 hard max), matching `packages/runner-local/src/`.
 - TDD per step: write the failing test, run it, observe the stated failure, implement minimally, re-run focused, then run the package's full suite before the task's commit. Conventional-commit message per task.
 - Ownership: only `packages/agent-runtime/**`, `packages/agent-native/**`, and this plan file. Any other path is an escalation.
+- **Git: single-committer (option A of the 2026-08-27 cross-stream bulletin).** Task subagents never run a mutating git command — no `add`, `commit`, `reset`, `amend`, `stash`, `checkout`, or `restore`. They write code and tests, run the package's own verification, and report through files under `.superpowers/sdd/`; the stream lead reviews the working tree and makes every commit. This stream shares one worktree across potentially parallel implementers (T1, T4, T5, and T7 have no ordering dependency between them), and `git commit` commits the whole index however explicit the `add` was — so a pathspec-limited commit would still leave `index.lock` contention and a sibling's `reset` would still sweep staged work. Option A removes the class rather than narrowing it. The per-task "verify and commit" steps below are therefore lead actions, and the commands in them are run by the lead after review.
 
 ---
 
