@@ -205,6 +205,26 @@ const parent = new ElectronHostParentPort(terminalEvidence);
 const ids = createIdFactory();
 const keepAlive = setInterval(() => undefined, 60_000);
 
+/**
+ * The only channel this process has for saying why it died. `runForkableHostUtilityProcess` fails
+ * closed by setting a nonzero exit code and dropping the error, so before this the host exited 1 in
+ * total silence -- CI runs 33113576845 and 33116320549 both produced a bare
+ * `[autostack-e2e-utility-exit] host:1` and nothing else. Shaped like the control plane's own
+ * startup report (apps/control-plane/src/server.ts:327-336).
+ */
+const reportStartupFailure = (error: unknown): void => {
+  console.error(
+    JSON.stringify({
+      level: "error",
+      event: "host_start_failed",
+      message:
+        error instanceof Error ? `${error.name}: ${error.message}` : "Unknown startup error.",
+      cause: error instanceof Error && error.cause instanceof Error ? error.cause.message : null,
+      stack: error instanceof Error ? (error.stack ?? null) : null
+    })
+  );
+};
+
 try {
   await runForkableHostUtilityProcess({
     parent,
@@ -214,6 +234,7 @@ try {
     listen: listenOnLoopback,
     requestId: randomUUID,
     log: () => undefined,
+    onStartupFailure: reportStartupFailure,
     signals: false,
     createRunner: async ({ dataRoot, runtime }) =>
       await createProductionHostRunnerFactory({
@@ -258,22 +279,10 @@ try {
       })({ dataRoot, runtime })
   });
 } catch (error: unknown) {
-  // Without this the host utility dies silently: `log` above is deliberately a no-op, and an
-  // unhandled top-level rejection inside an Electron utility process writes nothing to the child's
-  // stderr pipe. CI run 33113576845 saw only `[autostack-e2e-utility-exit] host:1` and had no way
-  // to name the cause. The control plane already reports its own startup failure this way
-  // (apps/control-plane/src/server.ts:327-336); this is the host's missing half. The exit code is
-  // unchanged -- the process still leaves with 1 through the existing exit below.
-  const cause = error instanceof Error && error.cause instanceof Error ? error.cause.message : null;
-  console.error(
-    JSON.stringify({
-      level: "error",
-      event: "host_start_failed",
-      message:
-        error instanceof Error ? `${error.name}: ${error.message}` : "Unknown startup error.",
-      cause
-    })
-  );
+  // Second layer. This catches a throw that escapes the daemon entirely; the reporter passed as
+  // `onStartupFailure` above catches the far more common case, where the daemon converts a startup
+  // error into a nonzero exit code and discards the error itself.
+  reportStartupFailure(error);
   process.exitCode = 1;
 } finally {
   clearInterval(keepAlive);

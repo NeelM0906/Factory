@@ -238,6 +238,35 @@ describe("forkable host utility process", () => {
     expect(close).toHaveBeenCalledOnce();
   });
 
+  it("reports the startup error it fails closed on, without changing the result", async () => {
+    const parent = new ParentPort();
+    const setExitCode = vi.fn();
+    const onStartupFailure = vi.fn(() => {
+      throw new Error("an observer must never change the outcome");
+    });
+    const startupError = new Error("runtime manifest digest is invalid");
+    const running = runForkableHostUtilityProcess({
+      parent,
+      start: vi.fn(async () => {
+        throw startupError;
+      }) as never,
+      createRunner: vi.fn(),
+      validateRuntime: vi.fn(),
+      listen: vi.fn(),
+      environment: {},
+      pid: 42,
+      log: vi.fn(),
+      requestId: () => "request_1",
+      signals: false,
+      setExitCode,
+      onStartupFailure
+    });
+    parent.emit("message", bootstrap);
+    await expect(running).resolves.toBeUndefined();
+    expect(onStartupFailure).toHaveBeenCalledExactlyOnceWith(startupError);
+    expect(setExitCode).toHaveBeenCalledWith(1);
+  });
+
   it("sets a nonzero exit code when shutdown is incomplete", async () => {
     const parent = new ParentPort();
     const setExitCode = vi.fn();

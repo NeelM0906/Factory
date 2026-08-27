@@ -87,6 +87,13 @@ export interface ForkableHostUtilityProcessOptions {
   readonly start?: typeof startHostDaemon;
   readonly signals?: boolean;
   readonly setExitCode?: (code: number) => void;
+  /**
+   * Observes the error that made startup fail closed, before the nonzero result is set. The daemon
+   * deliberately reports startup failure only as an exit code, so without this seam the cause is
+   * discarded in-process and no stream ever carries it. Purely observational: it cannot change the
+   * outcome, and throwing from it is ignored.
+   */
+  readonly onStartupFailure?: (error: unknown) => void;
 }
 
 export const runForkableHostUtilityProcess = async (
@@ -227,6 +234,11 @@ export const runForkableHostUtilityProcess = async (
     ) {
       complete();
     } else {
+      try {
+        options.onStartupFailure?.(error);
+      } catch {
+        // Observation never changes the outcome.
+      }
       await fail();
     }
   }
