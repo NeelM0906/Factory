@@ -340,11 +340,16 @@ const composeReal = async (input?: {
   };
 };
 
+// Teardown races a writer: a guardian child that outlives its test can still be creating files
+// under the root while the recursive removal walks it, which surfaces as ENOTEMPTY under full-suite
+// parallel load. `rm` defaults to `maxRetries: 0`; retrying is the documented remedy.
+const removeRoot = (root: string): Promise<void> =>
+  rm(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 });
+
 afterEach(async () => {
   for (const provider of providers.splice(0)) await provider.close().catch(() => undefined);
-  await Promise.all(roots.splice(0).map((root) => rm(root, { recursive: true, force: true })));
-  if (sharedData !== undefined)
-    await rm(sharedData.repository.root, { recursive: true, force: true });
+  await Promise.all(roots.splice(0).map((root) => removeRoot(root)));
+  if (sharedData !== undefined) await removeRoot(sharedData.repository.root);
   previousConformanceReal = undefined;
   sharedData = undefined;
 });

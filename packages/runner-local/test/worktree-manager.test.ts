@@ -182,8 +182,15 @@ const resignPhaseEvidence = (evidence: Record<string, unknown>): Record<string, 
   };
 };
 
+// Teardown races a writer: a Git subprocess that outlives its test can still be creating files
+// under the root while the recursive removal walks it, which surfaces as ENOTEMPTY under full-suite
+// parallel load. `rm` defaults to `maxRetries: 0`; retrying is the documented remedy.
 afterEach(async () => {
-  await Promise.all(roots.splice(0).map((root) => rm(root, { recursive: true, force: true })));
+  await Promise.all(
+    roots
+      .splice(0)
+      .map((root) => rm(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 }))
+  );
 });
 
 describe("WorktreeManager", () => {
