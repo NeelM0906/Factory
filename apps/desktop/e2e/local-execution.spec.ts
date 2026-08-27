@@ -3,6 +3,7 @@ import { join, resolve } from "node:path";
 import { spawnSync } from "node:child_process";
 
 import AxeBuilder from "@axe-core/playwright";
+import { redactSensitiveText } from "@autostack/contracts";
 import { expect, test, type TestInfo } from "@playwright/test";
 import { _electron as electron, type ElectronApplication, type Page } from "playwright";
 
@@ -57,10 +58,19 @@ const launch = async (
   try {
     page = await application.firstWindow({ timeout: 30_000 });
   } catch (error) {
+    // Same two layers as scripts/verify-local-execution.mjs. The exact-value replacements read
+    // better for the values this process knows; the contracts' scanner then sweeps credential
+    // shapes it cannot know, such as the host token minted inside Electron main. Per line, because
+    // the scanner replaces its whole input when the detector trips.
     const sanitized = Buffer.concat(errors)
       .toString("utf8")
-      .replaceAll(scenario.token, "<redacted>")
-      .replaceAll(scenario.root, "<scenario>");
+      .split("\n")
+      .map((line) =>
+        redactSensitiveText(
+          line.replaceAll(scenario.token, "<redacted>").replaceAll(scenario.root, "<scenario>")
+        )
+      )
+      .join("\n");
     throw new Error(`desktop launch closed: ${sanitized || String(error)}`);
   }
   await page.emulateMedia({ reducedMotion: "reduce" });
@@ -379,7 +389,11 @@ test("real desktop survives restart and keeps repository authority opaque", asyn
     // width instead of the requested width means a display that cannot give exactly 720 fails the
     // narrowness assertion above with a real number, rather than timing out here with none.
     expect(granted).not.toBeNull();
+    // Bounded on both sides. The upper bound is the point of the step -- axe must inspect a narrow
+    // viewport. The lower bound stops a degenerate work area from greenlighting the accessibility
+    // pass at a width nobody designed for, which would pass this assertion while proving nothing.
     expect(granted?.width).toBeLessThanOrEqual(720);
+    expect(granted?.width).toBeGreaterThanOrEqual(600);
     await expect
       .poll(async () => await page.evaluate(() => window.innerWidth))
       .toBe(granted?.width);

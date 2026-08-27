@@ -9,6 +9,9 @@ import {
   assertScenarioUnchanged,
   createTestRepositoryScenario
 } from "../apps/desktop/e2e/fixtures/test-repository.ts";
+// Imported by path: this script runs under plain `node`, and the workspace root does not link
+// `@autostack/contracts`.
+import { redactSensitiveText } from "../packages/contracts/src/secret-safety.ts";
 
 const workspace = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const desktop = join(workspace, "apps", "desktop");
@@ -91,26 +94,48 @@ const childOutput = [];
 let childOutputBytes = 0;
 const captureChildOutput = (stream, label) => {
   stream?.on("data", (chunk) => {
-    if (childOutputBytes >= CHILD_OUTPUT_LIMIT_BYTES) return;
-    const text = chunk.toString("utf8");
-    childOutputBytes += Buffer.byteLength(text, "utf8");
-    childOutput.push(`[${label}] ${text}`);
+    const remaining = CHILD_OUTPUT_LIMIT_BYTES - childOutputBytes;
+    if (remaining <= 0) return;
+    // Slice to the remaining budget rather than admitting a whole chunk that crosses it, so the
+    // cap is a bound rather than a suggestion a single large chunk can overshoot.
+    const raw = Buffer.from(chunk.toString("utf8"), "utf8");
+    const bounded = raw.byteLength > remaining ? raw.subarray(0, remaining) : raw;
+    childOutputBytes += bounded.byteLength;
+    childOutput.push(`[${label}] ${bounded.toString("utf8")}`);
   });
 };
 // Redaction, not a secret-free assertion: this text only exists because something already failed,
-// so it has to print unconditionally. Longer paths are replaced before the scenario root that
-// contains them, so each value is marked by its most specific name.
+// so it has to print unconditionally.
+//
+// Two layers, because either alone is insufficient. The scenario values below are an exact-value
+// denylist, which reads well -- a reader sees `[token]` rather than a generic marker -- but it can
+// only ever cover values this process knows. The host token is minted inside Electron main and is
+// never seen here, so a denylist structurally cannot catch it. So every line is then passed through
+// the contracts' scanner, which sweeps the known credential patterns and runs the streaming
+// detector over what is left.
+//
+// Applied per line rather than to the whole blob: the scanner fails closed by replacing its entire
+// input when the detector trips, and one poisoned line should cost that line, not the diagnosis.
+const SCENARIO_MARKERS = [
+  [scenario.token, "[token]"],
+  [scenario.source, "[source]"],
+  [scenario.userData, "[user-data]"],
+  [scenario.evidence, "[evidence]"],
+  // Longest paths first: each value is marked by its most specific name, not by the root
+  // that contains it.
+  [scenario.root, "[scenario-root]"]
+];
 const redactScenario = (value) =>
-  [
-    [scenario.token, "[token]"],
-    [scenario.source, "[source]"],
-    [scenario.userData, "[user-data]"],
-    [scenario.evidence, "[evidence]"],
-    [scenario.root, "[scenario-root]"]
-  ].reduce(
-    (text, [secret, marker]) => (secret.length > 0 ? text.split(secret).join(marker) : text),
-    value
-  );
+  value
+    .split("\n")
+    .map((line) => {
+      const labelled = SCENARIO_MARKERS.reduce(
+        (text, [secret, marker]) => (secret.length > 0 ? text.split(secret).join(marker) : text),
+        line
+      );
+      return redactSensitiveText(labelled);
+    })
+    .join("\n");
 
 let application;
 try {
