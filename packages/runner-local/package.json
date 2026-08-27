@@ -11,8 +11,8 @@
   "scripts": {
     "build": "tsc -p tsconfig.json --noEmit",
     "check": "tsc -p tsconfig.json --noEmit",
-    "test": "vitest run --config ../../vitest.config.ts",
-    "test:coverage": "vitest run --config ../../vitest.config.ts --coverage"
+    "test": "vitest run",
+    "test:coverage": "vitest run --coverage"
   },
   "dependencies": {
     "@autostack/contracts": "workspace:*",
