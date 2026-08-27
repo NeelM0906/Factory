@@ -298,6 +298,24 @@ describe("DataPathPolicy", () => {
     expect(await realpath(requested)).toBe(expected);
   });
 
+  it("admits a sibling directory created concurrently in the missing-root parent", async () => {
+    const parent = await temporaryRoot();
+    const requested = join(parent, "missing", "state");
+    const expected = join(await realpath(parent), "missing", "state");
+    let siblings = 0;
+
+    const policy = await DataPathPolicy.create(requested, {
+      beforeRootCreate: async ({ parentPath }) => {
+        siblings += 1;
+        await mkdir(join(parentPath, `concurrent-sibling-${siblings}`), { mode: 0o700 });
+      }
+    });
+
+    expect(siblings).toBe(1);
+    expect(policy.root).toBe(expected);
+    expect(await realpath(requested)).toBe(expected);
+  });
+
   it("rolls back the exact directory created through a swapped missing-root parent", async () => {
     const base = await temporaryRoot();
     const requested = join(base, "parent", "child");
