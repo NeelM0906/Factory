@@ -23,11 +23,15 @@ export interface ConfinedDirectoryEntry {
  * Takes a stable, no-follow snapshot of one already-pinned recovery directory.
  *
  * Every identity comparison below is deliberately strict, link count included. This function's
- * contract is that nothing moved while it looked: the double enumeration at the end rejects any
- * change to the entry list outright, so tolerating link-count drift would admit exactly the
- * mutations the double read exists to catch, only less cheaply. Callers pin immediately before
- * calling (see DataPathPolicy.listDirectory) and the window is a handful of lstat calls, so no
- * legitimate drift is expected inside it. Contrast the identity checks that tolerate drift --
+ * contract is that nothing moved while it looked, and the checks divide the window between them
+ * rather than duplicating each other. The opening comparison against the caller's pinned
+ * `expected` is the only thing covering the gap between that pin and this open: the double
+ * enumeration cannot see into it, because both reads happen afterwards and would agree with each
+ * other about an entry that arrived before the first one. Link count is what makes that opening
+ * comparison able to see an added or removed entry at all, so dropping it would leave the
+ * pin-to-open window unguarded. Callers pin immediately before calling (see
+ * DataPathPolicy.listDirectory) and the window is a handful of lstat calls, so no legitimate
+ * drift is expected inside it. Contrast the identity checks that tolerate drift --
  * path-security.ts:createMissingRoot and PinnedDirectories.validateAllowingConcurrentEntries --
  * which serve directories that independent brokers write to concurrently by design.
  */

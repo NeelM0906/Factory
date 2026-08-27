@@ -534,11 +534,27 @@ const scanGuardianLeases = async (policy: DataPathPolicy): Promise<void> => {
   // that was successfully held: WorktreeManager.create is the only caller of
   // acquireDataRootLock, and the CommandRegistry recovery and CommandGuardian paths that call
   // acquireCommandGuardianLease only exist once that manager has been constructed. A competing
-  // host is turned away with root_busy before it can reach them. Nothing this scan does moves
-  // this directory's link count either -- SQLite's sidecars land one level down, inside
-  // `commands/<id>`, which is why only that inner check tolerates drift. So any entry count
-  // change observed across this window is unaccounted for, and it is the only signal that
-  // catches an entry appearing after the directory stream above was snapshotted.
+  // host is turned away with root_busy before it can reach them.
+  //
+  // The one caller that is NOT literally downstream of a manager is the spawned guardian child
+  // (command-guardian-child-runtime.ts:234), which acquires its own lease from its own process.
+  // It is still safe, because it never adds a `commands/` entry: on the host side
+  // CommandGuardian.start acquires the lease at command-guardian.ts:127-132 -- creating
+  // `commands/<id>` -- strictly before authorizeAndSpawnGuardian at :135, so by the time the
+  // child acquires, that directory already exists. An orphaned child from a crashed host is
+  // likewise pre-existing, and this scan's own probe finds its lease busy and reports root_busy.
+  //
+  // Nothing this scan does moves this directory's link count either -- SQLite's sidecars land one
+  // level down, inside `commands/<id>`, which is why only that inner check tolerates drift. So
+  // any entry count change observed across this window is unaccounted for, and it is the only
+  // signal that catches an entry appearing after the directory stream above was snapshotted.
+  //
+  // This strictness DEPENDS on the call-graph facts above staying true; it is not self-evident
+  // from the types. acquireCommandGuardianLease is exported and takes a raw dataRoot string, so
+  // nothing stops a future caller from acquiring a lease outside a WorktreeManager. Such a caller
+  // would create a `commands/<id>` entry concurrently with this scan and surface as an
+  // intermittent unsafe_state at daemon startup. Re-derive this before adding one, or bind the
+  // lease API to a held lock handle.
   if (!samePinnedIdentity(identityBefore, identityOf(directoryAfter)))
     throw failure("unsafe_state");
 };
