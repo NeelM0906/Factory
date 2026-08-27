@@ -833,10 +833,14 @@ describe("control-plane server lifecycle", () => {
     const dataDirectory = mkdtempSync(join(tmpdir(), "autostack-control-plane-"));
     temporaryDirectories.push(dataDirectory);
 
-    const runtime = await startLocal(dataDirectory, { repositoryPaths: { allowed: [] } });
+    const withPaths = await startLocal(dataDirectory, { repositoryPaths: { allowed: [] } });
+    expect(withPaths.desktopDispatcher).toBeDefined();
+    await withPaths.close();
 
-    expect(runtime.desktopDispatcher).toBeDefined();
-    await runtime.close();
+    // The "only when" half: the same composition without repository paths must not build one.
+    const withoutPaths = await startLocal(dataDirectory);
+    expect(withoutPaths.desktopDispatcher).toBeUndefined();
+    await withoutPaths.close();
   });
 
   it("closes the opened database when composition fails before the listener starts", async () => {

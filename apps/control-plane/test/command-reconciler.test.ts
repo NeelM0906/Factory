@@ -439,6 +439,8 @@ describe("CommandReconciler terminal evidence", () => {
       evidence: sink()
     });
 
-    expect(() => reconciler.reconcile({ ...request, after: -1 } as never)).toThrow();
+    expect(() => reconciler.reconcile({ ...request, after: -1 } as never)).toThrow(
+      /too_small[\s\S]*after/
+    );
   });
 });

@@ -352,7 +352,18 @@ describe("EventBackedLocalExecutionState durable phases", () => {
 
     await state.recordCompletion(completion(run, { exitCode: 3 }));
 
-    await expect(state.resolveDisposal({} as never)).rejects.toThrow();
+    // The recorded status is only observable on the durable `command.completed` event, so read
+    // it back rather than asserting a side effect that would also hold for a clean exit.
+    const events = await run.store.readRunEvents({
+      workspaceId: run.workspaceId,
+      runId: run.runId,
+      afterGlobalSequence: 0,
+      limit: 100
+    });
+    const completed = events.filter((event) => event.type === "command.completed");
+
+    expect(completed).toHaveLength(1);
+    expect(completed[0]?.payload).toMatchObject({ commandId: run.commandId, status: "failed" });
   });
 
   it("records a transcript artifact and answers evidence queries about it", async () => {

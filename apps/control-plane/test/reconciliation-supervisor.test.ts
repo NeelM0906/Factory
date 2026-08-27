@@ -322,7 +322,7 @@ describe("CommandReconciliationSupervisor preparation recovery", () => {
       sleep: async () => undefined
     });
 
-    await expect(supervisor.recover()).rejects.toThrow();
+    await expect(supervisor.recover()).rejects.toThrow(/unrecognized_keys[\s\S]*marker/);
   });
 });
 
