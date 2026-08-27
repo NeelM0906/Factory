@@ -682,3 +682,177 @@ describe("control-plane server composition", () => {
     }
   });
 });
+
+describe("control-plane server lifecycle", () => {
+  const stubServer = () =>
+    ({ close: (callback?: (error?: Error) => void) => callback?.() }) as unknown as ServerType;
+
+  const startLocal = async (
+    dataDirectory: string,
+    overrides: Record<string, unknown> = {}
+  ) =>
+    startControlPlane({
+      bootstrap: bootstrap(dataDirectory),
+      hostFetch: async () => {
+        throw new Error("host must not be called");
+      },
+      serve: vi.fn(() => stubServer()) as unknown as typeof serve,
+      installSignalHandlers: false,
+      log: vi.fn(),
+      ...overrides
+    });
+
+  it("publishes the bound loopback listener to the supplied readiness channel", async () => {
+    const dataDirectory = mkdtempSync(join(tmpdir(), "autostack-control-plane-"));
+    temporaryDirectories.push(dataDirectory);
+    const posted: unknown[] = [];
+    const listening = Object.assign(new EventEmitter(), {
+      listening: true,
+      address: () => ({ address: "127.0.0.1", port: 4711 }),
+      close: (callback?: (error?: Error) => void) => callback?.()
+    }) as unknown as ServerType;
+
+    const runtime = await startLocal(dataDirectory, {
+      serve: vi.fn(() => listening) as unknown as typeof serve,
+      readinessWriter: { postMessage: (value: unknown) => void posted.push(value) }
+    });
+
+    expect(posted).toEqual([
+      {
+        schemaVersion: 1,
+        type: "runtime.ready",
+        service: "autostack-control-plane",
+        pid: process.pid,
+        origin: "http://127.0.0.1:4711"
+      }
+    ]);
+    await runtime.close();
+  });
+
+  it("waits for a pending listener to report listening before publishing readiness", async () => {
+    const dataDirectory = mkdtempSync(join(tmpdir(), "autostack-control-plane-"));
+    temporaryDirectories.push(dataDirectory);
+    const pending = Object.assign(new EventEmitter(), {
+      listening: false,
+      address: () => ({ address: "127.0.0.1", port: 4712 }),
+      close: (callback?: (error?: Error) => void) => callback?.()
+    }) as unknown as ServerType;
+    const posted: unknown[] = [];
+
+    const starting = startLocal(dataDirectory, {
+      serve: vi.fn(() => {
+        setTimeout(() => (pending as unknown as EventEmitter).emit("listening"), 0);
+        return pending;
+      }) as unknown as typeof serve,
+      readinessWriter: { postMessage: (value: unknown) => void posted.push(value) }
+    });
+
+    const runtime = await starting;
+    expect(posted).toHaveLength(1);
+    expect((pending as unknown as EventEmitter).listenerCount("error")).toBe(0);
+    await runtime.close();
+  });
+
+  it("fails startup when the listener reports an error instead of listening", async () => {
+    const dataDirectory = mkdtempSync(join(tmpdir(), "autostack-control-plane-"));
+    temporaryDirectories.push(dataDirectory);
+    const failing = Object.assign(new EventEmitter(), {
+      listening: false,
+      address: () => null,
+      close: (callback?: (error?: Error) => void) => callback?.()
+    }) as unknown as ServerType;
+
+    await expect(
+      startLocal(dataDirectory, {
+        serve: vi.fn(() => {
+          setTimeout(
+            () => (failing as unknown as EventEmitter).emit("error", new Error("listen failed")),
+            0
+          );
+          return failing;
+        }) as unknown as typeof serve
+      })
+    ).rejects.toThrow("listen failed");
+    expect((failing as unknown as EventEmitter).listenerCount("listening")).toBe(0);
+  });
+
+  it("retires the host generation by closing ingress and persistence exactly once", async () => {
+    const dataDirectory = mkdtempSync(join(tmpdir(), "autostack-control-plane-"));
+    temporaryDirectories.push(dataDirectory);
+    const opened = openDatabase({ filePath: join(dataDirectory, "autostack.sqlite") });
+    const runtime = await startLocal(dataDirectory, { openDatabase: () => opened });
+
+    const first = runtime.retireHostGeneration();
+    const second = runtime.retireHostGeneration();
+    expect(first).toBe(second);
+    await first;
+
+    const response = await runtime.app.request("/v1/local/environments", {
+      headers: { Authorization: `Bearer ${TOKEN}` }
+    });
+    expect(response.status).toBe(503);
+    expect(() => opened.connection.prepare("SELECT 1").get()).toThrow();
+    await runtime.close();
+  });
+
+  it("resolves host retirement as a no-op for a hosted composition with no local runner", async () => {
+    const dataDirectory = mkdtempSync(join(tmpdir(), "autostack-control-plane-"));
+    temporaryDirectories.push(dataDirectory);
+
+    const runtime = await startControlPlane({
+      config: { dataDirectory, token: TOKEN, host: "127.0.0.1", port: 0 },
+      serve: vi.fn(() => stubServer()) as unknown as typeof serve,
+      installSignalHandlers: false,
+      log: vi.fn()
+    });
+
+    expect(runtime.localExecution).toBeUndefined();
+    expect(runtime.desktopDispatcher).toBeUndefined();
+    await expect(runtime.retireHostGeneration()).resolves.toBeUndefined();
+    expect(
+      (await runtime.app.request("/v1/local/environments", {
+        headers: { Authorization: `Bearer ${TOKEN}` }
+      })).status
+    ).toBe(404);
+    await runtime.close();
+  });
+
+  it("installs shutdown signal handlers and removes them when the runtime closes", async () => {
+    const dataDirectory = mkdtempSync(join(tmpdir(), "autostack-control-plane-"));
+    temporaryDirectories.push(dataDirectory);
+    const before = process.listenerCount("SIGTERM");
+
+    const runtime = await startLocal(dataDirectory, { installSignalHandlers: true });
+
+    expect(process.listenerCount("SIGTERM")).toBe(before + 1);
+    expect(process.listenerCount("SIGINT")).toBeGreaterThan(0);
+    await runtime.close();
+    expect(process.listenerCount("SIGTERM")).toBe(before);
+  });
+
+  it("composes a desktop dispatcher only when repository paths are supplied", async () => {
+    const dataDirectory = mkdtempSync(join(tmpdir(), "autostack-control-plane-"));
+    temporaryDirectories.push(dataDirectory);
+
+    const runtime = await startLocal(dataDirectory, { repositoryPaths: { allowed: [] } });
+
+    expect(runtime.desktopDispatcher).toBeDefined();
+    await runtime.close();
+  });
+
+  it("closes the opened database when composition fails before the listener starts", async () => {
+    const dataDirectory = mkdtempSync(join(tmpdir(), "autostack-control-plane-"));
+    temporaryDirectories.push(dataDirectory);
+    const opened = openDatabase({ filePath: join(dataDirectory, "autostack.sqlite") });
+
+    await expect(
+      startLocal(dataDirectory, {
+        openDatabase: () => opened,
+        serve: vi.fn(() => {
+          throw new Error("listener refused");
+        }) as unknown as typeof serve
+      })
+    ).rejects.toThrow("listener refused");
+    expect(() => opened.connection.prepare("SELECT 1").get()).toThrow();
+  });
+});
