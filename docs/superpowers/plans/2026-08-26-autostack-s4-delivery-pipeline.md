@@ -226,13 +226,13 @@ git commit -m "feat(domain): intake work items with source delivery deduplicatio
 
 - Map `ModelRoutingError` by reading `.code` and `.retryable` **directly**, never re-deriving. Assert all five `MODEL_ROUTING_FAILURE_CODES`: `rate_limited` retryable; `capability_unavailable`, `route_disabled`, `budget_exceeded` not. **`provider_error` is in neither the deterministic nor the transient set, so it is legitimately retryable _or_ not — assert both states round-trip unchanged** rather than pinning one.
 - Map agent-session failures through the code the harness reports, normalized to `WorkflowFailureCodeSchema`. A code that does not survive normalization unchanged becomes `agent_error`, non-retryable — fail closed, never guess.
-- Map `InvalidHostResponseError`, `LeaseConflictError`, and `OptimisticConcurrencyError` (D11) to retryable; `StaleApprovalEvidenceError`, `IneligibleApproverError`, `ApprovalDecisionConflictError`, and `ZodError` to non-retryable.
+- Map `LeaseConflictError` and `OptimisticConcurrencyError` (D11) to retryable; `StaleApprovalEvidenceError`, `IneligibleApproverError`, `ApprovalDecisionConflictError`, `InvalidRunTransitionError`, and `ZodError` to non-retryable. **`InvalidHostResponseError` is deliberately absent** — it lives in `apps/control-plane`, which `packages/workflow` must not import. Host and transport failures reach the taxonomy already wrapped as a `ModelRoutingError` (typically `provider_error`) and classify through that branch.
 - Map an unrecognized value, including a thrown non-`Error`, to `{ code: "unknown_error", retryable: false }`.
 - Never place a message over 2000 characters or any unredacted text in `message`; every result parses under `WorkflowFailureSchema`.
 
 - [ ] **Step 2: Write the failing retry-policy test**
 
-`createStageRetryAt({ now, random })`: exponential base 1s doubling per attempt, capped at 60s; full jitter from the injected `random`; a `RetryableJobError` carrying `retryAfterMs` uses `max(serverDelay, backoff)` capped at 300s; the result is ISO-8601 and strictly after `now`. `shouldRetry(failure, attempt, maxAttempts)`: false when `retryable === false` regardless of attempts remaining; false at `attempt >= maxAttempts`; true otherwise.
+`createStageRetryAt({ random })` returns `retryAt(error, job, now: string)`: exponential base 1s doubling per attempt, capped at 60s; full jitter from the injected `random`; a `RetryableJobError` carrying `retryAfterMs` uses `max(serverDelay, backoff)` capped at 300s; the result is ISO-8601 and strictly after the **passed** `now`. **The factory takes no clock** — `LocalWorkflowExecutor` captures one timestamp per cycle and passes it as the third argument, so a factory-level clock would be a second source of truth for the same instant, agreeing under a fake clock in tests while drifting by the width of the cycle in production. Assert the schedule shifts with the passed timestamp, and that an unparseable one throws rather than scheduling from `NaN`. `shouldRetry(failure, attempt, maxAttempts)`: false when `retryable === false` regardless of attempts remaining; false at `attempt >= maxAttempts`; true otherwise.
 
 Run `pnpm --filter @autostack/workflow test -- stations/`. Expected failure: neither module exists.
 
@@ -729,7 +729,7 @@ git commit -m "feat(control-plane): serve run steer and cancel routes"
 
 - [ ] **Step 2: Wire `server.ts`**
 
-Call `registerPipelineStations` between `new HandlerRegistry({ sensitiveValues })` and the `LocalWorkflowExecutor` construction. Replace the placeholder `retryAt` with Task 2's `createStageRetryAt({ now, random })`. Append new cases to `apps/control-plane/test/server.test.ts` — **modify none** — asserting composition registers the stations and that the executor still starts, stops, and cleans up on every existing failure path.
+Call `registerPipelineStations` between `new HandlerRegistry({ sensitiveValues })` and the `LocalWorkflowExecutor` construction. Replace the placeholder `retryAt` with Task 2's `createStageRetryAt({ random })`, passed directly as the executor's `retryAt` so it receives the cycle timestamp as its third argument. Append new cases to `apps/control-plane/test/server.test.ts` — **modify none** — asserting composition registers the stations and that the executor still starts, stops, and cleans up on every existing failure path.
 
 - [ ] **Step 3: Verify and commit**
 
