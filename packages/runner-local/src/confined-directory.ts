@@ -19,7 +19,18 @@ export interface ConfinedDirectoryEntry {
   readonly identity: PathIdentity;
 }
 
-/** Takes a stable, no-follow snapshot of one already-pinned recovery directory. */
+/**
+ * Takes a stable, no-follow snapshot of one already-pinned recovery directory.
+ *
+ * Every identity comparison below is deliberately strict, link count included. This function's
+ * contract is that nothing moved while it looked: the double enumeration at the end rejects any
+ * change to the entry list outright, so tolerating link-count drift would admit exactly the
+ * mutations the double read exists to catch, only less cheaply. Callers pin immediately before
+ * calling (see DataPathPolicy.listDirectory) and the window is a handful of lstat calls, so no
+ * legitimate drift is expected inside it. Contrast the identity checks that tolerate drift --
+ * path-security.ts:createMissingRoot and PinnedDirectories.validateAllowingConcurrentEntries --
+ * which serve directories that independent brokers write to concurrently by design.
+ */
 export const readConfinedDirectory = async (
   directory: string,
   expected: PathIdentity,
@@ -101,6 +112,11 @@ export const readConfinedDirectory = async (
       const status = await lstat(resolve(directory, entry.name));
       if (entry.type === "directory") assertPrivateDirectory(status);
       else assertPrivateFileLinkCount(status, entry.identity.nlink as 1 | 2);
+      // Strict for both entry kinds, per this function's stable-snapshot contract. For a file
+      // the link count is a real hard-link control (asserted exactly, one line above). For a
+      // directory it additionally pins the child's own entry count, which is stricter than the
+      // contract strictly requires -- but the identity returned here becomes the caller's pin,
+      // so relaxing it would silently widen every pin this function hands out.
       if (!samePinnedIdentity(entry.identity, identityOf(status))) {
         throw new PathPolicyError(
           "path_identity_changed",

@@ -328,10 +328,11 @@ export const createMissingRoot = async (
     segments.length === 0 ? canonicalRoot : resolve(canonicalNearest, segments[0]!);
   await invokePathHook(() => hook?.({ directoryPath: firstTarget, parentPath: canonicalNearest }));
   // Link count is excluded exactly as it is at the in-loop parent re-check below: a directory's
-  // nlink tracks its subdirectory count, so any concurrent sibling creation moves it without the
-  // parent changing identity. Directories cannot be hard-linked, so nlink carries no attack signal
-  // here; inode replacement and symlink substitution stay covered by dev/ino, and ownership and
-  // mode drift by uid/mode.
+  // nlink tracks its entry count (on APFS, files as well as subdirectories -- see
+  // data-root-lock.ts:519), so any concurrent sibling creation moves it without the parent
+  // changing identity. Directories cannot be hard-linked, so nlink carries no attack signal here;
+  // inode replacement and symlink substitution stay covered by dev/ino, and ownership and mode
+  // drift by uid/mode.
   if (!sameIdentityExceptLinkCount(parentIdentity, identityOf(await lstat(canonicalNearest)))) {
     throw new PathPolicyError("path_identity_changed", "The state-root parent identity changed.");
   }

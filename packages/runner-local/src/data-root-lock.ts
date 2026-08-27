@@ -528,6 +528,17 @@ const scanGuardianLeases = async (policy: DataPathPolicy): Promise<void> => {
 
   const directoryAfter = await lstat(commandDirectory);
   assertPrivateDirectory(directoryAfter);
+  // Strict here, unlike the per-journal re-check above, and deliberately so. The scan runs
+  // inside the root lock's BEGIN EXCLUSIVE transaction (acquireDataRootLock opens it before
+  // calling this), and every producer of a `commands/<id>` entry is downstream of a root lock
+  // that was successfully held: WorktreeManager.create is the only caller of
+  // acquireDataRootLock, and the CommandRegistry recovery and CommandGuardian paths that call
+  // acquireCommandGuardianLease only exist once that manager has been constructed. A competing
+  // host is turned away with root_busy before it can reach them. Nothing this scan does moves
+  // this directory's link count either -- SQLite's sidecars land one level down, inside
+  // `commands/<id>`, which is why only that inner check tolerates drift. So any entry count
+  // change observed across this window is unaccounted for, and it is the only signal that
+  // catches an entry appearing after the directory stream above was snapshotted.
   if (!samePinnedIdentity(identityBefore, identityOf(directoryAfter)))
     throw failure("unsafe_state");
 };
@@ -631,7 +642,16 @@ export const assertCommandGuardianLeaseFilesystemIdentity = async (
     assertPrivateFile(leaseFileStatus);
     if (
       !sameIdentityExceptLinkCount(state.rootIdentity, identityOf(rootStatus)) ||
-      !samePinnedIdentity(state.commandDirectoryIdentity, identityOf(commandDirectoryStatus)) ||
+      // The lease database lives directly in this directory, so SQLite's own sidecars
+      // (hot rollback journal, WAL) appear and disappear inside it for the whole life of
+      // the lease. On APFS those file entries move the directory's link count -- the same
+      // rationale recorded at the journal re-check above (see line 519). Identity itself
+      // stays pinned by dev/ino/uid/mode, and the lease file below keeps its exact
+      // single-link hard-link proof.
+      !sameIdentityExceptLinkCount(
+        state.commandDirectoryIdentity,
+        identityOf(commandDirectoryStatus)
+      ) ||
       !samePinnedIdentity(state.leaseFileIdentity, identityOf(leaseFileStatus))
     ) {
       throw new TypeError();

@@ -340,12 +340,20 @@ export class EnvironmentRegistryPublications {
         }
         assertPrivateFileLinkCount(status, status.nlink);
       }
+      // Strict for both entry kinds, matching readConfinedDirectory: this listing is a
+      // stable snapshot, and the double enumeration above already rejects any entry-list
+      // change, so link-count drift is not tolerated here either. For files the count is a
+      // real hard-link control, asserted exactly just above.
       if (!samePinnedIdentity(expected, identityOf(status))) {
         throw new OwnedEnvironmentRegistryError("unsafe_state");
       }
     }
     const afterStatus = await lstat(directory);
     assertPrivateDirectory(afterStatus);
+    // `before` was captured at the top of this same call, so this closes a window spanning only
+    // the two enumerations and the per-entry re-checks. Nothing in that window writes into this
+    // directory, and the snapshot contract forbids entry drift across it, so the link count is
+    // kept in the comparison as the cheapest detector of an entry appearing after the last read.
     if (
       !samePinnedIdentity(before, identityOf(afterStatus)) ||
       (await realpath(directory)) !== directory

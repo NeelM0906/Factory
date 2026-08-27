@@ -13,7 +13,7 @@ import {
   symlink
 } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { spawn, type ChildProcess } from "node:child_process";
 import { DatabaseSync } from "node:sqlite";
 
@@ -26,9 +26,11 @@ import {
   assertLiveCommandGuardianLease,
   CommandGuardianLease,
   DataRootLockError,
+  assertCommandGuardianLeaseFilesystemIdentity,
   guardianLeaseRelativePath,
   type DataRootLock
 } from "../src/data-root-lock.js";
+import { DataPathPolicy } from "../src/path-policy.js";
 
 const COMMAND_ID = "cmd_11111111-1111-4111-8111-111111111111" as CommandId;
 const roots: string[] = [];
@@ -307,6 +309,30 @@ describe("data-root ownership", () => {
 });
 
 describe("guardian lease preflight", () => {
+  it("admits SQLite journal churn beside a live guardian lease file", async () => {
+    const dataRoot = await temporaryRoot();
+    const guardian = await acquireCommandGuardianLease(dataRoot, COMMAND_ID);
+    locks.push(guardian);
+    const policy = await DataPathPolicy.create(dataRoot);
+    const leasePath = join(policy.root, guardianLeaseRelativePath(COMMAND_ID));
+    const commandDirectory = dirname(leasePath);
+    // The live BEGIN EXCLUSIVE already put a hot rollback journal beside the database.
+    expect(await readdir(commandDirectory)).toContain("guardian-lease.sqlite3-journal");
+    const linksBefore = (await lstat(commandDirectory)).nlink;
+
+    // SQLite writes its sidecars beside the lease database; on APFS a file entry
+    // moves the containing directory's link count exactly as a subdirectory would.
+    await writeFile(`${leasePath}-wal`, "", { mode: 0o600 });
+    expect((await lstat(commandDirectory)).nlink).toBe(linksBefore + 1);
+
+    await expect(
+      assertCommandGuardianLeaseFilesystemIdentity(guardian, policy, COMMAND_ID)
+    ).resolves.toBeUndefined();
+
+    // The lease file itself keeps its exact single-link identity throughout.
+    expect((await lstat(leasePath)).nlink).toBe(1);
+  });
+
   it("authenticates only the exact live root-bound guardian lease", async () => {
     const dataRoot = await temporaryRoot();
     const otherRoot = await temporaryRoot();
