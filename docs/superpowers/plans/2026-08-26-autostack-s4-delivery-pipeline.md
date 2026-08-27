@@ -136,6 +136,14 @@ The agent-harness conformance suite (behavior 9) uses a suite-local normalizatio
 
 **D8 — Everything durable is redacted.** Handler results pass `normalizeSafeJson(result, sensitiveValues)` inside `HandlerRegistry.execute` before validation, but stations do not rely on that as their only defence: agent and command output reaching an event is reduced to digests and `SafeMetadataStringSchema` fields at the point of construction.
 
+**D9 — The approval-decision idempotency key is derived, not supplied (orchestrator ruling, 2026-08-26, binding cross-stream).** The decision route computes its own key as `` `${approvalId}:${decision}:${evidenceDigest}` `` so a double-submit of the same decision replays instead of minting a second decision. S6's client and mock are built against exactly this rule.
+
+- **It fits the existing schemas with no shaping needed.** `apr_` + a 36-character UUID (40) + `:` (1) + `approved`\|`rejected` (8) + `:` (1) + a 64-character hex digest (64) = **114 characters**, inside the store's `IdempotencySchema` `max(200)` (`persistence.ts:82`), inside `IdempotencyKeySchema`'s `max(240)`, and inside the 200-character header ceiling `app.ts` already applies on `/v1/runs`. Scope is `api:approval-decision:${workspaceId}`, matching `RunService`'s `api:create-run:${workspaceId}` convention.
+- **The server owns the guarantee.** The route derives the key rather than reading it from the request, so the replay property holds for every client — S6, the CLI, and a Slack interactivity payload alike — not only for clients that remember to send the right header. The route therefore requires no `Idempotency-Key` header and never returns `missing_idempotency_key`; a client-supplied header is ignored. _(Confirm with the orchestrator whether S6's client sends the derived value as a header or omits it. Ignoring is harmless either way, but if S6 expects a 400 on a mismatched header, say so and this becomes a validation instead.)_
+- **A different decision on the same approval derives a different key**, so it does not replay — it reaches `decideApproval` and raises `ApprovalDecisionConflictError` → 409. The guarantee is "same decision replays", never "any second decision is swallowed".
+- **A stale `evidenceDigest` also derives a different key**, but `decideApproval` raises `StaleApprovalEvidenceError` before any commit, so no idempotency record is ever written for a rejected digest and a later correct submission is unaffected.
+- **Steer and cancel keep per-call random client-supplied keys** and keep the existing `missing_idempotency_key` header requirement. Their semantics are "this call", not "this decision".
+
 ---
 
 ## Task 1: WorkItem intake with source deduplication
@@ -410,8 +418,7 @@ git commit -m "feat(workflow): plan against an inspected repository and a digest
 - An `approved` plan decision emits `approval.decided`, a `PlanApprovalEvidence` envelope whose `approvedEvidenceDigest` equals the recorded `PlanEvidence.evidenceDigest`, an `environment.authorization_recorded` event whose `approvalEvidenceDigest` equals `digestExecutionScope(scope)`, transitions the run to `provisioning`, and enqueues one `pipeline.implement` job with `maxAttempts: PIPELINE_REWORK_MAX_ATTEMPTS`.
 - A `rejected` decision transitions the run back to `planning` (the declared transition `awaiting_plan_approval → planning`) and enqueues nothing.
 - A decision whose `evidenceDigest` does not match raises `StaleApprovalEvidenceError` → HTTP 409, and enqueues nothing.
-- Re-deciding identically is idempotent and returns `replayed: true` without a second job.
-- Re-deciding differently raises `ApprovalDecisionConflictError`.
+- **Idempotency follows D9.** The derived key is `` `${approvalId}:${decision}:${evidenceDigest}` `` under scope `api:approval-decision:${workspaceId}`. Assert the derivation explicitly (including that it parses under the store's `IdempotencySchema`), then assert the three behaviours it produces: re-deciding **identically** replays — `replayed: true`, **the original `decidedAt`, not a recomputed timestamp**, and no second successor job in the store; re-deciding **differently** derives a different key, so it does not replay and raises `ApprovalDecisionConflictError`; a **stale `evidenceDigest`** derives a different key but raises `StaleApprovalEvidenceError` before any commit, so no idempotency record is written and a subsequent correct submission still succeeds.
 - **Staleness (§14.2, the headline negative test):** after approval, mutate the plan document materially and re-derive; assert `digestPlanDocument` differs from the recorded `planDigest`, that the implement station refuses to proceed, and that a new approval is requested. Repeat independently for a changed target repository, a changed branch, and a changed base commit via `digestExecutionScope`.
 
 - [ ] **Step 2: Write the failing command-authorization test (E5 option (a) only)**
@@ -425,7 +432,7 @@ git commit -m "feat(workflow): plan against an inspected repository and a digest
 
 - [ ] **Step 3: Implement, then wire `ApprovalService`**
 
-`ApprovalService` in the control plane: `list(query)` folding `approval.requested`/`approval.decided` into `ApprovalSummarySchema` rows with cursor paging over `globalSequence` (E6), and `decide(runId, approvalId, request, idempotencyKey)` committing the domain decision plus its successor job in one `store.commit`.
+`ApprovalService` in the control plane: `list(query)` folding `approval.requested`/`approval.decided` into `ApprovalSummarySchema` rows with cursor paging over `globalSequence` (E6), and `decide(runId, approvalId, request)` committing the domain decision plus its successor job in one `store.commit`. Note the signature takes **no** `idempotencyKey` parameter — per D9 the service derives it from `approvalId`, `request.decision`, and `request.evidenceDigest`, so no caller can weaken the replay guarantee. On a replay it returns the original `decidedAt` read from `readCommitResult`'s stored `approval.decided` event, never `now()`.
 
 - [ ] **Step 4: Verify and commit**
 
@@ -600,17 +607,19 @@ git commit -m "feat(workflow): publish an approved draft pull request idempotent
 
 Four routes, built against the existing schemas as-is:
 
-| Method | Path                                             | Request                                             | Response                         |
-| ------ | ------------------------------------------------ | --------------------------------------------------- | -------------------------------- |
-| GET    | `/v1/approvals?status=pending`                   | `ListApprovalsQuerySchema`                          | `ListApprovalsResponseSchema`    |
-| POST   | `/v1/runs/:runId/approvals/:approvalId/decision` | `ApprovalDecisionRequestSchema` + `Idempotency-Key` | `ApprovalDecisionResponseSchema` |
-| POST   | `/v1/runs/:runId/steer`                          | `SteerRunRequestSchema` + `Idempotency-Key`         | `SteerRunResponseSchema`         |
-| POST   | `/v1/runs/:runId/cancel`                         | `CancelRunRequestSchema` + `Idempotency-Key`        | `CancelRunResponseSchema`        |
+| Method | Path                                             | Request                                           | Response                         |
+| ------ | ------------------------------------------------ | ------------------------------------------------- | -------------------------------- |
+| GET    | `/v1/approvals?status=pending`                   | `ListApprovalsQuerySchema`                        | `ListApprovalsResponseSchema`    |
+| POST   | `/v1/runs/:runId/approvals/:approvalId/decision` | `ApprovalDecisionRequestSchema` (key derived, D9) | `ApprovalDecisionResponseSchema` |
+| POST   | `/v1/runs/:runId/steer`                          | `SteerRunRequestSchema` + `Idempotency-Key`       | `SteerRunResponseSchema`         |
+| POST   | `/v1/runs/:runId/cancel`                         | `CancelRunRequestSchema` + `Idempotency-Key`      | `CancelRunResponseSchema`        |
 
 Assert, following the conventions the 190 existing tests pin:
 
 - All four require authentication; none is reachable when ingress is closed; `/v1/health` stays reachable.
-- Missing/oversized `Idempotency-Key` → 400 `missing_idempotency_key`; body over `MAX_REQUEST_BYTES` → 413 before JSON parsing; malformed body → 400 `invalid_request`; unknown run → 404 `run_not_found`.
+- Body over `MAX_REQUEST_BYTES` → 413 before JSON parsing; malformed body → 400 `invalid_request`; unknown run → 404 `run_not_found`.
+- **Idempotency headers split by route (D9).** Steer and cancel keep the existing requirement: missing or oversized `Idempotency-Key` → 400 `missing_idempotency_key`. The **decision route derives its own key and requires no header** — assert that a request with **no** `Idempotency-Key` succeeds (it must never return `missing_idempotency_key`), and that a request carrying an unrelated header value behaves identically to one carrying none, proving the header cannot weaken the replay guarantee.
+- **Decision replay end to end (D9):** POST the same decision twice over HTTP and assert the second response is `replayed: true` with a `decidedAt` **byte-identical to the first**, that exactly one `approval.decided` event exists in the run stream, and that exactly one successor job was enqueued. Then POST the opposite decision and assert 409 `idempotency_conflict`.
 - `StaleApprovalEvidenceError` → 409 `version_conflict`; `ApprovalDecisionConflictError` → 409 `idempotency_conflict`; `IneligibleApproverError` → 403 (mapped to `unauthorized`, since the `ApiErrorSchema` code enum is closed and the audit forbids widening it — call this out if the orchestrator wants a distinct code).
 - Errors never contain a stack trace or the bearer token.
 - The list defaults to `status: "pending"`, honours `limit`, and pages: `nextCursor` fed back as `cursor` returns the next window with no overlap and no gap. Assert across 60 approvals with `limit=25`.
@@ -738,6 +747,7 @@ git commit -m "test(workflow): prove the delivery pipeline end to end across res
 | Clarification round trip                                      | Task 4 Steps 1–2                                         |
 | Source dedup by delivery identifier                           | Task 1; Task 13 Step 5                                   |
 | Stable publish idempotency key, no duplicate PR               | Task 10 Step 2; Task 13 Step 5                           |
+| Derived approval-decision idempotency key (D9, cross-stream)  | Task 6 Step 1 (unit); Task 11 Step 1 (HTTP)              |
 | Skipped required checks are failures                          | Task 8 Step 1                                            |
 | Deterministic failures never auto-retry; max 3 agent attempts | Task 2; Tasks 7–9                                        |
 | Coverage ≥80% on every owned package                          | Task 13 Step 6                                           |
