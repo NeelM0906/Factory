@@ -76,6 +76,19 @@ export interface AgentHarnessConformanceSubject {
     request: AgentPermissionRequest,
     selectedOptionId: string
   ): AgentPermissionResponse;
+  /**
+   * Resolves once the adapter has had every opportunity to deliver a frame it already holds.
+   *
+   * The suite judges a session "paused" by observing that an outstanding pull has not settled. That
+   * judgement is only sound if the adapter's transport has been given time to run: an in-process
+   * fake resolves its waiters on the microtask queue, while a CLI adapter delivers each frame on a
+   * macrotask. A fixture whose transport needs more than a microtask drain must implement this and
+   * resolve only after its own delivery mechanism has quiesced, or a session that is merely slow
+   * will be mistaken for one that is waiting on the consumer.
+   *
+   * Omit it to accept the in-process default (a bounded microtask drain).
+   */
+  quiesce?(): Promise<void>;
   /** Releases the subject's resources. Must be idempotent. */
   dispose(): Promise<void>;
 }
@@ -84,9 +97,15 @@ export interface AgentHarnessConformanceSubject {
  * Produces fresh subjects. Each call returns an unstarted harness with its own session identity, so
  * one behaviour never observes another's state.
  *
- * The full-capability descriptor must declare `resume`, `steering`, `permissions`, and
- * `structuredPlans`; the minimal one must declare none of them. The suite relies on that split to
- * tell a genuinely unsupported operation from a broken one.
+ * The full-capability descriptor must declare `resume`, `steering`, and `permissions`; the minimal
+ * one must declare all three false. The suite relies on that split to tell a genuinely unsupported
+ * operation from a broken one.
+ *
+ * `structuredPlans` is deliberately unconstrained in both. A real adapter ships one fixed
+ * descriptor, so requiring the full subject to declare a capability the suite never exercises would
+ * lock out an otherwise conformant harness that simply has no structured plans to emit. The suite
+ * holds it to a one-directional honesty rule instead: a subject that declares `structuredPlans:
+ * false` must never emit a `plan` event.
  */
 export interface AgentHarnessConformanceFixture {
   createFullCapabilityHarness(

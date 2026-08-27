@@ -12,6 +12,7 @@ import {
   isTerminalEvent,
   iterate,
   pullUntilPaused,
+  quiesceOf,
   requireResponder,
   take
 } from "./agent-harness-conformance-support.js";
@@ -33,7 +34,7 @@ export const describeAgentHarnessCapabilityConformance = (
       const subject = await fixture.createFullCapabilityHarness("requests_permission");
       try {
         const iterator = iterate(subject.harness.start(subject.invocation));
-        const paused = await pullUntilPaused(iterator);
+        const paused = await pullUntilPaused(iterator, quiesceOf(subject));
 
         const requested = paused.events.at(-1);
         expect(requested?.type).toBe("permission_requested");
@@ -59,14 +60,14 @@ export const describeAgentHarnessCapabilityConformance = (
             )
           )
         ).rejects.toBeDefined();
-        expect(await isPending(paused.pending)).toBe(true);
+        expect(await isPending(paused.pending, quiesceOf(subject))).toBe(true);
 
         await expect(
           respond(subject.permissionResponse(pending, allow.optionId))
         ).resolves.toBeUndefined();
 
         const events = await drainPaused(paused, iterator);
-        expectSessionStream(events, { sessionId: subject.invocation.agentSessionId, after: 0 });
+        expectSessionStream(events, subject);
         expect(events.find((event) => event.type === "permission_resolved")).toMatchObject({
           permissionRef: pending.permissionRef,
           selectedOptionId: allow.optionId
@@ -87,13 +88,15 @@ export const describeAgentHarnessCapabilityConformance = (
       const minimal = await fixture.createMinimalCapabilityHarness("completes");
       try {
         const iterator = iterate(full.harness.start(full.invocation));
-        const paused = await pullUntilPaused(iterator);
+        const paused = await pullUntilPaused(iterator, quiesceOf(full));
+        // A pause that captured nothing would make the "not yet mentioned" check vacuous.
+        expect(paused.events.length).toBeGreaterThan(0);
         expect(paused.events.every((event) => !mentions(event, full.steer.instruction))).toBe(true);
 
         await expect(full.harness.steer(full.steer)).resolves.toBeUndefined();
 
         const steered = await drainPaused(paused, iterator);
-        expectSessionStream(steered, { sessionId: full.invocation.agentSessionId, after: 0 });
+        expectSessionStream(steered, full);
         expect(steered.some((event) => mentions(event, full.steer.instruction))).toBe(true);
 
         // The undeclared capability is refused, and refusing it leaves the session intact.
@@ -101,7 +104,7 @@ export const describeAgentHarnessCapabilityConformance = (
         const observed = await take(minimalIterator, 1);
         await expect(minimal.harness.steer(minimal.steer)).rejects.toBeInstanceOf(Error);
         const events = await drain(minimalIterator, observed);
-        expectSessionStream(events, { sessionId: minimal.invocation.agentSessionId, after: 0 });
+        expectSessionStream(events, minimal);
         expect(events.filter(isTerminalEvent)).toHaveLength(1);
       } finally {
         await full.dispose();
@@ -123,10 +126,7 @@ export const describeAgentHarnessCapabilityConformance = (
         expect(request.sessionId).toBe(full.invocation.agentSessionId);
         const resumed = await collect(full.harness.resume(request));
         expect(resumed.length).toBeGreaterThan(0);
-        expectSessionStream(resumed, {
-          sessionId: full.invocation.agentSessionId,
-          after: lastSequence
-        });
+        expectSessionStream(resumed, full, lastSequence);
         expect(resumed.filter(isTerminalEvent)).toHaveLength(1);
 
         const minimalIterator = iterate(minimal.harness.start(minimal.invocation));

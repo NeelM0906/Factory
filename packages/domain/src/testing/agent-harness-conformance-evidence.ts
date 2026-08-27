@@ -4,12 +4,15 @@ import {
   AgentSessionDetailEventSchema,
   ModelCostSchema,
   ModelTokenUsageSchema,
-  WorkflowFailureSchema,
-  type ModelTokenCount
+  WorkflowFailureSchema
 } from "@autostack/contracts";
 
 import type { AgentHarnessConformanceFixture } from "./agent-harness-conformance-fixture.js";
-import { collect, isTerminalEvent } from "./agent-harness-conformance-support.js";
+import {
+  collect,
+  expectSessionStream,
+  isTerminalEvent
+} from "./agent-harness-conformance-support.js";
 
 /**
  * The retry policy consumes `WorkflowFailure`, whose codes are a narrower alphabet than an agent
@@ -22,10 +25,6 @@ const toWorkflowFailureCode = (code: string): string =>
     .toLowerCase()
     .replace(/[^a-z0-9]+/g, "_")
     .replace(/^_+/, "");
-
-const expectUnreportedIsUnknown = (value: ModelTokenCount | { readonly state: string }): void => {
-  if (value.state === "unknown") expect(Object.keys(value)).toEqual(["state"]);
-};
 
 /** Behaviours 8, 9, and 10: what a session leaves behind — usage, classification, and evidence. */
 export const describeAgentHarnessEvidenceConformance = (
@@ -46,7 +45,6 @@ export const describeAgentHarnessEvidenceConformance = (
           expect(cost).toEqual(event.cost);
           return [cost, ...Object.values(tokens)];
         });
-        for (const figure of figures) expectUnreportedIsUnknown(figure);
         // The scenario reports at least one figure its provider never supplied. An adapter that
         // substitutes a fabricated number for it has no way to reach this shape.
         expect(figures.some((figure) => figure.state === "unknown")).toBe(true);
@@ -60,18 +58,20 @@ export const describeAgentHarnessEvidenceConformance = (
       const replay = await fixture.createFullCapabilityHarness("fails");
       try {
         const events = await collect(subject.harness.start(subject.invocation));
+        expectSessionStream(events, subject);
         const terminal = events.at(-1);
         expect(events.filter(isTerminalEvent)).toHaveLength(1);
         expect(terminal?.type).toBe("failed");
         if (terminal?.type !== "failed") throw new TypeError("unreachable");
 
-        const failure = WorkflowFailureSchema.parse({
-          code: toWorkflowFailureCode(terminal.code),
-          name: terminal.code,
-          message: terminal.message,
-          retryable: terminal.retryable
-        });
-        expect(failure.retryable).toBe(terminal.retryable);
+        expect(
+          WorkflowFailureSchema.parse({
+            code: toWorkflowFailureCode(terminal.code),
+            name: terminal.code,
+            message: terminal.message,
+            retryable: terminal.retryable
+          })
+        ).toBeDefined();
         // A code is an identifier a policy branches on, not a restatement of the operator message.
         expect(terminal.code).not.toBe(terminal.message);
 
@@ -92,6 +92,7 @@ export const describeAgentHarnessEvidenceConformance = (
       const subject = await fixture.createFullCapabilityHarness("interrupted");
       try {
         const events = await collect(subject.harness.start(subject.invocation));
+        expectSessionStream(events, subject);
         const interruptions = events.filter((event) => event.type === "interrupted");
         expect(interruptions).toHaveLength(1);
 

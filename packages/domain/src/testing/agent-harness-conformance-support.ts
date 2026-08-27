@@ -3,7 +3,6 @@ import { expect } from "vitest";
 import {
   AgentSessionStreamEventSchema,
   type AgentPermissionResponderPort,
-  type AgentSessionId,
   type AgentSessionStreamEvent
 } from "@autostack/contracts";
 
@@ -58,23 +57,42 @@ export const take = async (
   return events;
 };
 
+export type Quiesce = () => Promise<void>;
+
 /**
- * Whether `promise` is still unsettled after the microtask queue has been drained a bounded number
- * of turns. No wall-clock timer is involved, so the answer is the same under any load.
+ * The in-process default: drain the microtask queue a bounded number of turns. Enough for a fake
+ * that resolves its waiters synchronously, and never enough for a transport that delivers frames on
+ * a macrotask — which is why a fixture with such a transport must supply its own.
  */
-export const isPending = async (promise: Promise<unknown>): Promise<boolean> => {
-  const blocked = Symbol("blocked");
-  const settled: unknown = await Promise.race([
-    promise.then(
-      () => undefined,
-      () => undefined
-    ),
-    (async () => {
-      for (let turn = 0; turn < SETTLING_TURNS; turn += 1) await Promise.resolve();
-      return blocked;
-    })()
-  ]);
-  return settled === blocked;
+export const defaultQuiesce: Quiesce = async () => {
+  for (let turn = 0; turn < SETTLING_TURNS; turn += 1) await Promise.resolve();
+};
+
+export const quiesceOf = (subject: AgentHarnessConformanceSubject): Quiesce => {
+  const quiesce = subject.quiesce;
+  return quiesce === undefined ? defaultQuiesce : () => quiesce.call(subject);
+};
+
+/**
+ * Whether `promise` is still unsettled once the adapter has quiesced.
+ *
+ * Observing first and quiescing second is deliberate: racing the two would make the answer depend
+ * on which of them the runtime happened to schedule first, whereas a settlement that lands at any
+ * point during the quiesce is recorded before the check reads it.
+ */
+export const isPending = async (promise: Promise<unknown>, quiesce: Quiesce): Promise<boolean> => {
+  let settled = false;
+  const observed = promise.then(
+    () => {
+      settled = true;
+    },
+    () => {
+      settled = true;
+    }
+  );
+  void observed;
+  await quiesce();
+  return !settled;
 };
 
 export interface SettledOutcome {
@@ -99,12 +117,21 @@ export interface PausedSession {
   readonly pending: Promise<IteratorResult<AgentSessionStreamEvent>>;
 }
 
-/** Pulls events until the session stops producing them, leaving the blocked pull outstanding. */
-export const pullUntilPaused = async (iterator: AgentSessionIterator): Promise<PausedSession> => {
+/**
+ * Pulls events until the session stops producing them, leaving the blocked pull outstanding.
+ *
+ * Event-driven rather than time-boxed: each pull is judged only once the adapter has quiesced, so a
+ * transport that needs a macrotask per frame is followed to its real stopping point instead of
+ * being declared paused at the first frame it has not delivered yet.
+ */
+export const pullUntilPaused = async (
+  iterator: AgentSessionIterator,
+  quiesce: Quiesce
+): Promise<PausedSession> => {
   const events: AgentSessionStreamEvent[] = [];
   while (events.length < MAX_EVENTS_BEFORE_PAUSE) {
     const pending = iterator.next();
-    if (await isPending(pending)) return { events, pending };
+    if (await isPending(pending, quiesce)) return { events, pending };
     const next = await pending;
     if (next.done === true) {
       throw new TypeError("An agent session ended instead of waiting for the consumer.");
@@ -124,30 +151,34 @@ export const drainPaused = async (
   return drain(iterator, [...paused.events, next.value]);
 };
 
-export interface SessionStreamExpectation {
-  readonly sessionId: AgentSessionId;
-  /** Exclusive lower bound on the first sequence number; `0` for a freshly started session. */
-  readonly after: number;
-}
-
 /**
  * The invariants every conformant stream holds, whatever the adapter: contract-valid events, one
- * session identity, strictly increasing sequence numbers, and nothing after a lifecycle terminal.
+ * session identity, strictly increasing positive sequence numbers, nothing after a lifecycle
+ * terminal, and no capability the descriptor denies.
+ *
+ * `after` is the exclusive lower bound on the first sequence number — `0` for a freshly started
+ * session, the last observed sequence for a resumed one. The contract requires only a positive
+ * integer, so no particular starting value is pinned.
  */
 export const expectSessionStream = (
   events: readonly AgentSessionStreamEvent[],
-  expectation: SessionStreamExpectation
+  subject: AgentHarnessConformanceSubject,
+  after = 0
 ): void => {
-  let previous = expectation.after;
+  let previous = after;
   for (const event of events) {
     expect(AgentSessionStreamEventSchema.parse(event)).toEqual(event);
-    expect(event.sessionId).toBe(expectation.sessionId);
+    expect(event.sessionId).toBe(subject.invocation.agentSessionId);
     expect(event.sequence).toBeGreaterThan(previous);
     previous = event.sequence;
   }
   const terminals = events.filter(isTerminalEvent);
   expect(terminals.length).toBeLessThanOrEqual(1);
   if (terminals.length === 1) expect(events.at(-1)).toBe(terminals[0]);
+  // One-directional honesty: a denied capability may not appear, but a declared one need not.
+  if (!subject.harness.descriptor.capabilities.structuredPlans) {
+    expect(events.filter((event) => event.type === "plan")).toEqual([]);
+  }
 };
 
 /** The responder a subject must expose, or a failure naming the honesty rule it broke. */

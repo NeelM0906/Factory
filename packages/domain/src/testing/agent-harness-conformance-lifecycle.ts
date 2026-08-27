@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { AgentHarnessDescriptorSchema } from "@autostack/contracts";
+import { AgentHarnessDescriptorSchema, AgentPermissionRequestSchema } from "@autostack/contracts";
 
 import type { AgentHarnessConformanceFixture } from "./agent-harness-conformance-fixture.js";
 import {
@@ -10,10 +10,16 @@ import {
   isTerminalEvent,
   iterate,
   pullUntilPaused,
+  quiesceOf,
+  requireResponder,
   settle
 } from "./agent-harness-conformance-support.js";
 
-/** Behaviours 1, 2, 3, and 7: what a session is, whatever the adapter behind it. */
+/**
+ * Behaviours 1, 2, 3, and 7: what a session is, whatever the adapter behind it. Behaviour 2's
+ * disposed-session rule is split across two cases, because only a session blocked on a real
+ * permission request can produce a decision to replay after disposal.
+ */
 export const describeAgentHarnessLifecycleConformance = (
   fixture: AgentHarnessConformanceFixture
 ): void => {
@@ -31,18 +37,13 @@ export const describeAgentHarnessLifecycleConformance = (
             descriptor.capabilities.permissions
           );
         }
-        expect(full.harness.descriptor.capabilities).toEqual({
-          resume: true,
-          steering: true,
-          permissions: true,
-          structuredPlans: true
-        });
-        expect(minimal.harness.descriptor.capabilities).toEqual({
-          resume: false,
-          steering: false,
-          permissions: false,
-          structuredPlans: false
-        });
+        // Only the three capabilities the suite exercises are pinned. `structuredPlans` is left
+        // free because a real adapter ships one descriptor and may honestly lack it; its honesty
+        // is checked one-directionally against every stream the suite collects instead.
+        for (const capability of ["resume", "steering", "permissions"] as const) {
+          expect(full.harness.descriptor.capabilities[capability]).toBe(true);
+          expect(minimal.harness.descriptor.capabilities[capability]).toBe(false);
+        }
       } finally {
         await full.dispose();
         await minimal.dispose();
@@ -51,21 +52,47 @@ export const describeAgentHarnessLifecycleConformance = (
 
     it("completes once, disposes idempotently, and refuses a disposed session", async () => {
       const subject = await fixture.createFullCapabilityHarness("completes");
-      const events = await collect(subject.harness.start(subject.invocation));
+      try {
+        const events = await collect(subject.harness.start(subject.invocation));
 
-      const terminals = events.filter(isTerminalEvent);
-      expect(terminals).toHaveLength(1);
-      expect(terminals[0]?.type).toBe("completed");
-      expect(events.at(-1)).toBe(terminals[0]);
+        const terminals = events.filter(isTerminalEvent);
+        expect(terminals).toHaveLength(1);
+        expect(terminals[0]?.type).toBe("completed");
+        expect(events.at(-1)).toBe(terminals[0]);
 
-      await expect(subject.dispose()).resolves.toBeUndefined();
-      await expect(subject.dispose()).resolves.toBeUndefined();
+        await expect(subject.dispose()).resolves.toBeUndefined();
+        await expect(subject.dispose()).resolves.toBeUndefined();
 
-      await expect(subject.harness.steer(subject.steer)).rejects.toBeDefined();
-      await expect(subject.harness.cancel(subject.cancel)).rejects.toBeDefined();
-      await expect(
-        collect(subject.harness.resume(subject.resumeRequest(events)))
-      ).rejects.toBeDefined();
+        await expect(subject.harness.steer(subject.steer)).rejects.toBeDefined();
+        await expect(subject.harness.cancel(subject.cancel)).rejects.toBeDefined();
+        await expect(
+          collect(subject.harness.resume(subject.resumeRequest(events)))
+        ).rejects.toBeDefined();
+      } finally {
+        await subject.dispose();
+      }
+    });
+
+    it("refuses a permission decision that arrives after the session is disposed", async () => {
+      // A separate subject, because only a session blocked on a real request can hand the suite a
+      // decidable permission — the suite never mints one itself.
+      const subject = await fixture.createFullCapabilityHarness("requests_permission");
+      try {
+        const iterator = iterate(subject.harness.start(subject.invocation));
+        const paused = await pullUntilPaused(iterator, quiesceOf(subject));
+        expect(paused.events.at(-1)?.type).toBe("permission_requested");
+        const pending = AgentPermissionRequestSchema.parse(await subject.pendingPermission());
+        const option = pending.options[0];
+        if (option === undefined) throw new TypeError("A permission request must offer an option.");
+
+        await subject.dispose();
+
+        await expect(
+          requireResponder(subject)(subject.permissionResponse(pending, option.optionId))
+        ).rejects.toBeDefined();
+      } finally {
+        await subject.dispose();
+      }
     });
 
     it("emits only contract-valid events in one strictly increasing sequence space", async () => {
@@ -74,8 +101,7 @@ export const describeAgentHarnessLifecycleConformance = (
         const events = await collect(subject.harness.start(subject.invocation));
 
         expect(events.length).toBeGreaterThan(1);
-        expect(events[0]?.sequence).toBe(1);
-        expectSessionStream(events, { sessionId: subject.invocation.agentSessionId, after: 0 });
+        expectSessionStream(events, subject);
         // expectSessionStream pins the terminal to the end of the stream; assert the session
         // actually reached one, so an empty or truncated stream cannot pass vacuously.
         expect(events.filter(isTerminalEvent)).toHaveLength(1);
@@ -88,12 +114,13 @@ export const describeAgentHarnessLifecycleConformance = (
       const subject = await fixture.createFullCapabilityHarness("pauses");
       try {
         const iterator = iterate(subject.harness.start(subject.invocation));
-        const paused = await pullUntilPaused(iterator);
+        const paused = await pullUntilPaused(iterator, quiesceOf(subject));
+        expect(paused.events.length).toBeGreaterThan(0);
 
         await expect(subject.harness.cancel(subject.cancel)).resolves.toBeUndefined();
 
         const events = await drainPaused(paused, iterator);
-        expectSessionStream(events, { sessionId: subject.invocation.agentSessionId, after: 0 });
+        expectSessionStream(events, subject);
         expect(events.filter(isTerminalEvent)).toHaveLength(1);
         expect(events.at(-1)?.type).toBe("cancelled");
         expect(events.some((event) => event.type === "completed")).toBe(false);
