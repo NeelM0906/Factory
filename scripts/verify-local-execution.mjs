@@ -84,7 +84,10 @@ let application;
 try {
   application = await electron.launch({
     executablePath: manifest.electronExecutable,
-    args: [verifierEntry],
+    // The verifier entry refuses to start unless Electron already resolved `userData` to the
+    // scenario profile, so the switch has to be provisioned here rather than corrected after
+    // startup. This matches how apps/desktop/e2e/local-execution.spec.ts launches the same entry.
+    args: [`--user-data-dir=${scenario.userData}`, verifierEntry],
     env: {
       PATH: "/usr/bin:/bin:/usr/sbin:/sbin",
       HOME: process.env.HOME ?? dirname(scenario.root),
