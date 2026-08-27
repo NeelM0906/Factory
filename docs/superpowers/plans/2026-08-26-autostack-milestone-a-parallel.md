@@ -71,6 +71,7 @@ Wave 2 (serial-ish, 2 streams then 1)
 **Owner:** one Opus subagent. **Duration target:** small — the ports already exist; this is gap-filling, not authoring.
 
 **Files:**
+
 - Modify (append-only): `packages/contracts/src/agent.ts`, `model.ts`, `pipeline.ts`, `integration.ts`, `index.ts`
 - Create: `packages/domain/src/testing/fake-agent-harness.ts`, `packages/domain/src/testing/fake-model-router.ts`, `packages/domain/src/testing/fake-delivery-integration.ts`
 - Create: `packages/contracts/src/conformance/agent-harness-conformance.ts` (exported suite factory, same pattern as the existing runner conformance suite in `packages/domain/test/runner-provider-conformance.test.ts`)
@@ -96,6 +97,7 @@ Wave 2 (serial-ish, 2 streams then 1)
 **Produces:** `createAgentRuntime(registry)` — harness registry keyed by `AgentHarnessKind` with installed/authenticated status probing; `createNativeHarness(router: ModelRouterPort)` implementing `AgentHarnessPort` for the classifier/planner/reviewer roles with structured-output prompts and AutoStack tool access.
 
 **Scope highlights:**
+
 - Session supervision: normalized event stream with sequence numbers, durable interruption marking on process loss (spec §15), bounded cancellation.
 - Native agent roles: triage classifier (task type/priority/actionability/duplicates), planner (plan with acceptance criteria, risks, verification commands, permission/secret needs, deterministic evidence digest input), reviewer (findings with severity/location/evidence, pass/fail verdict) — each as a role configuration of one native harness, prompts stored as versioned artifacts (spec §16.2).
 - All model calls through `ModelRouterPort` — no direct SDK provider wiring in this package (that is S3's job); tests use the Wave 0 fake router plus recorded provider transcript fixtures.
@@ -110,6 +112,7 @@ Wave 2 (serial-ish, 2 streams then 1)
 **Produces:** three `AgentHarnessPort` implementations, each with an `isInstalled()`/`isAuthenticated()` probe and a fixture-driven test double of its provider protocol.
 
 **Scope highlights:**
+
 - Child processes supervised through the host-daemon boundary, never the renderer (spec §9.2); reuse of the user's existing CLI authentication; no credential copying.
 - Protocol mapping from recorded transcript fixtures: Claude Code stream-json events, Codex CLI protocol, ACP JSON-RPC over stdio with capability negotiation (`initialize`, `session/new`, `session/prompt`, permission requests, cancellation).
 - ACP launch config as executable+args only; editing it is a privileged operation (spec §9.3).
@@ -134,6 +137,7 @@ Wave 2 (serial-ish, 2 streams then 1)
 **Produces:** registered workflow handlers `triage`, `plan`, `implement`, `verify`, `review`, `publish` in the (currently empty) handler registry; control-plane routes `POST /v1/runs/:runId/approvals/:approvalId/decision`, `GET /v1/approvals?status=pending`, `POST /v1/runs/:runId/steer`, `POST /v1/runs/:runId/cancel`; a `WorkItem` intake use-case with source deduplication by delivery identifier.
 
 **Scope highlights:**
+
 - Each station consumes ports only. Implement provisions via the existing local `RunnerProvider` worktree flow; verify executes plan-named commands through the existing command executor with exact evidence retention; review runs an isolated session (separate harness session, no implementer state) and routes failure back to implement with bounded attempts (max 3, spec §8.3).
 - Plan approval and publish approval reuse the existing evidence-digest + staleness machinery; material change re-requests approval (spec §14.2).
 - Retry taxonomy: transient → exponential backoff with jitter; deterministic/policy failures → no auto-retry. Publish uses a stable idempotency key.
@@ -199,14 +203,14 @@ Two streams in parallel, then a serial acceptance run.
 
 ## Dependency ledger
 
-| Blocked item | Blocks on | Unblocking artifact |
-|---|---|---|
-| All Wave 1 | Wave 0 | merged fakes + conformance suite |
-| S2 conformance runs | Wave 0 | suite factory (not S1) |
-| S4 pipeline | nothing in Wave 1 | uses Wave 0 fakes |
-| S6 approval inbox against real API | S4 merge | until then: mock server from contracts |
-| I1 composition | all of S1–S6 merged | — |
-| Acceptance criteria 2–4 live | user wiring session | GitHub App + Slack app registration |
+| Blocked item                       | Blocks on           | Unblocking artifact                    |
+| ---------------------------------- | ------------------- | -------------------------------------- |
+| All Wave 1                         | Wave 0              | merged fakes + conformance suite       |
+| S2 conformance runs                | Wave 0              | suite factory (not S1)                 |
+| S4 pipeline                        | nothing in Wave 1   | uses Wave 0 fakes                      |
+| S6 approval inbox against real API | S4 merge            | until then: mock server from contracts |
+| I1 composition                     | all of S1–S6 merged | —                                      |
+| Acceptance criteria 2–4 live       | user wiring session | GitHub App + Slack app registration    |
 
 ## User-required inputs (none block Wave 0–1 start)
 

@@ -20,10 +20,6 @@ const root = document.getElementById("root");
 if (root === null) throw new Error("desktop renderer root is missing");
 createRoot(root).render(
   <React.StrictMode>
-    <App
-      client={desktopClient}
-      executionAuthorityDisclosure
-      runtimeBridge={window.autostack}
-    />
+    <App client={desktopClient} executionAuthorityDisclosure runtimeBridge={window.autostack} />
   </React.StrictMode>
 );

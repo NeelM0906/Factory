@@ -25,9 +25,14 @@ try {
       .update(`${canonical}\0${metadata.dev.toString()}\0${metadata.ino.toString()}`)
       .digest("hex");
   };
-  const nativeRequire = createRequire(join(import.meta.dirname, "../dist/runtime/native/package.json"));
+  const nativeRequire = createRequire(
+    join(import.meta.dirname, "../dist/runtime/native/package.json")
+  );
   const authority = createNodePtySpawnAuthority(nativeRequire("node-pty") as NodePtyModule);
-  let resolveTerminal!: (value: { readonly exitCode: number | null; readonly signal: string | null }) => void;
+  let resolveTerminal!: (value: {
+    readonly exitCode: number | null;
+    readonly signal: string | null;
+  }) => void;
   const terminal = new Promise<{
     readonly exitCode: number | null;
     readonly signal: string | null;

@@ -3,6 +3,7 @@ dist
 coverage
 .turbo
 .worktrees
+.superpowers
 pnpm-lock.yaml
 *.sqlite
 *.sqlite-shm

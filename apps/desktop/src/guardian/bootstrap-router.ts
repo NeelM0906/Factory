@@ -19,8 +19,7 @@ export class GuardianBootstrapRouter<TBootstrap, TMessage> {
   readonly #options: GuardianBootstrapRouterOptions<TBootstrap, TMessage>;
   readonly #pending: QueuedMessage<TMessage>[] = [];
   #runtime: GuardianMessageRuntime<TMessage> | undefined;
-  #state: "awaiting_bootstrap" | "bootstrapping" | "ready" | "failed" =
-    "awaiting_bootstrap";
+  #state: "awaiting_bootstrap" | "bootstrapping" | "ready" | "failed" = "awaiting_bootstrap";
 
   private constructor(options: GuardianBootstrapRouterOptions<TBootstrap, TMessage>) {
     this.#options = options;

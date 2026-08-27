@@ -207,7 +207,14 @@ export const seedApprovedExecution = async (
     updatedAt: now
   });
   const event = (type: string, payload: unknown): PendingDomainEvent =>
-    PendingDomainEventSchema.parse({ workspaceId, actor, correlationId, occurredAt: now, type, payload });
+    PendingDomainEventSchema.parse({
+      workspaceId,
+      actor,
+      correlationId,
+      occurredAt: now,
+      type,
+      payload
+    });
   const phaseEvent = async (
     type: "environment.authorization_recorded" | "command.authorization_recorded",
     payload: Record<string, unknown>
@@ -230,15 +237,12 @@ export const seedApprovedExecution = async (
       origin: "desktop",
       decidedAt: now
     }),
-    await phaseEvent(
-      "environment.authorization_recorded",
-      {
-        runId,
-        environmentId,
-        authorization: environmentAuthorization,
-        phaseKey: `environment:${environmentId}:authorization`
-      }
-    ),
+    await phaseEvent("environment.authorization_recorded", {
+      runId,
+      environmentId,
+      authorization: environmentAuthorization,
+      phaseKey: `environment:${environmentId}:authorization`
+    }),
     event("approval.requested", { approval: commandApproval }),
     event("approval.decided", {
       approvalId: commandApprovalId,
@@ -248,16 +252,13 @@ export const seedApprovedExecution = async (
       origin: "desktop",
       decidedAt: now
     }),
-    await phaseEvent(
-      "command.authorization_recorded",
-      {
-        runId,
-        environmentId,
-        commandId,
-        authorization: commandAuthorization,
-        phaseKey: `command:${commandId}:authorization`
-      }
-    )
+    await phaseEvent("command.authorization_recorded", {
+      runId,
+      environmentId,
+      commandId,
+      authorization: commandAuthorization,
+      phaseKey: `command:${commandId}:authorization`
+    })
   );
   const provisioning = transitionRun({
     run,
@@ -274,7 +275,11 @@ export const seedApprovedExecution = async (
     jobs: []
   });
   await validateRunStreamCoherence(
-    await store.readRunEvents({ workspaceId: WorkspaceIdSchema.parse(workspaceId), runId, limit: 100 })
+    await store.readRunEvents({
+      workspaceId: WorkspaceIdSchema.parse(workspaceId),
+      runId,
+      limit: 100
+    })
   );
   await store.close();
   return {

@@ -24,14 +24,7 @@ const secretFree = (value, secrets) => {
 
 const build = spawnSync(
   "pnpm",
-  [
-    "--filter",
-    "@autostack/desktop",
-    "exec",
-    "tsup",
-    "--config",
-    "tsup.e2e.config.ts"
-  ],
+  ["--filter", "@autostack/desktop", "exec", "tsup", "--config", "tsup.e2e.config.ts"],
   { cwd: workspace, encoding: "utf8" }
 );
 if (build.status !== 0) throw new Error(build.stderr || build.stdout || "verifier build failed");
