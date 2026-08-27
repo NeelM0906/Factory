@@ -55,7 +55,11 @@ S3 hit a shared-index git race twice in one parallel wave: a subagent's plain `g
 
 The lead reviews the working tree against the report, then stages and commits. `git commit --amend` is a lead-only operation — **amend-by-subagent is on the deny-list**, because an amend rewrites a commit another agent may already have built on.
 
-**Parallelism rule:** at most one implementer holds the working tree at a time. Independent tasks may be _briefed_ in parallel but are _executed_ serially, until and unless each runs in its own worktree. Task 1's fix loop predated this ruling and ran amend-by-subagent; it was the only agent in this worktree at the time, so no race occurred, and the model is in force from Task 1's final commit onward.
+**Parallelism rule:** at most one implementer holds the working tree at a time. Independent tasks may be _briefed_ in parallel but are _executed_ serially.
+
+**No second worktree inside this stream** (orchestrator ruling, 2026-08-27). I proposed one so `packages/ui` and `packages/client-app` tasks could run concurrently, since they cannot touch the same files. Overruled, and correctly: a second worktree means a second branch and a merge seam _inside_ one stream, which re-opens the coordination class the single-committer model just closed — and it buys only minutes on UI-sized tasks. Serial execution in one worktree is the standing model. "Probably not colliding" is exactly how the S3 index race reads in hindsight.
+
+Task 1's fix loop predated this ruling and ran amend-by-subagent; it was the only agent in this worktree at the time, so no race occurred, and the model is in force from Task 1's final commit onward.
 
 ### jsdom is CSS-blind here — measured, and it silently fakes guards
 
