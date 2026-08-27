@@ -50,13 +50,13 @@ inbox paging (item 20).
 
 ### 1. Declared support for steering, resume, permission modes, structured plans, model/reasoning selection — GAP
 
-`AgentHarnessCapabilitiesSchema` (`packages/contracts/src/agent.ts:30`) declares `resume`,
+`AgentHarnessCapabilitiesSchema` (`packages/contracts/src/agent.ts:31`) declares `resume`,
 `steering`, `permissions`, and `structuredPlans` only. Model and reasoning selection are absent even
 though `AgentSessionSchema.capabilities` (`packages/contracts/src/entities.ts:222`) already carries
 `modelSelection` — the descriptor could not honestly populate the session entity it feeds. Permission
 _modes_ (spec §9.1, and named explicitly in the Wave 0 charter) had no representation at all.
 
-**Addition:** `AgentHarnessProfileSchema` (`packages/contracts/src/agent.ts:167`) composes the
+**Addition:** `AgentHarnessProfileSchema` (`packages/contracts/src/agent.ts:170`) composes the
 existing descriptor with a `selection` block (`modelSelection`, `reasoningSelection`,
 `permissionModes`) and an `availability` block. Honesty is enforced by refinement: a harness whose
 descriptor sets `capabilities.permissions: false` cannot declare permission modes, and modes must be
@@ -68,17 +68,17 @@ Sequencing is fine: every agent event carries a positive `sequence`
 (`packages/contracts/src/agent.ts:107`), and clients already resume domain streams from
 `ListEventsResponseSchema.nextSequence` (`packages/contracts/src/api.ts:73`).
 
-Coverage is not. `AgentSessionEventSchema` (`packages/contracts/src/agent.ts:111`) covers `started`,
+Coverage is not. `AgentSessionEventSchema` (`packages/contracts/src/agent.ts:112`) covers `started`,
 `output`, `permission_requested`, `waiting`, `completed`, `failed`, and `cancelled`. Spec §9.1
 requires normalized message, thought-summary, plan, tool-call, file-change, and usage events; S6's
 charter needs them as separate panes (conversation, plan, diff, usage) and S1's charter must produce
 them. Folding all six into `output.stream: "structured"` would push provider-specific parsing into
 every consumer, which is the opposite of normalization.
 
-**Addition:** `AgentSessionDetailEventSchema` (`packages/contracts/src/agent.ts:345`) adds `message`,
+**Addition:** `AgentSessionDetailEventSchema` (`packages/contracts/src/agent.ts:348`) adds `message`,
 `thought_summary`, `plan`, `tool_call`, `file_change`, `permission_resolved`, `usage`, and
 `interrupted`, all sharing the existing `sessionId`/`sequence`/`occurredAt` context so they interleave
-in one sequence space. `AgentSessionStreamEventSchema` (`packages/contracts/src/agent.ts:351`) is the
+in one sequence space. `AgentSessionStreamEventSchema` (`packages/contracts/src/agent.ts:354`) is the
 combined union adapters emit and clients consume. `file_change.path` reuses
 `RelativeWorkspacePathSchema`, so an agent cannot report a change outside the managed worktree.
 
@@ -171,7 +171,7 @@ valid for callers that genuinely have exact numbers.
 nothing records a switch mid-request, so §15's "provider fallback is recorded as a route event" and
 S3's "fallback with route-event recording" had no shape.
 
-**Addition:** `ModelRouteFallbackSchema` (`packages/contracts/src/model.ts:216`) with `from`/`to`
+**Addition:** `ModelRouteFallbackSchema` (`packages/contracts/src/model.ts:230`) with `from`/`to`
 route+model targets, `failureCode`, `reason`, and attribution. A refinement rejects a "fallback" that
 changes neither route nor model, so the event cannot be recorded as a no-op.
 
@@ -213,11 +213,10 @@ retryable, because retrying the identical request cannot change the answer. `rat
 the _moment_ and must stay retryable. `provider_error` is deliberately either, since only the adapter
 knows whether a given provider fault was transient.
 
-This gives `ModelRouteFallbackSchema.failureCode` (item 9) a vocabulary to name its cause with, but
-does not close that gap: the field is still `StableRefSchema`, structurally unbound to the enum, so
-nothing rejects a fallback that records a code outside the taxonomy. Binding the field to
-`ModelRoutingFailureCodeSchema` is a deferred contract change (see Explicit deferrals), not something
-this revision applies.
+This also closes `ModelRouteFallbackSchema.failureCode` (item 9): the field binds to
+`ModelRoutingFailureCodeSchema`, so a fallback recording a code outside the taxonomy is rejected
+structurally. The earlier deferral of that binding rested on a false premise — there were no
+recorded fallbacks to break, because the taxonomy and the schema landed in the same branch.
 
 ## Pipeline contract — spec §8, stream S4
 
@@ -241,7 +240,7 @@ invented an incompatible shape.
 
 **Addition:** a new `packages/contracts/src/station-evidence.ts` holding the documents those digests
 address — `TriageReportSchema` (`:44`), `PlanDocumentSchema` (`:90`), `VerificationReportSchema`
-(`:157`), and `ReviewReportSchema` (`:207`). Enforced invariants worth knowing:
+(`:157`), and `ReviewReportSchema` (`:216`). Enforced invariants worth knowing:
 
 - A plan must name at least one **required** verification command (`station-evidence.ts:124`).
 - `VerificationCommandSchema` (`:72`) is executable + args with an explicit `usesShell` flag, so spec
@@ -315,8 +314,8 @@ one-to-five workspace policy (§8.3) fits without a contract change.
 §8.2's "ask a focused question through the originating channel", §4.3's clarifying questions, and S6's
 composer "answer an elicitation" had no shape.
 
-**Addition:** `ClarificationRequestSchema` (`packages/contracts/src/station-evidence.ts:243`) and
-`ClarificationResponseSchema` (`:254`). The response carries an idempotency key and reuses the
+**Addition:** `ClarificationRequestSchema` (`packages/contracts/src/station-evidence.ts:252`) and
+`ClarificationResponseSchema` (`:263`). The response carries an idempotency key and reuses the
 existing origin vocabulary (`desktop | web | cli | slack | github | api`) so a Slack answer and a
 desktop answer are the same contract.
 
@@ -343,32 +342,32 @@ widening them in revision 2 — see **Resolved escalations** below.
 
 ### 16. Editable GitHub progress comments — GAP
 
-Contracts had `SlackProgressRequestSchema` (`packages/contracts/src/integration.ts:157`) but no GitHub
+Contracts had `SlackProgressRequestSchema` (`packages/contracts/src/integration.ts:158`) but no GitHub
 progress shape at all, and `DeliveryIntegrationPort` exposed only draft-PR creation and Slack
 progress. §4.4 requires "concise, editable progress comments rather than a new comment for every
 event", which needs comment identity in the contract.
 
-**Addition:** `GitHubProgressCommentRequestSchema` (`packages/contracts/src/integration.ts:172`) —
+**Addition:** `GitHubProgressCommentRequestSchema` (`packages/contracts/src/integration.ts:173`) —
 omit `commentId` to create, supply it to edit that comment in place — plus
-`GitHubProgressCommentResultSchema` (`:185`) and the `GitHubProgressIntegrationPort` interface
+`GitHubProgressCommentResultSchema` (`:186`) and the `GitHubProgressIntegrationPort` interface
 (`:270`). S5 implements `DeliveryIntegrationPort & GitHubProgressIntegrationPort`;
 `DeliveryIntegrationPort` itself is unchanged.
 
 ### 17. Draft-PR content — GAP
 
-`DraftPullRequestRequestSchema` (`packages/contracts/src/integration.ts:103`) carries every §4.4
+`DraftPullRequestRequestSchema` (`packages/contracts/src/integration.ts:104`) carries every §4.4
 _digest_ through `publicationEvidence`, and its refinement already pins repository, base, head, and
 diff to the approved scope. What it does not carry is the human-readable structure: `body` is one
 opaque 100 KB string, so S5's charter obligation to produce "the §4.4 body structure" and acceptance
 criterion 13 had nothing to validate against.
 
-**Addition:** `DraftPullRequestBodySchema` (`packages/contracts/src/integration.ts:199`) with
+**Addition:** `DraftPullRequestBodySchema` (`packages/contracts/src/integration.ts:200`) with
 `problemStatement`, `approvedPlanDigest` + `approvedPlanSummary`, `changeSummary`,
 `verificationSummary`, `reviewVerdict`, `knownLimitations`, and `runUrl`. `reviewVerdict` is
 `z.literal("approved")` because publication is impossible otherwise (§8.2, §14.2). S5 renders the
 request's `body` string from this structure; the request schema is unchanged.
 
-`DraftPullRequestResultSchema` (`:136`) already carries number, URL, draft flag, provider evidence
+`DraftPullRequestResultSchema` (`:137`) already carries number, URL, draft flag, provider evidence
 digest, and timestamp — sufficient.
 
 ### 18. Slack approval interactivity — GAP
@@ -376,9 +375,9 @@ digest, and timestamp — sufficient.
 `SlackProgressRequestSchema` is text-only; nothing represented approve/reject actions, so §4.3's "plan
 approval and rejection actions" and S5's "approval interactivity payloads" had no contract.
 
-**Addition:** `SlackApprovalPromptSchema` (`packages/contracts/src/integration.ts:216`) carries the
+**Addition:** `SlackApprovalPromptSchema` (`packages/contracts/src/integration.ts:217`) carries the
 `ApprovalId`, `RunId`, approval kind, and evidence digest into the posted message;
-`SlackApprovalActionSchema` (`:231`) carries the inbound decision back with the workspace/channel/user
+`SlackApprovalActionSchema` (`:232`) carries the inbound decision back with the workspace/channel/user
 binding §13.2 requires validating, the same evidence digest for staleness, and
 `deliveryId`/`deduplicationKey` so an interactive payload is deduplicated like any other delivery.
 
@@ -399,9 +398,9 @@ non-manual origin. No addition.
 names four routes it must serve and S6 must build its approval inbox and composer against those
 schemas before S4 merges.
 
-**Addition (all in `packages/contracts/src/api.ts`):** `ApprovalSummarySchema` (`:110`),
+**Addition (all in `packages/contracts/src/api.ts`):** `ApprovalSummarySchema` (`:117`),
 `ListApprovalsQuerySchema` (`:125`, defaulting to `status: "pending"` with a coerced numeric `limit`
-since query values arrive as strings), `ListApprovalsResponseSchema` (`:132`),
+since query values arrive as strings), `ListApprovalsResponseSchema` (`:140`),
 `ApprovalDecisionRequestSchema` (`:139`, which requires the `evidenceDigest` being approved so a stale
 decision is detectable) and `ApprovalDecisionResponseSchema` (`:148`, with `replayed` for idempotent
 re-decision), `SteerRunRequestSchema`/`SteerRunResponseSchema` (`:158`, `:162`), and
@@ -444,15 +443,15 @@ silently.
 
 ## Explicit deferrals
 
-| Deferred                                                                          | Rationale                                                                                                                                                                                                                                                                                                |
-| --------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Model data-handling policy (zero-data-retention, approved provider lists)         | Spec §10.2 scopes these to team policy; no Milestone A stream reads them.                                                                                                                                                                                                                                |
-| Rename tracking in `file_change` events                                           | Representable as delete + add; no stream charter needs rename provenance.                                                                                                                                                                                                                                |
-| A shared capability-filtering helper over `ModelCatalogEntry`                     | Filtering logic is S3-internal; only the capability _declaration_ crosses a boundary.                                                                                                                                                                                                                    |
-| New domain event types in `EVENT_TYPES` (`packages/contracts/src/events.ts:50`)   | Appending members to the existing array widens `DomainEventType` and the `PendingDomainEvent` union. Streams that need to persist agent-detail or route events should request the addition through the orchestrator with the coherence rules in `validateRunStreamCoherence` updated in the same change. |
-| Editing an already-posted Slack progress message                                  | §4.3 and §13.2 require thread-bound progress, not in-place edits; only GitHub mandates a single editable comment.                                                                                                                                                                                        |
-| Binding `ModelRouteFallbackSchema.failureCode` to `ModelRoutingFailureCodeSchema` | The field is `StableRefSchema` today. Narrowing it is a breaking change for any recorded fallback carrying a non-taxonomy ref, so it goes through the orchestrator rather than landing with the taxonomy itself.                                                                                         |
-| Factory memory (§16.3) and Eve adapter (§9.4)                                     | Deferred by the master plan's locked decision 7.                                                                                                                                                                                                                                                         |
+| Deferred                                                                                                               | Rationale                                                                                                                                                                                                                                                                                                                                                                                                                                                                  |
+| ---------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Model data-handling policy (zero-data-retention, approved provider lists)                                              | Spec §10.2 scopes these to team policy; no Milestone A stream reads them.                                                                                                                                                                                                                                                                                                                                                                                                  |
+| Rename tracking in `file_change` events                                                                                | Representable as delete + add; no stream charter needs rename provenance.                                                                                                                                                                                                                                                                                                                                                                                                  |
+| A shared capability-filtering helper over `ModelCatalogEntry`                                                          | Filtering logic is S3-internal; only the capability _declaration_ crosses a boundary.                                                                                                                                                                                                                                                                                                                                                                                      |
+| New domain event types in `EVENT_TYPES` (`packages/contracts/src/events.ts:50`)                                        | Appending members to the existing array widens `DomainEventType` and the `PendingDomainEvent` union. Streams that need to persist agent-detail or route events should request the addition through the orchestrator with the coherence rules in `validateRunStreamCoherence` updated in the same change.                                                                                                                                                                   |
+| Editing an already-posted Slack progress message                                                                       | §4.3 and §13.2 require thread-bound progress, not in-place edits; only GitHub mandates a single editable comment.                                                                                                                                                                                                                                                                                                                                                          |
+| ~~Binding `ModelRouteFallbackSchema.failureCode` to `ModelRoutingFailureCodeSchema`~~ — **landed, no longer deferred** | The deferral premise was wrong: it treated the narrowing as breaking for "any recorded fallback carrying a non-taxonomy ref", but the taxonomy and the fallback schema both landed in this same branch, so there are no recorded fallbacks and no consumers to break. The only non-taxonomy values in the repo were two test fixtures using `provider_rate_limited`, which is the drift the narrowing exists to prevent. The field is now `ModelRoutingFailureCodeSchema`. |
+| Factory memory (§16.3) and Eve adapter (§9.4)                                                                          | Deferred by the master plan's locked decision 7.                                                                                                                                                                                                                                                                                                                                                                                                                           |
 
 ## Verification
 

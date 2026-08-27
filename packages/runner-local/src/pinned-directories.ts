@@ -9,7 +9,6 @@ import {
   identityOf,
   sameIdentityExceptLinkCount,
   sameObject,
-  samePinnedIdentity,
   type PathIdentity
 } from "./path-security.js";
 import { OwnedPathPolicyError as PathPolicyError } from "./path-types.js";
@@ -100,7 +99,14 @@ export class PinnedDirectories {
     const secondStatus = await lstat(path);
     assertPrivateDirectory(secondStatus);
     const second = identityOf(secondStatus);
-    if (!samePinnedIdentity(first, second)) {
+    // Link count is excluded for the same reason it is at path-security.ts:336 and :357: a
+    // directory's nlink tracks its entry count, so any concurrent sibling creation moves it
+    // without the directory changing identity, and this window (lstat -> realpath -> lstat) is
+    // wider than either of those. Directories cannot be hard-linked, so nlink carries no attack
+    // signal here; inode replacement and symlink substitution stay covered by dev/ino, ownership
+    // and mode drift by uid/mode, and assertPrivateDirectory brackets both stats above.
+    // No test seam reaches this window (established in task 0.8); adding one is its own task (D5).
+    if (!sameIdentityExceptLinkCount(first, second)) {
       throw new PathPolicyError("path_identity_changed", "A state directory changed while pinned.");
     }
     this.#pins.set(path, second);

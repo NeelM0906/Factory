@@ -74,7 +74,7 @@ Wave 2 (serial-ish, 2 streams then 1)
 
 - Modify (append-only): `packages/contracts/src/agent.ts`, `model.ts`, `pipeline.ts`, `integration.ts`, `index.ts`
 - Create: `packages/domain/src/testing/fake-agent-harness.ts`, `packages/domain/src/testing/fake-model-router.ts`, `packages/domain/src/testing/fake-delivery-integration.ts`
-- Create: `packages/contracts/src/conformance/agent-harness-conformance.ts` (exported suite factory, same pattern as the existing runner conformance suite in `packages/domain/test/runner-provider-conformance.test.ts`)
+- Create: `packages/domain/src/testing/agent-harness-conformance.ts` (exported suite factory, same pattern as the existing runner conformance suite in `packages/domain/test/runner-provider-conformance.test.ts`) — landed in `packages/domain`, not `packages/contracts`, because the suite calls `describe`/`it`/`expect` and contracts must not import vitest; it is re-exported from `@autostack/domain/testing`
 
 **Tasks:**
 
