@@ -25,6 +25,21 @@ const StationIdentityShape = {
   runId: RunIdSchema
 } as const;
 
+/**
+ * Which adapter, prompt, and route authored a station document (spec §16.2). Optional because a
+ * document may be authored by a human or by an adapter that has no prompt registry, and because it
+ * is provenance rather than content — see `canonicalizePlanDocumentForDigest` for the one place
+ * that distinction changes a digest.
+ */
+export const StationProvenanceSchema = z
+  .object({
+    adapterId: StableRefSchema,
+    promptRef: StableRefSchema,
+    promptVersion: StableRefSchema,
+    routeRef: StableRefSchema.optional()
+  })
+  .strict();
+
 export const TRIAGE_TASK_TYPES = ["bug", "feature", "chore", "documentation", "question"] as const;
 export const TriageTaskTypeSchema = z.enum(TRIAGE_TASK_TYPES);
 
@@ -51,7 +66,8 @@ export const TriageReportSchema = z
     rationale: SafeMetadataStringSchema.max(20_000),
     duplicates: z.array(TriageDuplicateSchema).max(20),
     clarificationRef: StableRefSchema.optional(),
-    producedAt: TimestampSchema
+    producedAt: TimestampSchema,
+    producedBy: StationProvenanceSchema.optional()
   })
   .strict()
   .superRefine((value, context) => {
@@ -113,7 +129,8 @@ export const PlanDocumentSchema = z
       )
       .max(50),
     requiredCredentialRefIds: z.array(CredentialRefIdSchema).max(32),
-    producedAt: TimestampSchema
+    producedAt: TimestampSchema,
+    producedBy: StationProvenanceSchema.optional()
   })
   .strict()
   .superRefine((value, context) => {
@@ -222,7 +239,8 @@ export const ReviewReportSchema = z
     verdict: z.enum(["approved", "changes_requested"]),
     summary: SafeMetadataStringSchema.max(20_000),
     findings: z.array(ReviewFindingSchema).max(500),
-    producedAt: TimestampSchema
+    producedAt: TimestampSchema,
+    producedBy: StationProvenanceSchema.optional()
   })
   .strict()
   .superRefine((value, context) => {
@@ -273,6 +291,8 @@ export const ClarificationResponseSchema = z
   })
   .strict();
 
+export type StationProvenance = z.infer<typeof StationProvenanceSchema>;
+export type TriageReport = z.infer<typeof TriageReportSchema>;
 export type PlanDocument = z.infer<typeof PlanDocumentSchema>;
 export type VerificationReport = z.infer<typeof VerificationReportSchema>;
 export type ReviewReport = z.infer<typeof ReviewReportSchema>;
@@ -280,10 +300,12 @@ export type ReviewReport = z.infer<typeof ReviewReportSchema>;
 /**
  * The plan document's canonical form, mirroring `canonicalizePublishScopeForDigest`.
  *
- * Two fields are deliberately excluded. `planDigest` is the digest itself, and `producedAt` is
- * record metadata rather than approved content: spec §14.2 invalidates an approval only when the
- * plan changes *materially*, so re-planning byte-identical content must digest identically. Every
- * remaining field is what a human approved and therefore what staleness is measured against.
+ * Three fields are deliberately excluded. `planDigest` is the digest itself. `producedAt` and
+ * `producedBy` are record metadata rather than approved content: spec §14.2 invalidates an approval
+ * only when the plan changes *materially*, so re-planning byte-identical content under a new prompt
+ * version, adapter, or route must digest identically — otherwise every prompt bump would silently
+ * revoke every outstanding plan approval. Every remaining field is what a human approved and
+ * therefore what staleness is measured against.
  *
  * `canonicalJson` sorts object keys before hashing, so the key order written here does not affect
  * the digest; array order does, which is correct for ordered acceptance criteria and commands.
@@ -342,6 +364,68 @@ export const digestVerificationReport = async (
   );
 };
 
+/**
+ * The triage report's canonical form. Like the verification report and unlike the plan document, a
+ * triage report is evidence of one specific execution rather than approved content, so every field
+ * is covered — `producedAt` and `producedBy` included. Nothing here is measured for approval
+ * staleness, so nothing needs to survive a re-run unchanged.
+ */
+export const canonicalizeTriageReportForDigest = (
+  report: TriageReport
+): Readonly<Record<string, unknown>> => ({
+  schemaVersion: report.schemaVersion,
+  workspaceId: report.workspaceId,
+  workItemId: report.workItemId,
+  runId: report.runId,
+  taskType: report.taskType,
+  priority: report.priority,
+  complexity: report.complexity,
+  actionable: report.actionable,
+  rationale: report.rationale,
+  duplicates: report.duplicates,
+  producedAt: report.producedAt,
+  // An absent optional contributes nothing rather than a `undefined` the digest cannot serialize,
+  // so a document that omits one and a document that sets it to `undefined` are the same document.
+  ...(report.clarificationRef === undefined ? {} : { clarificationRef: report.clarificationRef }),
+  ...(report.producedBy === undefined ? {} : { producedBy: report.producedBy })
+});
+
+export const digestTriageReport = async (
+  input: z.input<typeof TriageReportSchema>
+): Promise<string> => {
+  const report = TriageReportSchema.parse(input);
+  return digestVersionedValue("autostack.triage-report", canonicalizeTriageReportForDigest(report));
+};
+
+/**
+ * The review report's canonical form, covering every field for the same reason the verification
+ * report does: a review is a reading of one exact implementation, verification, and plan, and a
+ * later reading under a different prompt is a different reading.
+ */
+export const canonicalizeReviewReportForDigest = (
+  report: ReviewReport
+): Readonly<Record<string, unknown>> => ({
+  schemaVersion: report.schemaVersion,
+  workspaceId: report.workspaceId,
+  workItemId: report.workItemId,
+  runId: report.runId,
+  planDigest: report.planDigest,
+  reviewedDiffDigest: report.reviewedDiffDigest,
+  verificationReportDigest: report.verificationReportDigest,
+  verdict: report.verdict,
+  summary: report.summary,
+  findings: report.findings,
+  producedAt: report.producedAt,
+  ...(report.producedBy === undefined ? {} : { producedBy: report.producedBy })
+});
+
+export const digestReviewReport = async (
+  input: z.input<typeof ReviewReportSchema>
+): Promise<string> => {
+  const report = ReviewReportSchema.parse(input);
+  return digestVersionedValue("autostack.review-report", canonicalizeReviewReportForDigest(report));
+};
+
 interface StationIdentity {
   readonly workspaceId: string;
   readonly workItemId: string;
@@ -365,6 +449,22 @@ export const admitPlanDocument = async (input: unknown): Promise<PlanDocument> =
     throw new TypeError("Plan document digest does not match its canonical fields.");
   }
   return document;
+};
+
+/**
+ * Admits a triage report against the digest a caller recorded for it. Triage is the first station,
+ * so there is no upstream document to bind to and no self-digest field: the only thing that can be
+ * checked is that this is the exact report that digest was taken over.
+ */
+export const admitTriageReport = async (
+  input: unknown,
+  expectedDigest: string
+): Promise<TriageReport> => {
+  const report = TriageReportSchema.parse(input);
+  if ((await digestTriageReport(report)) !== expectedDigest) {
+    throw new TypeError("Triage report does not match the digest it was recorded under.");
+  }
+  return report;
 };
 
 /** Admits a verification report only when it verifies the plan document it names. */
@@ -403,7 +503,7 @@ export const admitReviewReport = async (
 export type TriageTaskType = z.infer<typeof TriageTaskTypeSchema>;
 export type TriageComplexity = z.infer<typeof TriageComplexitySchema>;
 export type TriageDuplicate = z.infer<typeof TriageDuplicateSchema>;
-export type TriageReport = z.infer<typeof TriageReportSchema>;
+
 export type VerificationCommand = z.infer<typeof VerificationCommandSchema>;
 export type PlanPermissionKind = z.infer<typeof PlanPermissionKindSchema>;
 export type VerificationResult = z.infer<typeof VerificationResultSchema>;

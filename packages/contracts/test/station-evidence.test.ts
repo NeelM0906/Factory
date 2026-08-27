@@ -7,13 +7,26 @@ import {
   ReviewReportSchema,
   TriageReportSchema,
   VerificationReportSchema,
+  StationProvenanceSchema,
   admitPlanDocument,
   admitReviewReport,
+  admitTriageReport,
   admitVerificationReport,
   canonicalizePlanDocumentForDigest,
+  canonicalizeReviewReportForDigest,
+  canonicalizeTriageReportForDigest,
   digestPlanDocument,
+  digestReviewReport,
+  digestTriageReport,
   digestVerificationReport
 } from "../src/station-evidence.js";
+
+const provenance = {
+  adapterId: "agent-native.triage",
+  promptRef: "prompt.triage.default",
+  promptVersion: "2026-08-27.1",
+  routeRef: "route.gateway.sonnet"
+} as const;
 
 const identity = {
   workspaceId: "ws_123e4567-e89b-42d3-a456-426614174000",
@@ -374,5 +387,100 @@ describe("station evidence digests", () => {
     const otherRunId = "run_123e4567-e89b-42d3-a456-426614174999";
     const report = { ...(await sealedVerification(plan)), runId: otherRunId };
     await expect(admitVerificationReport(report, plan)).rejects.toThrow(/run/);
+  });
+});
+
+describe("station provenance", () => {
+  it("records the adapter, prompt, and route that produced a document", () => {
+    expect(StationProvenanceSchema.parse(provenance)).toEqual(provenance);
+    const { routeRef: _routeRef, ...withoutRoute } = provenance;
+    expect(StationProvenanceSchema.parse(withoutRoute).routeRef).toBeUndefined();
+    expect(() => StationProvenanceSchema.parse({ ...provenance, temperature: 0.2 })).toThrow();
+  });
+
+  it("is optional on every station document that a model authors", () => {
+    for (const draft of [triageReport(), planDocument(), reviewReport()]) {
+      expect(draft).not.toHaveProperty("producedBy");
+    }
+    expect(
+      TriageReportSchema.parse({ ...triageReport(), producedBy: provenance }).producedBy
+    ).toEqual(provenance);
+    expect(
+      PlanDocumentSchema.parse({ ...planDocument(), producedBy: provenance }).producedBy
+    ).toEqual(provenance);
+    expect(
+      ReviewReportSchema.parse({ ...reviewReport(), producedBy: provenance }).producedBy
+    ).toEqual(provenance);
+  });
+});
+
+describe("triage and review report digests", () => {
+  const sealedTriage = () => ({ ...triageReport(), producedBy: provenance });
+
+  it("covers every triage field, provenance and timestamp included", async () => {
+    const report = sealedTriage();
+    const recorded = await digestTriageReport(report);
+    expect(await digestTriageReport(TriageReportSchema.parse(report))).toBe(recorded);
+
+    const canonical = canonicalizeTriageReportForDigest(TriageReportSchema.parse(report));
+    expect(canonical).toHaveProperty("producedAt");
+    expect(canonical).toHaveProperty("producedBy");
+
+    const mutations = [
+      { priority: "urgent" as const },
+      { actionable: false },
+      { rationale: "A different rationale entirely." },
+      { duplicates: [] },
+      { producedAt: "2027-01-01T00:00:00.000Z" },
+      { producedBy: { ...provenance, promptVersion: "2026-08-28.1" } }
+    ];
+    for (const mutation of mutations) {
+      expect(await digestTriageReport({ ...report, ...mutation })).not.toBe(recorded);
+    }
+  });
+
+  it("admits a triage report only against the digest it was recorded under", async () => {
+    const report = sealedTriage();
+    const recorded = await digestTriageReport(report);
+    expect((await admitTriageReport(report, recorded)).taskType).toBe("bug");
+    await expect(admitTriageReport({ ...report, priority: "low" }, recorded)).rejects.toThrow(
+      /digest/
+    );
+    await expect(admitTriageReport(report, digest("e"))).rejects.toThrow(/digest/);
+  });
+
+  it("covers every review field so a review binds to one exact reading", async () => {
+    const report = { ...reviewReport(), producedBy: provenance };
+    const recorded = await digestReviewReport(report);
+    expect(await digestReviewReport(ReviewReportSchema.parse(report))).toBe(recorded);
+
+    const canonical = canonicalizeReviewReportForDigest(ReviewReportSchema.parse(report));
+    expect(canonical).toHaveProperty("producedAt");
+    expect(canonical).toHaveProperty("producedBy");
+
+    const mutations = [
+      { summary: "Nothing blocking after all." },
+      { findings: [] },
+      { producedAt: "2027-01-01T00:00:00.000Z" },
+      { producedBy: { ...provenance, adapterId: "agent-native.review" } }
+    ];
+    for (const mutation of mutations) {
+      expect(await digestReviewReport({ ...report, ...mutation })).not.toBe(recorded);
+    }
+  });
+
+  it("leaves the plan digest untouched by provenance, as it does by the timestamp", async () => {
+    const draft = planDocument();
+    const planDigest = await digestPlanDocument(draft);
+    const plan = { ...draft, planDigest };
+
+    expect(await digestPlanDocument({ ...plan, producedBy: provenance })).toBe(planDigest);
+    const canonical = canonicalizePlanDocumentForDigest(
+      PlanDocumentSchema.parse({ ...plan, producedBy: provenance })
+    );
+    expect(canonical).not.toHaveProperty("producedBy");
+    expect((await admitPlanDocument({ ...plan, producedBy: provenance })).producedBy).toEqual(
+      provenance
+    );
   });
 });
