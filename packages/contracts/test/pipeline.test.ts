@@ -254,14 +254,29 @@ describe("bounded review rework", () => {
     expect(assertPipelineReworkTransition("isolated_review", 2)).toBe("implement");
   });
 
+  it("routes a failed verification back to implement under the same bound", () => {
+    expect(assertPipelineReworkTransition("verify", 1)).toBe("implement");
+    expect(assertPipelineReworkTransition("verify", 2)).toBe("implement");
+    expect(() => assertPipelineReworkTransition("verify", 3)).toThrow(/attempts/);
+  });
+
   it("refuses rework once the attempt bound is exhausted", () => {
     expect(() => assertPipelineReworkTransition("isolated_review", 3)).toThrow(/attempts/);
     expect(() => assertPipelineReworkTransition("isolated_review", 1, 1)).toThrow(/attempts/);
     expect(() => assertPipelineReworkTransition("isolated_review", 1, 0)).toThrow(/bound/);
   });
 
-  it("refuses rework from any stage other than review", () => {
-    expect(() => assertPipelineReworkTransition("verify", 1)).toThrow(/rework/);
+  it("refuses rework from a stage that produced no failed judgement", () => {
+    for (const stage of [
+      "triage",
+      "plan",
+      "plan_approval",
+      "implement",
+      "publish_approval",
+      "draft_pr"
+    ] as const) {
+      expect(() => assertPipelineReworkTransition(stage, 1)).toThrow(/rework/);
+    }
     expect(() => assertPipelineReworkTransition("isolated_review", 0)).toThrow(/attempt/);
   });
 });

@@ -420,17 +420,27 @@ export const assertPipelineTransition = (
 /** Milestone A allows at most three attempts per agent stage (spec §8.3). */
 export const PIPELINE_REWORK_MAX_ATTEMPTS = 3;
 
+/** The two stages that can judge the implementation and send it back (spec §8.2). */
+const PIPELINE_REWORK_SOURCE_STAGES = new Set<string>(["verify", "isolated_review"]);
+
 /**
- * A failed independent review routes back to implement (spec §8.2) instead of advancing through
- * `assertPipelineTransition`. The bound keeps the loop finite and never marks review passed.
+ * A failed judgement of the implementation routes back to implement (spec §8.2) instead of
+ * advancing through `assertPipelineTransition`. The bound keeps the loop finite and never marks the
+ * judging stage passed.
+ *
+ * Both judging stages qualify. A failed verification is the same situation as a failed review — the
+ * implementation is wrong and the fix belongs to the implement station — and routing it forward
+ * into review instead would ask a reviewer to approve code its own tests reject.
  */
 export const assertPipelineReworkTransition = (
   from: z.infer<typeof PipelineStageSchema>,
   attempt: number,
   maxAttempts: number = PIPELINE_REWORK_MAX_ATTEMPTS
 ): z.infer<typeof PipelineStageSchema> => {
-  if (from !== "isolated_review") {
-    throw new TypeError(`Delivery pipeline rework may only follow isolated_review, not ${from}.`);
+  if (!PIPELINE_REWORK_SOURCE_STAGES.has(from)) {
+    throw new TypeError(
+      `Delivery pipeline rework may only follow verify or isolated_review, not ${from}.`
+    );
   }
   if (!Number.isSafeInteger(attempt) || attempt < 1) {
     throw new TypeError("Delivery pipeline rework requires a positive attempt number.");
