@@ -33,6 +33,16 @@
         "output_modalities": ["text"]
       },
       "supported_parameters": []
+    },
+    {
+      "id": "vendor/telepathic-model",
+      "name": "Telepathic Model",
+      "context_length": 32000,
+      "architecture": {
+        "input_modalities": ["telepathy"],
+        "output_modalities": ["telepathy"]
+      },
+      "supported_parameters": []
     }
   ]
 }

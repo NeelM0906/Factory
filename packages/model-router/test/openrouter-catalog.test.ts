@@ -233,4 +233,115 @@ describe("discoverOpenRouterCatalog", () => {
     expect((caught as ModelRoutingError).code).toBe("rate_limited");
     expect((caught as ModelRoutingError).retryable).toBe(true);
   });
+
+  it("raises provider_error (retryable true) when the network call itself throws", async () => {
+    const { fetch } = createFixtureFetch([
+      {
+        method: "GET",
+        url: OPENROUTER_MODELS_URL,
+        responses: [{ kind: "throws", error: new TypeError("fetch failed: ECONNRESET") }]
+      }
+    ]);
+
+    let caught: unknown;
+    try {
+      await discoverOpenRouterCatalog({
+        route: openRouterRoute,
+        credentials: createFakeCredentialResolver(),
+        fetch,
+        now: fixedNow
+      });
+    } catch (error) {
+      caught = error;
+    }
+
+    expect(caught).toBeInstanceOf(ModelRoutingError);
+    const routingError = caught as ModelRoutingError;
+    expect(routingError.code).toBe("provider_error");
+    expect(routingError.retryable).toBe(true);
+    expect(routingError.message).toContain(openRouterRoute.routeRef);
+    expect(routingError.message).not.toContain("sk-fixture-secret-for-");
+  });
+
+  it("raises provider_error (retryable true) when the response body is not JSON", async () => {
+    const { fetch } = createFixtureFetch([
+      {
+        method: "GET",
+        url: OPENROUTER_MODELS_URL,
+        responses: [{ kind: "response", rawBody: "<html>upstream error</html>" }]
+      }
+    ]);
+
+    let caught: unknown;
+    try {
+      await discoverOpenRouterCatalog({
+        route: openRouterRoute,
+        credentials: createFakeCredentialResolver(),
+        fetch,
+        now: fixedNow
+      });
+    } catch (error) {
+      caught = error;
+    }
+
+    expect(caught).toBeInstanceOf(ModelRoutingError);
+    const routingError = caught as ModelRoutingError;
+    expect(routingError.code).toBe("provider_error");
+    expect(routingError.retryable).toBe(true);
+    expect(routingError.message).toContain(openRouterRoute.routeRef);
+    expect(routingError.message).not.toContain("sk-fixture-secret-for-");
+  });
+
+  it("throws a TypeError, not a ModelRoutingError, when given a non-openrouter route", async () => {
+    const wrongKindRoute: ModelRoute = {
+      schemaVersion: 1,
+      routeRef: "route.gateway.sonnet",
+      displayName: "Gateway Sonnet",
+      transport: {
+        kind: "vercel_ai_gateway",
+        gatewayModel: "anthropic/claude-3-5-sonnet",
+        credentialRefId
+      },
+      enabled: true
+    };
+    const { fetch } = createFixtureFetch([]);
+
+    let caught: unknown;
+    try {
+      await discoverOpenRouterCatalog({
+        route: wrongKindRoute,
+        credentials: createFakeCredentialResolver(),
+        fetch,
+        now: fixedNow
+      });
+    } catch (error) {
+      caught = error;
+    }
+
+    expect(caught).toBeInstanceOf(TypeError);
+    expect(caught).not.toBeInstanceOf(ModelRoutingError);
+    expect((caught as TypeError).message).toContain("vercel_ai_gateway");
+  });
+
+  it("drops an entry whose modality strings are all unmapped, keeping its valid siblings", async () => {
+    const { fetch } = createFixtureFetch([
+      {
+        method: "GET",
+        url: OPENROUTER_MODELS_URL,
+        responses: [{ kind: "response", body: openRouterModelsFixture }]
+      }
+    ]);
+
+    const result = await discoverOpenRouterCatalog({
+      route: openRouterRoute,
+      credentials: createFakeCredentialResolver(),
+      fetch,
+      now: fixedNow
+    });
+
+    expect(result.entries.some((entry) => entry.providerModel === "vendor/telepathic-model")).toBe(
+      false
+    );
+    expect(result.entries.some((entry) => entry.providerModel === "openai/gpt-4o-mini")).toBe(true);
+  });
 });
