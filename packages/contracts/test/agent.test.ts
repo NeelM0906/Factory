@@ -376,6 +376,33 @@ describe("normalized agent session detail events", () => {
   });
 });
 
+describe("agent invocation identity", () => {
+  it("optionally carries the work item the session serves", () => {
+    const base = {
+      schemaVersion: 1,
+      idempotencyKey: "agent-invoke:run:implement:1",
+      ...ids,
+      adapterId: "claude.local.v1",
+      objective: "Implement the approved plan.",
+      cwd: "/workspace/factory",
+      inputEvidenceDigests: [digest("c")]
+    };
+    expect(AgentInvocationRequestSchema.parse(base).workItemId).toBeUndefined();
+    expect(
+      AgentInvocationRequestSchema.parse({
+        ...base,
+        workItemId: "wi_123e4567-e89b-42d3-a456-426614174000"
+      }).workItemId
+    ).toBe("wi_123e4567-e89b-42d3-a456-426614174000");
+    expect(() =>
+      AgentInvocationRequestSchema.parse({
+        ...base,
+        workItemId: "run_123e4567-e89b-42d3-a456-426614174000"
+      })
+    ).toThrow();
+  });
+});
+
 describe("agent harness port", () => {
   const invocation = () =>
     AgentInvocationRequestSchema.parse({

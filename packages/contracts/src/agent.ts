@@ -7,6 +7,7 @@ import {
   EnvironmentIdSchema,
   RunIdSchema,
   StageRunIdSchema,
+  WorkItemIdSchema,
   WorkspaceIdSchema
 } from "./ids.js";
 import { ModelCostSchema, ModelTokenUsageSchema } from "./model.js";
@@ -60,6 +61,13 @@ export const AgentInvocationRequestSchema = z
     idempotencyKey: IdempotencyKeySchema,
     workspaceId: WorkspaceIdSchema,
     runId: RunIdSchema,
+    /**
+     * The work item the session serves. Optional because an adapter may be invoked outside a work
+     * item, but a station that writes a document carrying `workItemId` in its identity must fail
+     * closed when it is absent — the only other source would be the model, and untrusted output
+     * must never supply identity for a document it authors (spec §14.1).
+     */
+    workItemId: WorkItemIdSchema.optional(),
     stageRunId: StageRunIdSchema,
     agentSessionId: AgentSessionIdSchema,
     environmentId: EnvironmentIdSchema,
