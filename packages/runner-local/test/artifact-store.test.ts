@@ -32,6 +32,11 @@ import { ArtifactTransactions } from "../src/artifact-transactions.js";
 import { normalizeArtifactError, STATIC_ERROR_MESSAGES } from "../src/artifact-types.js";
 import { DataPathPolicy, PathPolicyError } from "../src/path-policy.js";
 
+// Digest/filesystem bound: this case hashes content and drives real permission probes, and runs
+// with headroom locally but timed out at the 5s default on a hosted macOS runner under V8 coverage
+// instrumentation (CI run 33122470669). Applied per case so the package-wide default keeps
+// protecting every other test.
+const SLOW_CASE = { timeout: 15_000 } as const;
 const UUID = "123e4567-e89b-42d3-a456-426614174000";
 const roots: string[] = [];
 const metadata: ArtifactWriteMetadata = {
@@ -521,7 +526,7 @@ describe("ArtifactStore", () => {
     ).rejects.toMatchObject({ code: "integrity_mismatch" });
   });
 
-  it("rejects an identical pre-existing blob with widened permissions", async () => {
+  it("rejects an identical pre-existing blob with widened permissions", SLOW_CASE, async () => {
     const dataRoot = await temporaryRoot();
     const digest = createHash("sha256").update("expected").digest("hex");
     const digestDirectory = join(dataRoot, "artifacts", "sha256", digest.slice(0, 2));
