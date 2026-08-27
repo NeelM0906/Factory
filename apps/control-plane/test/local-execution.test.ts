@@ -178,7 +178,7 @@ describe("LocalExecutionService host delegation", () => {
   it("opens a command event stream against the ownership-resolved host request", async () => {
     const resolved = { marker: "resolved events" };
     const stream = (async function* () {
-      yield { type: "runner.heartbeat" };
+      yield { type: "subscription.lagged", lastDurableSequence: 1, resumeCursor: 1 } as const;
     })();
     const service = new LocalExecutionService({
       state: {
