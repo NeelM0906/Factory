@@ -144,72 +144,82 @@ describe("AutoStack SQLite database", () => {
     database.close();
   });
 
-  it("serializes run-summary backfill across concurrent legacy-database opens", async () => {
-    const filePath = await temporaryDatabasePath();
-    await mkdir(join(filePath, ".."), { recursive: true });
-    const legacy = new DatabaseSync(filePath);
-    applyMigrations(legacy, MIGRATIONS.slice(0, 3));
-    const decision = createManualRun(
-      { title: "Concurrent legacy run" },
-      {
-        workspaceId: WorkspaceIdSchema.parse("ws_123e4567-e89b-42d3-a456-426614174000"),
-        actor: { kind: "user", id: "legacy-user" },
-        correlationId: "123e4567-e89b-42d3-a456-426614174000"
-      },
-      {
-        now: () => "2026-08-20T12:00:00.000Z",
-        ids: createIdFactory(() => "123e4567-e89b-42d3-a456-426614174000")
-      }
-    );
-    const insert = legacy.prepare(
-      `INSERT INTO events (
+  // Worker-bootstrap bound: this case spawns two `--import tsx` worker threads that each transpile
+  // and open the real SQLite file, and measures well under 1s on an unconstrained dev machine. It
+  // reached 4925ms of the 5s default in CI run 33109728652 — `pnpm test:coverage` on a 2-vCPU runner
+  // with V8 coverage instrumentation while every workspace package tests in parallel leaves worker
+  // startup no margin. Applied per case so the package-wide default keeps protecting every other
+  // test.
+  it(
+    "serializes run-summary backfill across concurrent legacy-database opens",
+    { timeout: 15_000 },
+    async () => {
+      const filePath = await temporaryDatabasePath();
+      await mkdir(join(filePath, ".."), { recursive: true });
+      const legacy = new DatabaseSync(filePath);
+      applyMigrations(legacy, MIGRATIONS.slice(0, 3));
+      const decision = createManualRun(
+        { title: "Concurrent legacy run" },
+        {
+          workspaceId: WorkspaceIdSchema.parse("ws_123e4567-e89b-42d3-a456-426614174000"),
+          actor: { kind: "user", id: "legacy-user" },
+          correlationId: "123e4567-e89b-42d3-a456-426614174000"
+        },
+        {
+          now: () => "2026-08-20T12:00:00.000Z",
+          ids: createIdFactory(() => "123e4567-e89b-42d3-a456-426614174000")
+        }
+      );
+      const insert = legacy.prepare(
+        `INSERT INTO events (
          event_id, workspace_id, stream_kind, stream_id, stream_version, event_type,
          schema_version, occurred_at, actor_json, correlation_id, causation_id, payload_json
        ) VALUES (?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?, ?)`
-    );
-    let eventNumber = 1;
-    for (const append of decision.appends) {
-      for (const event of append.events as readonly PendingDomainEvent[]) {
-        insert.run(
-          `evt_123e4567-e89b-42d3-a456-${String(426614174000 + eventNumber++).padStart(12, "0")}`,
-          event.workspaceId,
-          append.stream.kind,
-          append.stream.id,
-          1,
-          event.type,
-          event.occurredAt,
-          JSON.stringify(event.actor),
-          event.correlationId,
-          event.causationId ?? null,
-          JSON.stringify(event.payload)
-        );
+      );
+      let eventNumber = 1;
+      for (const append of decision.appends) {
+        for (const event of append.events as readonly PendingDomainEvent[]) {
+          insert.run(
+            `evt_123e4567-e89b-42d3-a456-${String(426614174000 + eventNumber++).padStart(12, "0")}`,
+            event.workspaceId,
+            append.stream.kind,
+            append.stream.id,
+            1,
+            event.type,
+            event.occurredAt,
+            JSON.stringify(event.actor),
+            event.correlationId,
+            event.causationId ?? null,
+            JSON.stringify(event.payload)
+          );
+        }
       }
+      legacy.close();
+
+      const workers = Array.from(
+        { length: 2 },
+        () =>
+          new Worker(new URL("./fixtures/projection-backfill-worker.mjs", import.meta.url), {
+            workerData: { filePath },
+            execArgv: ["--import", "tsx"]
+          })
+      );
+      const nextMessage = (worker: Worker) =>
+        new Promise<Record<string, unknown>>((resolveMessage, rejectMessage) => {
+          worker.once("message", resolveMessage);
+          worker.once("error", rejectMessage);
+        });
+      await Promise.all(workers.map((worker) => nextMessage(worker)));
+      const completions = workers.map((worker) => nextMessage(worker));
+      for (const worker of workers) worker.postMessage({ start: true });
+
+      expect(await Promise.all(completions)).toEqual([
+        { status: "completed", count: 1 },
+        { status: "completed", count: 1 }
+      ]);
+      await Promise.all(workers.map((worker) => worker.terminate()));
     }
-    legacy.close();
-
-    const workers = Array.from(
-      { length: 2 },
-      () =>
-        new Worker(new URL("./fixtures/projection-backfill-worker.mjs", import.meta.url), {
-          workerData: { filePath },
-          execArgv: ["--import", "tsx"]
-        })
-    );
-    const nextMessage = (worker: Worker) =>
-      new Promise<Record<string, unknown>>((resolveMessage, rejectMessage) => {
-        worker.once("message", resolveMessage);
-        worker.once("error", rejectMessage);
-      });
-    await Promise.all(workers.map((worker) => nextMessage(worker)));
-    const completions = workers.map((worker) => nextMessage(worker));
-    for (const worker of workers) worker.postMessage({ start: true });
-
-    expect(await Promise.all(completions)).toEqual([
-      { status: "completed", count: 1 },
-      { status: "completed", count: 1 }
-    ]);
-    await Promise.all(workers.map((worker) => worker.terminate()));
-  });
+  );
 
   it("creates private state directories and database files", async () => {
     const filePath = await temporaryDatabasePath();

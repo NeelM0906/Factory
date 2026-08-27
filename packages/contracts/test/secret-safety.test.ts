@@ -519,15 +519,23 @@ describe("central secret safety", () => {
     expect(detector.finalize()).toBe(true);
   });
 
-  it("memoizes repeated high-prefix mismatches in an ambiguous CSI sequence", () => {
-    const detector = new StreamingSensitiveMaterialDetector([`${"1".repeat(8_000)}X`]);
+  // Scan-work bound: this case drives the redaction scanner over a long ambiguous CSI sequence to
+  // prove the memo table bounds the work, and measures ~0.3s on an unconstrained dev machine. CI
+  // runs `pnpm test:coverage` on a 2-vCPU runner with V8 coverage instrumentation while every
+  // workspace package tests in parallel, which stretches it past the 5s default.
+  it(
+    "memoizes repeated high-prefix mismatches in an ambiguous CSI sequence",
+    { timeout: 15_000 },
+    () => {
+      const detector = new StreamingSensitiveMaterialDetector([`${"1".repeat(8_000)}X`]);
 
-    detector.write("1".repeat(8_000));
-    detector.write("\u001b[");
-    detector.write("2".repeat(400_000));
+      detector.write("1".repeat(8_000));
+      detector.write("\u001b[");
+      detector.write("2".repeat(400_000));
 
-    expect(detector.finalize()).toBe(false);
-  });
+      expect(detector.finalize()).toBe(false);
+    }
+  );
 
   it.each([
     ["parameterized ESC CSI known credential", `ghp_\u001b[31A${"G".repeat(19)}`, []],

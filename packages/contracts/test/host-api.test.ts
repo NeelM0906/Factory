@@ -577,315 +577,324 @@ describe("host daemon API contracts", () => {
     expect(() => terminalAdmission.admit(response({ ...event, sequence: 7 }))).toThrow(/terminal/i);
   });
 
-  it("admits trusted prepare, start, lifecycle, artifact, and terminal disposal operations", async () => {
-    const workspaceId = "ws_123e4567-e89b-42d3-a456-426614174000";
-    const runId = "run_123e4567-e89b-42d3-a456-426614174000";
-    const environmentId = "env_123e4567-e89b-42d3-a456-426614174000";
-    const commandId = "cmd_123e4567-e89b-42d3-a456-426614174000";
-    const scope = {
-      workspaceId,
-      runId,
-      environmentId,
-      repositoryIdentity: "github:autostack/contracts",
-      sourceCommit: "a".repeat(40),
-      branch: "autostack/host-admission",
-      cwdRoot: ".",
-      resourceLimits: { cpu: 1, memoryMb: 1, durationSeconds: 60 },
-      networkPolicy: "host" as const,
-      filesystemDisclosure: "host_user" as const,
-      allowedCredentialRefIds: []
-    };
-    const environmentAuthorization = {
-      id: "envauth_123e4567-e89b-42d3-a456-426614174000",
-      digest: "0".repeat(64),
-      approvalId: "apr_123e4567-e89b-42d3-a456-426614174000",
-      approvalEvidenceDigest: await digestExecutionScope(scope),
-      scope,
-      createdAt: "2026-08-21T12:00:00.000Z",
-      expiresAt: "2026-08-21T13:00:00.000Z"
-    };
-    environmentAuthorization.digest =
-      await digestEnvironmentAuthorization(environmentAuthorization);
-    const command = {
-      executable: "true",
-      args: [],
-      cwd: ".",
-      environment: [],
-      timeoutSeconds: 1,
-      terminal: { columns: 80, rows: 24 }
-    };
-    const commandScope = {
-      environmentAuthorizationId: environmentAuthorization.id,
-      environmentAuthorizationDigest: environmentAuthorization.digest,
-      workspaceId,
-      runId,
-      environmentId,
-      commandId,
-      action: "implement" as const,
-      commandDigest: await digestCommandSpec(command),
-      repositoryIdentity: scope.repositoryIdentity,
-      sourceCommit: scope.sourceCommit,
-      branch: scope.branch,
-      cwdRoot: scope.cwdRoot,
-      networkPolicy: "host" as const,
-      filesystemDisclosure: "host_user" as const,
-      resourceLimits: scope.resourceLimits,
-      allowedCredentialRefIds: []
-    };
-    const commandAuthorization = {
-      id: "cmdauth_123e4567-e89b-42d3-a456-426614174000",
-      digest: "0".repeat(64),
-      approvalId: "apr_123e4567-e89b-42d3-a456-426614174002",
-      approvalEvidenceDigest: await digestCommandScope(commandScope),
-      scope: commandScope,
-      createdAt: "2026-08-21T12:00:00.000Z",
-      expiresAt: "2026-08-21T13:00:00.000Z"
-    };
-    commandAuthorization.digest = await digestCommandAuthorization(commandAuthorization);
-    const planApproval = {
-      schemaVersion: 1,
-      id: environmentAuthorization.approvalId,
-      workspaceId,
-      runId,
-      kind: "plan" as const,
-      status: "approved" as const,
-      evidenceDigest: environmentAuthorization.approvalEvidenceDigest,
-      eligibleApproverIds: ["local-user"],
-      decision: {
-        decision: "approved" as const,
-        actor: { kind: "user" as const, id: "local-user" },
-        origin: "desktop" as const,
-        decidedAt: "2026-08-21T12:00:00.000Z"
-      },
-      createdAt: "2026-08-21T12:00:00.000Z",
-      updatedAt: "2026-08-21T12:00:00.000Z"
-    };
-    const permissionApproval = {
-      ...planApproval,
-      id: commandAuthorization.approvalId,
-      kind: "permission" as const,
-      evidenceDigest: commandAuthorization.approvalEvidenceDigest
-    };
-    const artifact = {
-      artifactId: "art_123e4567-e89b-42d3-a456-426614174000",
-      workspaceId,
-      runId,
-      commandId,
-      kind: "command_output" as const,
-      mediaType: "text/plain",
-      digest: "a".repeat(64),
-      byteSize: 0,
-      createdAt: "2026-08-21T12:00:00.000Z"
-    };
-    const dependencies: TrustedHostAdmissionDependencies = {
-      now: () => "2026-08-21T12:30:00.000Z",
-      resolveApproval: async (approvalId) =>
-        approvalId === planApproval.id
-          ? planApproval
-          : approvalId === permissionApproval.id
-            ? permissionApproval
-            : undefined,
-      resolveEnvironmentAuthorization: async (authorizationId) =>
-        authorizationId === environmentAuthorization.id ? environmentAuthorization : undefined,
-      resolveCommandAuthorization: async (authorizationId) =>
-        authorizationId === commandAuthorization.id ? commandAuthorization : undefined,
-      resolvePreparedEnvironment: async () => ({
-        environmentId,
+  // Crypto-digest bound: this case recomputes real SHA-256 digests for every trusted host operation
+  // in the matrix, and measures ~0.3s on an unconstrained dev machine. It reached 4981ms of the 5s
+  // default in CI run 33109728652, so it is the same wall-clock class as the cases that timed out:
+  // `pnpm test:coverage` on a 2-vCPU runner with V8 coverage instrumentation while every workspace
+  // package tests in parallel.
+  it(
+    "admits trusted prepare, start, lifecycle, artifact, and terminal disposal operations",
+    { timeout: 15_000 },
+    async () => {
+      const workspaceId = "ws_123e4567-e89b-42d3-a456-426614174000";
+      const runId = "run_123e4567-e89b-42d3-a456-426614174000";
+      const environmentId = "env_123e4567-e89b-42d3-a456-426614174000";
+      const commandId = "cmd_123e4567-e89b-42d3-a456-426614174000";
+      const scope = {
         workspaceId,
         runId,
+        environmentId,
+        repositoryIdentity: "github:autostack/contracts",
+        sourceCommit: "a".repeat(40),
+        branch: "autostack/host-admission",
+        cwdRoot: ".",
+        resourceLimits: { cpu: 1, memoryMb: 1, durationSeconds: 60 },
+        networkPolicy: "host" as const,
+        filesystemDisclosure: "host_user" as const,
+        allowedCredentialRefIds: []
+      };
+      const environmentAuthorization = {
+        id: "envauth_123e4567-e89b-42d3-a456-426614174000",
+        digest: "0".repeat(64),
+        approvalId: "apr_123e4567-e89b-42d3-a456-426614174000",
+        approvalEvidenceDigest: await digestExecutionScope(scope),
+        scope,
+        createdAt: "2026-08-21T12:00:00.000Z",
+        expiresAt: "2026-08-21T13:00:00.000Z"
+      };
+      environmentAuthorization.digest =
+        await digestEnvironmentAuthorization(environmentAuthorization);
+      const command = {
+        executable: "true",
+        args: [],
+        cwd: ".",
+        environment: [],
+        timeoutSeconds: 1,
+        terminal: { columns: 80, rows: 24 }
+      };
+      const commandScope = {
+        environmentAuthorizationId: environmentAuthorization.id,
+        environmentAuthorizationDigest: environmentAuthorization.digest,
+        workspaceId,
+        runId,
+        environmentId,
+        commandId,
+        action: "implement" as const,
+        commandDigest: await digestCommandSpec(command),
         repositoryIdentity: scope.repositoryIdentity,
         sourceCommit: scope.sourceCommit,
         branch: scope.branch,
-        authorization: environmentAuthorization,
-        state: "prepared",
-        preparedAt: "2026-08-21T12:00:00.000Z"
-      }),
-      resolveArtifact: async () => artifact,
-      resolveTerminalRunEvidence: async () => ({
-        status: "completed",
-        terminalEventSequence: 1,
-        terminalEventDigest: "a".repeat(64)
-      }),
-      hasActiveCommand: async () => false
-    };
-    const prepare = {
-      workspaceId,
-      runId,
-      environmentId,
-      inspection: {
-        repositoryIdentity: scope.repositoryIdentity,
-        canonicalSourcePath: "/source",
-        repositoryCommonDirectory: "/source/.git",
-        resolvedBaseRef: "main",
-        sourceCommit: scope.sourceCommit,
-        dirty: false,
-        diagnostics: []
-      },
-      sourceCommit: scope.sourceCommit,
-      branch: scope.branch,
-      authorization: environmentAuthorization,
-      idempotency: { key: "prepare" }
-    };
-    const start = {
-      workspaceId,
-      runId,
-      environmentId,
-      commandId,
-      command,
-      environmentAuthorizationId: environmentAuthorization.id,
-      environmentAuthorizationDigest: environmentAuthorization.digest,
-      authorization: commandAuthorization,
-      idempotency: { key: "start" }
-    };
-    const startRoute = {
-      route: "POST /v1/environments/:environmentId/commands" as const,
-      environmentId,
-      body: start
-    };
-    await expect(
-      admitHostOperation(startRoute, {
-        ...dependencies,
-        resolvePreparedEnvironment: async () => undefined
-      })
-    ).rejects.toThrow(/prepared/i);
-    const mismatchedPreparedAuthorization = {
-      ...environmentAuthorization,
-      digest: "0".repeat(64),
-      scope: { ...scope, branch: "autostack/mismatched-prepared" }
-    };
-    mismatchedPreparedAuthorization.digest = await digestEnvironmentAuthorization(
-      mismatchedPreparedAuthorization
-    );
-    await expect(
-      admitHostOperation(startRoute, {
-        ...dependencies,
+        cwdRoot: scope.cwdRoot,
+        networkPolicy: "host" as const,
+        filesystemDisclosure: "host_user" as const,
+        resourceLimits: scope.resourceLimits,
+        allowedCredentialRefIds: []
+      };
+      const commandAuthorization = {
+        id: "cmdauth_123e4567-e89b-42d3-a456-426614174000",
+        digest: "0".repeat(64),
+        approvalId: "apr_123e4567-e89b-42d3-a456-426614174002",
+        approvalEvidenceDigest: await digestCommandScope(commandScope),
+        scope: commandScope,
+        createdAt: "2026-08-21T12:00:00.000Z",
+        expiresAt: "2026-08-21T13:00:00.000Z"
+      };
+      commandAuthorization.digest = await digestCommandAuthorization(commandAuthorization);
+      const planApproval = {
+        schemaVersion: 1,
+        id: environmentAuthorization.approvalId,
+        workspaceId,
+        runId,
+        kind: "plan" as const,
+        status: "approved" as const,
+        evidenceDigest: environmentAuthorization.approvalEvidenceDigest,
+        eligibleApproverIds: ["local-user"],
+        decision: {
+          decision: "approved" as const,
+          actor: { kind: "user" as const, id: "local-user" },
+          origin: "desktop" as const,
+          decidedAt: "2026-08-21T12:00:00.000Z"
+        },
+        createdAt: "2026-08-21T12:00:00.000Z",
+        updatedAt: "2026-08-21T12:00:00.000Z"
+      };
+      const permissionApproval = {
+        ...planApproval,
+        id: commandAuthorization.approvalId,
+        kind: "permission" as const,
+        evidenceDigest: commandAuthorization.approvalEvidenceDigest
+      };
+      const artifact = {
+        artifactId: "art_123e4567-e89b-42d3-a456-426614174000",
+        workspaceId,
+        runId,
+        commandId,
+        kind: "command_output" as const,
+        mediaType: "text/plain",
+        digest: "a".repeat(64),
+        byteSize: 0,
+        createdAt: "2026-08-21T12:00:00.000Z"
+      };
+      const dependencies: TrustedHostAdmissionDependencies = {
+        now: () => "2026-08-21T12:30:00.000Z",
+        resolveApproval: async (approvalId) =>
+          approvalId === planApproval.id
+            ? planApproval
+            : approvalId === permissionApproval.id
+              ? permissionApproval
+              : undefined,
+        resolveEnvironmentAuthorization: async (authorizationId) =>
+          authorizationId === environmentAuthorization.id ? environmentAuthorization : undefined,
+        resolveCommandAuthorization: async (authorizationId) =>
+          authorizationId === commandAuthorization.id ? commandAuthorization : undefined,
         resolvePreparedEnvironment: async () => ({
           environmentId,
           workspaceId,
           runId,
           repositoryIdentity: scope.repositoryIdentity,
           sourceCommit: scope.sourceCommit,
-          branch: mismatchedPreparedAuthorization.scope.branch,
-          authorization: mismatchedPreparedAuthorization,
+          branch: scope.branch,
+          authorization: environmentAuthorization,
           state: "prepared",
           preparedAt: "2026-08-21T12:00:00.000Z"
+        }),
+        resolveArtifact: async () => artifact,
+        resolveTerminalRunEvidence: async () => ({
+          status: "completed",
+          terminalEventSequence: 1,
+          terminalEventDigest: "a".repeat(64)
+        }),
+        hasActiveCommand: async () => false
+      };
+      const prepare = {
+        workspaceId,
+        runId,
+        environmentId,
+        inspection: {
+          repositoryIdentity: scope.repositoryIdentity,
+          canonicalSourcePath: "/source",
+          repositoryCommonDirectory: "/source/.git",
+          resolvedBaseRef: "main",
+          sourceCommit: scope.sourceCommit,
+          dirty: false,
+          diagnostics: []
+        },
+        sourceCommit: scope.sourceCommit,
+        branch: scope.branch,
+        authorization: environmentAuthorization,
+        idempotency: { key: "prepare" }
+      };
+      const start = {
+        workspaceId,
+        runId,
+        environmentId,
+        commandId,
+        command,
+        environmentAuthorizationId: environmentAuthorization.id,
+        environmentAuthorizationDigest: environmentAuthorization.digest,
+        authorization: commandAuthorization,
+        idempotency: { key: "start" }
+      };
+      const startRoute = {
+        route: "POST /v1/environments/:environmentId/commands" as const,
+        environmentId,
+        body: start
+      };
+      await expect(
+        admitHostOperation(startRoute, {
+          ...dependencies,
+          resolvePreparedEnvironment: async () => undefined
         })
-      })
-    ).rejects.toThrow(/prepared/i);
-    await expect(
-      admitHostOperation({ route: "POST /v1/environments", body: prepare }, dependencies)
-    ).resolves.toMatchObject({ route: "POST /v1/environments" });
-    await expect(admitHostOperation(startRoute, dependencies)).resolves.toMatchObject({
-      route: "POST /v1/environments/:environmentId/commands"
-    });
-    const lifecycle = {
-      workspaceId,
-      runId,
-      environmentId,
-      commandId,
-      environmentAuthorizationId: environmentAuthorization.id,
-      environmentAuthorizationDigest: environmentAuthorization.digest,
-      commandAuthorizationId: commandAuthorization.id,
-      commandAuthorizationDigest: commandAuthorization.digest
-    };
-    await expect(
-      admitHostOperation(
-        {
-          route: "GET /v1/environments/:environmentId/commands/:commandId/events",
-          environmentId,
-          commandId,
-          query: lifecycle
-        },
-        dependencies
-      )
-    ).resolves.toMatchObject({
-      route: "GET /v1/environments/:environmentId/commands/:commandId/events"
-    });
-    await expect(
-      admitHostOperation(
-        {
-          route: "POST /v1/environments/:environmentId/commands/:commandId/cancel",
-          environmentId,
-          commandId,
-          body: { ...lifecycle, idempotency: { key: "cancel" } }
-        },
-        dependencies
-      )
-    ).resolves.toMatchObject({
-      route: "POST /v1/environments/:environmentId/commands/:commandId/cancel"
-    });
-    await expect(
-      admitHostOperation(
-        {
-          route: "GET /v1/artifacts/:artifactId/content",
-          artifactId: artifact.artifactId,
-          query: { ...lifecycle, range: { start: 0, end: 0 } }
-        },
-        dependencies
-      )
-    ).resolves.toMatchObject({ route: "GET /v1/artifacts/:artifactId/content" });
-    await expect(
-      admitHostOperation(
-        {
-          route: "DELETE /v1/environments/:environmentId",
-          environmentId,
-          body: {
+      ).rejects.toThrow(/prepared/i);
+      const mismatchedPreparedAuthorization = {
+        ...environmentAuthorization,
+        digest: "0".repeat(64),
+        scope: { ...scope, branch: "autostack/mismatched-prepared" }
+      };
+      mismatchedPreparedAuthorization.digest = await digestEnvironmentAuthorization(
+        mismatchedPreparedAuthorization
+      );
+      await expect(
+        admitHostOperation(startRoute, {
+          ...dependencies,
+          resolvePreparedEnvironment: async () => ({
+            environmentId,
             workspaceId,
             runId,
+            repositoryIdentity: scope.repositoryIdentity,
+            sourceCommit: scope.sourceCommit,
+            branch: mismatchedPreparedAuthorization.scope.branch,
+            authorization: mismatchedPreparedAuthorization,
+            state: "prepared",
+            preparedAt: "2026-08-21T12:00:00.000Z"
+          })
+        })
+      ).rejects.toThrow(/prepared/i);
+      await expect(
+        admitHostOperation({ route: "POST /v1/environments", body: prepare }, dependencies)
+      ).resolves.toMatchObject({ route: "POST /v1/environments" });
+      await expect(admitHostOperation(startRoute, dependencies)).resolves.toMatchObject({
+        route: "POST /v1/environments/:environmentId/commands"
+      });
+      const lifecycle = {
+        workspaceId,
+        runId,
+        environmentId,
+        commandId,
+        environmentAuthorizationId: environmentAuthorization.id,
+        environmentAuthorizationDigest: environmentAuthorization.digest,
+        commandAuthorizationId: commandAuthorization.id,
+        commandAuthorizationDigest: commandAuthorization.digest
+      };
+      await expect(
+        admitHostOperation(
+          {
+            route: "GET /v1/environments/:environmentId/commands/:commandId/events",
             environmentId,
-            environmentAuthorizationId: environmentAuthorization.id,
-            environmentAuthorizationDigest: environmentAuthorization.digest,
-            terminalRunEvidence: {
-              status: "completed",
-              terminalEventSequence: 1,
-              terminalEventDigest: "a".repeat(64)
-            },
-            idempotency: { key: "dispose" }
-          }
-        },
-        dependencies
-      )
-    ).resolves.toMatchObject({ route: "DELETE /v1/environments/:environmentId" });
+            commandId,
+            query: lifecycle
+          },
+          dependencies
+        )
+      ).resolves.toMatchObject({
+        route: "GET /v1/environments/:environmentId/commands/:commandId/events"
+      });
+      await expect(
+        admitHostOperation(
+          {
+            route: "POST /v1/environments/:environmentId/commands/:commandId/cancel",
+            environmentId,
+            commandId,
+            body: { ...lifecycle, idempotency: { key: "cancel" } }
+          },
+          dependencies
+        )
+      ).resolves.toMatchObject({
+        route: "POST /v1/environments/:environmentId/commands/:commandId/cancel"
+      });
+      await expect(
+        admitHostOperation(
+          {
+            route: "GET /v1/artifacts/:artifactId/content",
+            artifactId: artifact.artifactId,
+            query: { ...lifecycle, range: { start: 0, end: 0 } }
+          },
+          dependencies
+        )
+      ).resolves.toMatchObject({ route: "GET /v1/artifacts/:artifactId/content" });
+      await expect(
+        admitHostOperation(
+          {
+            route: "DELETE /v1/environments/:environmentId",
+            environmentId,
+            body: {
+              workspaceId,
+              runId,
+              environmentId,
+              environmentAuthorizationId: environmentAuthorization.id,
+              environmentAuthorizationDigest: environmentAuthorization.digest,
+              terminalRunEvidence: {
+                status: "completed",
+                terminalEventSequence: 1,
+                terminalEventDigest: "a".repeat(64)
+              },
+              idempotency: { key: "dispose" }
+            }
+          },
+          dependencies
+        )
+      ).resolves.toMatchObject({ route: "DELETE /v1/environments/:environmentId" });
 
-    const broadenedScope = {
-      ...commandAuthorization.scope,
-      branch: "autostack/broadened-host-read"
-    };
-    const broadenedAuthorization = {
-      ...commandAuthorization,
-      digest: "0".repeat(64),
-      approvalEvidenceDigest: await digestCommandScope(broadenedScope),
-      scope: broadenedScope
-    };
-    broadenedAuthorization.digest = await digestCommandAuthorization(broadenedAuthorization);
-    const broadenedPermissionApproval = {
-      ...permissionApproval,
-      evidenceDigest: broadenedAuthorization.approvalEvidenceDigest
-    };
-    const broadenedDependencies: TrustedHostAdmissionDependencies = {
-      ...dependencies,
-      resolveApproval: async (approvalId) =>
-        approvalId === planApproval.id
-          ? planApproval
-          : approvalId === broadenedPermissionApproval.id
-            ? broadenedPermissionApproval
-            : undefined,
-      resolveCommandAuthorization: async (authorizationId) =>
-        authorizationId === broadenedAuthorization.id ? broadenedAuthorization : undefined
-    };
-    await expect(
-      admitHostOperation(
-        {
-          route: "GET /v1/environments/:environmentId/commands/:commandId/events",
-          environmentId,
-          commandId,
-          query: {
-            ...lifecycle,
-            commandAuthorizationDigest: broadenedAuthorization.digest
-          }
-        },
-        broadenedDependencies
-      )
-    ).rejects.toThrow(/broaden/i);
-  });
+      const broadenedScope = {
+        ...commandAuthorization.scope,
+        branch: "autostack/broadened-host-read"
+      };
+      const broadenedAuthorization = {
+        ...commandAuthorization,
+        digest: "0".repeat(64),
+        approvalEvidenceDigest: await digestCommandScope(broadenedScope),
+        scope: broadenedScope
+      };
+      broadenedAuthorization.digest = await digestCommandAuthorization(broadenedAuthorization);
+      const broadenedPermissionApproval = {
+        ...permissionApproval,
+        evidenceDigest: broadenedAuthorization.approvalEvidenceDigest
+      };
+      const broadenedDependencies: TrustedHostAdmissionDependencies = {
+        ...dependencies,
+        resolveApproval: async (approvalId) =>
+          approvalId === planApproval.id
+            ? planApproval
+            : approvalId === broadenedPermissionApproval.id
+              ? broadenedPermissionApproval
+              : undefined,
+        resolveCommandAuthorization: async (authorizationId) =>
+          authorizationId === broadenedAuthorization.id ? broadenedAuthorization : undefined
+      };
+      await expect(
+        admitHostOperation(
+          {
+            route: "GET /v1/environments/:environmentId/commands/:commandId/events",
+            environmentId,
+            commandId,
+            query: {
+              ...lifecycle,
+              commandAuthorizationDigest: broadenedAuthorization.digest
+            }
+          },
+          broadenedDependencies
+        )
+      ).rejects.toThrow(/broaden/i);
+    }
+  );
 });

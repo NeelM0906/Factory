@@ -773,288 +773,272 @@ describe("local runner contracts", () => {
     ).toMatchObject({ stream: "pty" });
   });
 
-  it("admits only digest-bound, unexpired command requests and validates owned artifact and stream evidence", async () => {
-    const command = {
-      executable: "true",
-      args: [""],
-      cwd: ".",
-      environment: [],
-      timeoutSeconds: 60,
-      terminal: { columns: 80, rows: 24 }
-    };
-    const environmentAuthorization = {
-      id: ids.environmentAuthorizationId,
-      digest: "0".repeat(64),
-      approvalId: ids.approvalId,
-      approvalEvidenceDigest: await digestExecutionScope(scope),
-      scope,
-      createdAt: NOW,
-      expiresAt: "2026-08-21T13:00:00.000Z"
-    };
-    environmentAuthorization.digest =
-      await digestEnvironmentAuthorization(environmentAuthorization);
-    const commandScope = {
-      environmentAuthorizationId: ids.environmentAuthorizationId,
-      environmentAuthorizationDigest: environmentAuthorization.digest,
-      workspaceId: ids.workspaceId,
-      runId: ids.runId,
-      environmentId: ids.environmentId,
-      commandId: ids.commandId,
-      action: "implement",
-      commandDigest: await digestCommandSpec(command),
-      repositoryIdentity: scope.repositoryIdentity,
-      sourceCommit: scope.sourceCommit,
-      branch: scope.branch,
-      cwdRoot: scope.cwdRoot,
-      networkPolicy: "host",
-      filesystemDisclosure: "host_user",
-      resourceLimits: scope.resourceLimits,
-      allowedCredentialRefIds: scope.allowedCredentialRefIds
-    };
-    const authorization = {
-      id: ids.commandAuthorizationId,
-      digest: "0".repeat(64),
-      approvalId: ids.permissionApprovalId,
-      approvalEvidenceDigest: await digestCommandScope(commandScope),
-      scope: commandScope,
-      createdAt: NOW,
-      expiresAt: "2026-08-21T13:00:00.000Z"
-    };
-    authorization.digest = await digestCommandAuthorization(authorization);
-    const request = {
-      workspaceId: ids.workspaceId,
-      runId: ids.runId,
-      environmentId: ids.environmentId,
-      commandId: ids.commandId,
-      command,
-      environmentAuthorizationId: ids.environmentAuthorizationId,
-      environmentAuthorizationDigest: environmentAuthorization.digest,
-      authorization,
-      idempotency: { key: "command-start" }
-    };
-    const planApproval: Approval = {
-      schemaVersion: 1,
-      id: ids.approvalId,
-      workspaceId: ids.workspaceId,
-      runId: ids.runId,
-      kind: "plan",
-      status: "approved",
-      evidenceDigest: environmentAuthorization.approvalEvidenceDigest,
-      eligibleApproverIds: ["local-user"],
-      decision: {
-        decision: "approved",
-        actor: { kind: "user", id: "local-user" },
-        origin: "desktop",
-        decidedAt: NOW
-      },
-      createdAt: NOW,
-      updatedAt: NOW
-    };
-    const permissionApproval: Approval = {
-      schemaVersion: 1,
-      id: ids.permissionApprovalId,
-      workspaceId: ids.workspaceId,
-      runId: ids.runId,
-      kind: "permission",
-      status: "approved",
-      evidenceDigest: authorization.approvalEvidenceDigest,
-      eligibleApproverIds: ["local-user"],
-      decision: {
-        decision: "approved",
-        actor: { kind: "user", id: "local-user" },
-        origin: "desktop",
-        decidedAt: NOW
-      },
-      createdAt: NOW,
-      updatedAt: NOW
-    };
-    const approvals = new Map<Approval["id"], Approval>([
-      [ids.approvalId, planApproval],
-      [ids.permissionApprovalId, permissionApproval]
-    ]);
-    const dependencies: TrustedRunnerAdmissionDependencies = {
-      resolveApproval: async (approvalId) => approvals.get(approvalId),
-      resolveEnvironmentAuthorization: async (authorizationId) =>
-        authorizationId === environmentAuthorization.id ? environmentAuthorization : undefined,
-      resolveCommandAuthorization: async (authorizationId) =>
-        authorizationId === authorization.id ? authorization : undefined
-    };
-    await expect(admitStartCommand(request, NOW, dependencies)).resolves.toMatchObject({
-      request: { commandId: ids.commandId }
-    });
-    const prepareRequest = {
-      workspaceId: ids.workspaceId,
-      runId: ids.runId,
-      environmentId: ids.environmentId,
-      inspection: {
+  // Crypto-digest bound: this case recomputes real SHA-256 command, artifact, and stream digests
+  // across the whole request matrix, and measures ~0.3s on an unconstrained dev machine. CI runs
+  // `pnpm test:coverage` on a 2-vCPU runner with V8 coverage instrumentation while every workspace
+  // package tests in parallel, which stretches it past the 5s default.
+  it(
+    "admits only digest-bound, unexpired command requests and validates owned artifact and stream evidence",
+    { timeout: 15_000 },
+    async () => {
+      const command = {
+        executable: "true",
+        args: [""],
+        cwd: ".",
+        environment: [],
+        timeoutSeconds: 60,
+        terminal: { columns: 80, rows: 24 }
+      };
+      const environmentAuthorization = {
+        id: ids.environmentAuthorizationId,
+        digest: "0".repeat(64),
+        approvalId: ids.approvalId,
+        approvalEvidenceDigest: await digestExecutionScope(scope),
+        scope,
+        createdAt: NOW,
+        expiresAt: "2026-08-21T13:00:00.000Z"
+      };
+      environmentAuthorization.digest =
+        await digestEnvironmentAuthorization(environmentAuthorization);
+      const commandScope = {
+        environmentAuthorizationId: ids.environmentAuthorizationId,
+        environmentAuthorizationDigest: environmentAuthorization.digest,
+        workspaceId: ids.workspaceId,
+        runId: ids.runId,
+        environmentId: ids.environmentId,
+        commandId: ids.commandId,
+        action: "implement",
+        commandDigest: await digestCommandSpec(command),
         repositoryIdentity: scope.repositoryIdentity,
-        canonicalSourcePath: "/source",
-        repositoryCommonDirectory: "/source/.git",
-        resolvedBaseRef: "main",
         sourceCommit: scope.sourceCommit,
-        dirty: false,
-        diagnostics: []
-      },
-      sourceCommit: scope.sourceCommit,
-      branch: scope.branch,
-      authorization: environmentAuthorization,
-      idempotency: { key: "prepare" }
-    };
-    await expect(admitPrepareEnvironment(prepareRequest, NOW, dependencies)).resolves.toMatchObject(
-      {
+        branch: scope.branch,
+        cwdRoot: scope.cwdRoot,
+        networkPolicy: "host",
+        filesystemDisclosure: "host_user",
+        resourceLimits: scope.resourceLimits,
+        allowedCredentialRefIds: scope.allowedCredentialRefIds
+      };
+      const authorization = {
+        id: ids.commandAuthorizationId,
+        digest: "0".repeat(64),
+        approvalId: ids.permissionApprovalId,
+        approvalEvidenceDigest: await digestCommandScope(commandScope),
+        scope: commandScope,
+        createdAt: NOW,
+        expiresAt: "2026-08-21T13:00:00.000Z"
+      };
+      authorization.digest = await digestCommandAuthorization(authorization);
+      const request = {
+        workspaceId: ids.workspaceId,
+        runId: ids.runId,
+        environmentId: ids.environmentId,
+        commandId: ids.commandId,
+        command,
+        environmentAuthorizationId: ids.environmentAuthorizationId,
+        environmentAuthorizationDigest: environmentAuthorization.digest,
+        authorization,
+        idempotency: { key: "command-start" }
+      };
+      const planApproval: Approval = {
+        schemaVersion: 1,
+        id: ids.approvalId,
+        workspaceId: ids.workspaceId,
+        runId: ids.runId,
+        kind: "plan",
+        status: "approved",
+        evidenceDigest: environmentAuthorization.approvalEvidenceDigest,
+        eligibleApproverIds: ["local-user"],
+        decision: {
+          decision: "approved",
+          actor: { kind: "user", id: "local-user" },
+          origin: "desktop",
+          decidedAt: NOW
+        },
+        createdAt: NOW,
+        updatedAt: NOW
+      };
+      const permissionApproval: Approval = {
+        schemaVersion: 1,
+        id: ids.permissionApprovalId,
+        workspaceId: ids.workspaceId,
+        runId: ids.runId,
+        kind: "permission",
+        status: "approved",
+        evidenceDigest: authorization.approvalEvidenceDigest,
+        eligibleApproverIds: ["local-user"],
+        decision: {
+          decision: "approved",
+          actor: { kind: "user", id: "local-user" },
+          origin: "desktop",
+          decidedAt: NOW
+        },
+        createdAt: NOW,
+        updatedAt: NOW
+      };
+      const approvals = new Map<Approval["id"], Approval>([
+        [ids.approvalId, planApproval],
+        [ids.permissionApprovalId, permissionApproval]
+      ]);
+      const dependencies: TrustedRunnerAdmissionDependencies = {
+        resolveApproval: async (approvalId) => approvals.get(approvalId),
+        resolveEnvironmentAuthorization: async (authorizationId) =>
+          authorizationId === environmentAuthorization.id ? environmentAuthorization : undefined,
+        resolveCommandAuthorization: async (authorizationId) =>
+          authorizationId === authorization.id ? authorization : undefined
+      };
+      await expect(admitStartCommand(request, NOW, dependencies)).resolves.toMatchObject({
+        request: { commandId: ids.commandId }
+      });
+      const prepareRequest = {
+        workspaceId: ids.workspaceId,
+        runId: ids.runId,
+        environmentId: ids.environmentId,
+        inspection: {
+          repositoryIdentity: scope.repositoryIdentity,
+          canonicalSourcePath: "/source",
+          repositoryCommonDirectory: "/source/.git",
+          resolvedBaseRef: "main",
+          sourceCommit: scope.sourceCommit,
+          dirty: false,
+          diagnostics: []
+        },
+        sourceCommit: scope.sourceCommit,
+        branch: scope.branch,
+        authorization: environmentAuthorization,
+        idempotency: { key: "prepare" }
+      };
+      await expect(
+        admitPrepareEnvironment(prepareRequest, NOW, dependencies)
+      ).resolves.toMatchObject({
         request: { environmentId: ids.environmentId }
-      }
-    );
-    approvals.set(ids.approvalId, {
-      ...planApproval,
-      decision: {
-        decision: "approved",
-        actor: { kind: "user", id: "not-eligible" },
-        origin: "desktop",
-        decidedAt: NOW
-      }
-    });
-    await expect(admitPrepareEnvironment(prepareRequest, NOW, dependencies)).rejects.toThrow(
-      /eligible/i
-    );
-    approvals.set(ids.approvalId, planApproval);
-    approvals.set(ids.permissionApprovalId, {
-      ...permissionApproval,
-      updatedAt: "2026-08-21T11:59:59.000Z"
-    });
-    await expect(admitStartCommand(request, NOW, dependencies)).rejects.toThrow(/chronolog|stale/i);
-    approvals.set(ids.permissionApprovalId, permissionApproval);
-    await expect(
-      admitStartCommand(
-        { ...request, command: { ...command, args: ["substituted"] } },
-        NOW,
-        dependencies
-      )
-    ).rejects.toThrow(/specification/i);
-    await expect(
-      admitStartCommand(
-        { ...request, command: { ...command, executable: "bash", args: ["-c", "echo safe"] } },
-        NOW,
-        dependencies
-      )
-    ).rejects.toThrow(/shell command-string/i);
-    await expect(
-      admitStartCommand(request, "2026-08-22T12:00:00.000Z", dependencies)
-    ).rejects.toThrow(/expired/i);
-    const artifact = {
-      artifactId: createId("artifact", UUID),
-      workspaceId: ids.workspaceId,
-      runId: ids.runId,
-      commandId: ids.commandId,
-      kind: "command_transcript",
-      mediaType: "text/plain",
-      digest: DIGEST,
-      byteSize: 1,
-      createdAt: NOW
-    };
-    const artifactRequest = {
-      workspaceId: ids.workspaceId,
-      runId: ids.runId,
-      environmentId: ids.environmentId,
-      commandId: ids.commandId,
-      artifactId: artifact.artifactId,
-      environmentAuthorizationId: ids.environmentAuthorizationId,
-      environmentAuthorizationDigest: environmentAuthorization.digest,
-      commandAuthorizationId: ids.commandAuthorizationId,
-      commandAuthorizationDigest: authorization.digest,
-      offset: 0,
-      length: 1
-    };
-    expect(
-      validateArtifactChunkResponse(artifactRequest, {
-        artifact,
+      });
+      approvals.set(ids.approvalId, {
+        ...planApproval,
+        decision: {
+          decision: "approved",
+          actor: { kind: "user", id: "not-eligible" },
+          origin: "desktop",
+          decidedAt: NOW
+        }
+      });
+      await expect(admitPrepareEnvironment(prepareRequest, NOW, dependencies)).rejects.toThrow(
+        /eligible/i
+      );
+      approvals.set(ids.approvalId, planApproval);
+      approvals.set(ids.permissionApprovalId, {
+        ...permissionApproval,
+        updatedAt: "2026-08-21T11:59:59.000Z"
+      });
+      await expect(admitStartCommand(request, NOW, dependencies)).rejects.toThrow(
+        /chronolog|stale/i
+      );
+      approvals.set(ids.permissionApprovalId, permissionApproval);
+      await expect(
+        admitStartCommand(
+          { ...request, command: { ...command, args: ["substituted"] } },
+          NOW,
+          dependencies
+        )
+      ).rejects.toThrow(/specification/i);
+      await expect(
+        admitStartCommand(
+          { ...request, command: { ...command, executable: "bash", args: ["-c", "echo safe"] } },
+          NOW,
+          dependencies
+        )
+      ).rejects.toThrow(/shell command-string/i);
+      await expect(
+        admitStartCommand(request, "2026-08-22T12:00:00.000Z", dependencies)
+      ).rejects.toThrow(/expired/i);
+      const artifact = {
+        artifactId: createId("artifact", UUID),
+        workspaceId: ids.workspaceId,
+        runId: ids.runId,
+        commandId: ids.commandId,
+        kind: "command_transcript",
+        mediaType: "text/plain",
+        digest: DIGEST,
+        byteSize: 1,
+        createdAt: NOW
+      };
+      const artifactRequest = {
+        workspaceId: ids.workspaceId,
+        runId: ids.runId,
+        environmentId: ids.environmentId,
+        commandId: ids.commandId,
+        artifactId: artifact.artifactId,
+        environmentAuthorizationId: ids.environmentAuthorizationId,
+        environmentAuthorizationDigest: environmentAuthorization.digest,
+        commandAuthorizationId: ids.commandAuthorizationId,
+        commandAuthorizationDigest: authorization.digest,
         offset: 0,
-        bytes: "YQ==",
-        nextOffset: 1,
-        done: true
-      })
-    ).toMatchObject({ done: true });
-    expect(
-      validateRunnerStream([
-        {
-          type: "command.started",
-          workspaceId: ids.workspaceId,
-          runId: ids.runId,
-          commandId: ids.commandId,
-          sequence: 1,
-          occurredAt: NOW,
-          pty: true
-        },
-        {
-          type: "artifact.created",
-          workspaceId: ids.workspaceId,
-          runId: ids.runId,
-          commandId: ids.commandId,
-          sequence: 2,
-          occurredAt: NOW,
-          artifact
-        },
-        {
-          type: "command.completed",
-          workspaceId: ids.workspaceId,
-          runId: ids.runId,
-          commandId: ids.commandId,
-          sequence: 3,
-          occurredAt: NOW,
-          exitCode: 0,
-          signal: null,
-          durationMs: 1,
-          cancelled: false,
-          interrupted: false,
-          transcript: artifact
-        }
-      ])
-    ).toHaveLength(3);
-    expect(() => validateRunnerStream([])).toThrow(/terminal/i);
-    expect(() =>
-      validateRunnerStream([
-        {
-          type: "command.started",
-          workspaceId: ids.workspaceId,
-          runId: ids.runId,
-          commandId: ids.commandId,
-          sequence: 1,
-          occurredAt: NOW,
-          pty: true
-        },
-        {
-          type: "command.started",
-          workspaceId: ids.workspaceId,
-          runId: ids.runId,
-          commandId: ids.commandId,
-          sequence: 2,
-          occurredAt: NOW,
-          pty: true
-        },
-        {
-          type: "stream.error",
-          workspaceId: ids.workspaceId,
-          runId: ids.runId,
-          commandId: ids.commandId,
-          sequence: 3,
-          occurredAt: NOW,
-          code: "protocol_failure",
-          message: "safe failure"
-        }
-      ])
-    ).toThrow(/start/i);
-    expect(
-      validateRunnerStream(
-        [
+        length: 1
+      };
+      expect(
+        validateArtifactChunkResponse(artifactRequest, {
+          artifact,
+          offset: 0,
+          bytes: "YQ==",
+          nextOffset: 1,
+          done: true
+        })
+      ).toMatchObject({ done: true });
+      expect(
+        validateRunnerStream([
           {
-            type: "terminal.output",
+            type: "command.started",
+            workspaceId: ids.workspaceId,
+            runId: ids.runId,
+            commandId: ids.commandId,
+            sequence: 1,
+            occurredAt: NOW,
+            pty: true
+          },
+          {
+            type: "artifact.created",
             workspaceId: ids.workspaceId,
             runId: ids.runId,
             commandId: ids.commandId,
             sequence: 2,
             occurredAt: NOW,
-            stream: "pty",
-            text: "resumed"
+            artifact
+          },
+          {
+            type: "command.completed",
+            workspaceId: ids.workspaceId,
+            runId: ids.runId,
+            commandId: ids.commandId,
+            sequence: 3,
+            occurredAt: NOW,
+            exitCode: 0,
+            signal: null,
+            durationMs: 1,
+            cancelled: false,
+            interrupted: false,
+            transcript: artifact
+          }
+        ])
+      ).toHaveLength(3);
+      expect(() => validateRunnerStream([])).toThrow(/terminal/i);
+      expect(() =>
+        validateRunnerStream([
+          {
+            type: "command.started",
+            workspaceId: ids.workspaceId,
+            runId: ids.runId,
+            commandId: ids.commandId,
+            sequence: 1,
+            occurredAt: NOW,
+            pty: true
+          },
+          {
+            type: "command.started",
+            workspaceId: ids.workspaceId,
+            runId: ids.runId,
+            commandId: ids.commandId,
+            sequence: 2,
+            occurredAt: NOW,
+            pty: true
           },
           {
             type: "stream.error",
@@ -1066,31 +1050,42 @@ describe("local runner contracts", () => {
             code: "protocol_failure",
             message: "safe failure"
           }
-        ],
-        {
-          workspaceId: ids.workspaceId,
-          runId: ids.runId,
-          commandId: ids.commandId,
-          after: 1
-        }
-      )
-    ).toHaveLength(2);
-    expect(() =>
-      validateRunnerStream([
-        {
-          type: "command.started",
-          workspaceId: ids.workspaceId,
-          runId: ids.runId,
-          commandId: ids.commandId,
-          sequence: 1,
-          occurredAt: NOW,
-          pty: true
-        }
-      ])
-    ).toThrow(/terminal/i);
-    expect(() =>
-      validateRunnerStream(
-        [
+        ])
+      ).toThrow(/start/i);
+      expect(
+        validateRunnerStream(
+          [
+            {
+              type: "terminal.output",
+              workspaceId: ids.workspaceId,
+              runId: ids.runId,
+              commandId: ids.commandId,
+              sequence: 2,
+              occurredAt: NOW,
+              stream: "pty",
+              text: "resumed"
+            },
+            {
+              type: "stream.error",
+              workspaceId: ids.workspaceId,
+              runId: ids.runId,
+              commandId: ids.commandId,
+              sequence: 3,
+              occurredAt: NOW,
+              code: "protocol_failure",
+              message: "safe failure"
+            }
+          ],
+          {
+            workspaceId: ids.workspaceId,
+            runId: ids.runId,
+            commandId: ids.commandId,
+            after: 1
+          }
+        )
+      ).toHaveLength(2);
+      expect(() =>
+        validateRunnerStream([
           {
             type: "command.started",
             workspaceId: ids.workspaceId,
@@ -1099,57 +1094,72 @@ describe("local runner contracts", () => {
             sequence: 1,
             occurredAt: NOW,
             pty: true
-          },
+          }
+        ])
+      ).toThrow(/terminal/i);
+      expect(() =>
+        validateRunnerStream(
+          [
+            {
+              type: "command.started",
+              workspaceId: ids.workspaceId,
+              runId: ids.runId,
+              commandId: ids.commandId,
+              sequence: 1,
+              occurredAt: NOW,
+              pty: true
+            },
+            {
+              type: "stream.error",
+              workspaceId: ids.workspaceId,
+              runId: ids.runId,
+              commandId: ids.commandId,
+              sequence: 2,
+              occurredAt: NOW,
+              code: "protocol_failure",
+              message: "safe failure"
+            }
+          ],
           {
-            type: "stream.error",
-            workspaceId: ids.workspaceId,
+            workspaceId: createId("workspace", "123e4567-e89b-42d3-a456-426614174099"),
             runId: ids.runId,
             commandId: ids.commandId,
-            sequence: 2,
-            occurredAt: NOW,
-            code: "protocol_failure",
-            message: "safe failure"
+            after: 0
           }
-        ],
-        {
-          workspaceId: createId("workspace", "123e4567-e89b-42d3-a456-426614174099"),
-          runId: ids.runId,
-          commandId: ids.commandId,
-          after: 0
-        }
-      )
-    ).toThrow(/identity/i);
-    expect(() =>
-      validateArtifactChunkResponse(artifactRequest, {
-        artifact: {
-          ...artifact,
-          commandId: createId("command", "123e4567-e89b-42d3-a456-426614174001")
-        },
-        offset: 0,
-        bytes: "YQ==",
-        nextOffset: 1,
-        done: true
-      })
-    ).toThrow(/match/i);
-    expect(() =>
-      ReadArtifactChunkResponseSchema.parse({
-        artifact: { ...artifact, byteSize: 2 },
-        offset: 0,
-        bytes: "",
-        nextOffset: 0,
-        done: false
-      })
-    ).toThrow(/progress/i);
-    expect(() =>
-      ReadArtifactChunkResponseSchema.parse({
-        artifact,
-        offset: 0,
-        bytes: "YR==",
-        nextOffset: 1,
-        done: true
-      })
-    ).toThrow(/base64/i);
-  });
+        )
+      ).toThrow(/identity/i);
+      expect(() =>
+        validateArtifactChunkResponse(artifactRequest, {
+          artifact: {
+            ...artifact,
+            commandId: createId("command", "123e4567-e89b-42d3-a456-426614174001")
+          },
+          offset: 0,
+          bytes: "YQ==",
+          nextOffset: 1,
+          done: true
+        })
+      ).toThrow(/match/i);
+      expect(() =>
+        ReadArtifactChunkResponseSchema.parse({
+          artifact: { ...artifact, byteSize: 2 },
+          offset: 0,
+          bytes: "",
+          nextOffset: 0,
+          done: false
+        })
+      ).toThrow(/progress/i);
+      expect(() =>
+        ReadArtifactChunkResponseSchema.parse({
+          artifact,
+          offset: 0,
+          bytes: "YR==",
+          nextOffset: 1,
+          done: true
+        })
+      ).toThrow(/base64/i);
+    }
+  );
 
   it("rejects a self-consistent prepare authorization that is absent from trusted approval state", async () => {
     const authorization = {
