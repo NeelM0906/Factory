@@ -25,6 +25,7 @@ Secrets have exactly **two** call sites, and the credential store is the only co
 Inherited verbatim from the master plan's Global constraints and the stream-lead protocol; restated here as the review checklist for every task.
 
 - **Ownership.** Create/modify only `packages/model-router/**` and this plan document. Never touch `packages/contracts`, `packages/domain`, another stream's package, `apps/desktop`, root config, or CI. A blocking contract shape is an escalation, never a local workaround.
+- **Task subagents are package-scoped; protocol files are the lead's.** A task-level subagent writes only under `packages/model-router/**` (plus `pnpm-lock.yaml` where a task adds a dependency). Everything under `.superpowers/sdd/` — `progress.md`, `stream-report.md` — is a protocol file owned by the stream lead. A subagent that has something to record there puts it in its **task report** and the lead transcribes it. This keeps the ledger single-writer, so it stays a reliable recovery map rather than a merge surface.
 - **No cross-implementation imports.** Depend on `@autostack/contracts` and `@autostack/domain/testing` only.
 - **Security.** No secrets in events, artifacts, logs, error messages, or serialized structures; fail closed when OS protection is unavailable; provider responses are untrusted input (spec §14.1) and never widen a capability, a permission, or a policy ceiling; never a shell string anywhere.
 - **TDD.** Failing test first with the stated failure observed, then the minimal implementation, then a focused re-run, then full package verification, then one conventional commit per task.
@@ -154,7 +155,7 @@ Rulings received are marked **RULED**; the remainder are implemented as written 
 }
 ```
 
-Resolve each caret to the exact installed version after `pnpm install` and record the resolved set in `.superpowers/sdd/stream-report.md` (ESC-2). `tsconfig.json` and `vitest.config.ts` are copied from `packages/runner-local` unchanged (`types: ["node", "vitest/globals"]`, `include: ["src/**/*.ts", "test/**/*.ts"]`; the root `vitest.config.ts` supplies the 80% thresholds).
+Resolve each caret to the exact installed version after `pnpm install` and **report the resolved set in the task report** — the stream lead records it in `.superpowers/sdd/stream-report.md` (ESC-2). `tsconfig.json` and `vitest.config.ts` are copied from `packages/runner-local` unchanged (`types: ["node", "vitest/globals"]`, `include: ["src/**/*.ts", "test/**/*.ts"]`; the root `vitest.config.ts` supplies the 80% thresholds).
 
 - [ ] **Step 2: Add the failing taxonomy-builder test**
 
