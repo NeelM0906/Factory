@@ -57,6 +57,26 @@ The lead reviews the working tree against the report, then stages and commits. `
 
 **Parallelism rule:** at most one implementer holds the working tree at a time. Independent tasks may be _briefed_ in parallel but are _executed_ serially, until and unless each runs in its own worktree. Task 1's fix loop predated this ruling and ran amend-by-subagent; it was the only agent in this worktree at the time, so no race occurred, and the model is in force from Task 1's final commit onward.
 
+### jsdom is CSS-blind here — measured, and it silently fakes guards
+
+Measured in `packages/ui`'s Vitest environment before Task 3 was briefed:
+
+```
+document.styleSheets.length                                       === 0
+getComputedStyle(root).getPropertyValue("--as-duration-standard")  === ""
+```
+
+No stylesheet is loaded in any jsdom test in this repo. So **every assertion about a CSS token value, `color-scheme`, or a computed transition duration is vacuous in Vitest** — it reads `""` and can never observe the real value. `expect(...getPropertyValue("--as-duration-standard")).not.toBe("220ms")` passes forever, with or without the bug. That is the Task 1 finding-3 failure mode in a new location, so it is banned by name.
+
+**The split, binding on every task in this plan:**
+
+| Layer                                                                    | Asserted in                         |
+| ------------------------------------------------------------------------ | ----------------------------------- |
+| DOM contract — attributes, roles, accessible names, storage, listeners   | Vitest + `@testing-library/react`   |
+| CSS consequence — token values, contrast, `color-scheme`, computed `0ms` | Playwright (Task 15b), real browser |
+
+This also confirms the Task 10b scoping already written there: the web axe-in-Vitest gate covers structure, roles, names, and labelling — **not** colour contrast, which needs a browser that actually cascades. Contrast is Task 15b's, in both themes.
+
 ### Lockfile discipline (note 13)
 
 Three tasks touch `pnpm-lock.yaml`, all unavoidably and all expected: Task 10b adds `axe-core` as a devDependency of `@autostack/web`; Task 11a creates the `packages/observability` workspace entry. `pnpm install --frozen-lockfile` is a CI gate, so the lockfile change is committed **with the task that causes it**, never separately, and no task adds a dependency it does not consume in the same commit.
