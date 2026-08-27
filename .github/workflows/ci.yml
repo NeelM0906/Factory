@@ -3,7 +3,12 @@ name: CI
 on:
   push:
     branches: [main, "codex/**"]
+  # Stream S5's live GitHub suite opens and closes draft PRs against `autostack/e2e-base-*` branches
+  # on this repository. Without this filter every one of them would start the whole matrix,
+  # including the 60-minute macOS job, to test a branch that exists only as a fixture. PRs with any
+  # other base -- main, codex/** -- are unaffected.
   pull_request:
+    branches-ignore: ["autostack/**"]
 
 permissions:
   contents: read
@@ -190,6 +195,17 @@ jobs:
         # above -- which are this job's purpose and finish in minutes -- fail fast before this
         # ~5-minute suite. Local serialized runtime is ~273s, well inside the 60-minute budget.
         run: pnpm test:coverage --filter=@autostack/runner-local
+
+      - name: Upload macOS coverage
+        # runner-local's coverage is produced only on this job, since the ubuntu job excludes the
+        # package. Without this it was computed and thrown away.
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: coverage-macos
+          path: "**/coverage/**"
+          if-no-files-found: warn
+          retention-days: 7
 
       - name: Upload sanitized Electron evidence
         if: always()

@@ -57,11 +57,26 @@ const probe = spawnSync(
     timeout: 60_000
   }
 );
-if (probe.status !== 0 || probe.stdout.length === 0) {
+// A failed spawn leaves `status`, `stdout`, and `stderr` all null, so reaching for `.trim()` first
+// would throw a null-property TypeError and bury the real reason. Classify before formatting.
+const probeFailure = () => {
+  if (probe.error instanceof Error) return `spawn failed: ${probe.error.message}`;
+  if (probe.signal !== null && probe.signal !== undefined) return `killed by ${probe.signal}`;
+  const stderr = typeof probe.stderr === "string" ? probe.stderr.trim() : "";
+  const stdout = typeof probe.stdout === "string" ? probe.stdout.trim() : "";
+  if (probe.status !== 0)
+    return `exited ${String(probe.status)}: ${stderr || stdout || "no output"}`;
+  // The probe prints Electron's NODE_MODULE_VERSION. Anything else means it did not run the module
+  // load we asked for, so a silent pass here would be worse than no check at all.
+  if (!/^[0-9]{1,4}$/.test(stdout)) {
+    return `expected a NODE_MODULE_VERSION, got ${JSON.stringify(stdout.slice(0, 64))}`;
+  }
+  return null;
+};
+const probeFailureReason = probeFailure();
+if (probeFailureReason !== null) {
   throw new TypeError(
-    `staged native runtime does not load under Electron ${electronPackage.version}: ${
-      probe.stderr.trim() || probe.stdout.trim() || "no output"
-    }`
+    `staged native runtime does not load under Electron ${electronPackage.version}: ${probeFailureReason}`
   );
 }
 
