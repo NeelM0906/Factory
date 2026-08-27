@@ -11,6 +11,11 @@ Wave 1 stream leads: read the **Additions** section for the new shapes you are e
 against, and the **Resolved escalations** section for the two ingress-enum changes the orchestrator
 approved after the first review pass.
 
+**Revision 4 (Task 0.12 — the consolidated Wave 1 batch):** the six stream plans were written against
+revision 3 and surfaced nine further gaps between them. Items 22–29 record them. Every change is
+append-only on an existing export — new schemas, new optional fields, new `EVENT_TYPES` members with
+their coherence rules — with one orchestrator-approved exception noted in item 27.
+
 **Revision 3 (post Task 0.2):** building the shared fakes exercised these contracts against real
 consumers for the first time and surfaced two gaps the audit had missed. Both were escalated and
 approved before the change: `AgentHarnessPort` could not carry the detail events item 2 added
@@ -45,6 +50,14 @@ inbox paging (item 20).
 | 19  | `WorkItem` intake with source references (§7)           | SUFFICIENT                                             |
 | 20  | Approval/steer/cancel HTTP schemas                      | GAP — fixed                                            |
 | 21  | Model routing failure taxonomy (§8.3, §10.1)            | GAP — fixed (revision 3)                               |
+| 22  | Model invocation seam (§10.1)                           | GAP — fixed (revision 4)                               |
+| 23  | Station document provenance (§16.2)                     | GAP — fixed (revision 4)                               |
+| 24  | Triage and review digest helpers (§8.2)                 | GAP — fixed (revision 4)                               |
+| 25  | Per-attempt usage ordinal (§10.2)                       | GAP — fixed (revision 4)                               |
+| 26  | Desktop approval, steering, cancellation (§4.1)         | GAP — fixed (revision 4)                               |
+| 27  | Rework from a failed verification (§8.2)                | GAP — fixed (revision 4, widening)                     |
+| 28  | Pipeline, clarification, steering, agent relay events   | GAP — fixed (revision 4)                               |
+| 29  | Work item on an agent invocation (§14.1)                | GAP — fixed (revision 4)                               |
 
 ## Agent contract — spec §9.1–9.3, streams S1 and S2
 
@@ -218,6 +231,58 @@ This also closes `ModelRouteFallbackSchema.failureCode` (item 9): the field bind
 structurally. The earlier deferral of that binding rested on a false premise — there were no
 recorded fallbacks to break, because the taxonomy and the schema landed in the same branch.
 
+### 22. Model invocation seam — GAP (revision 4)
+
+`ModelRouterPort` (`packages/contracts/src/model.ts:483`) resolves a route, records usage, and looks
+one up. Nothing could **execute** one. S1's constraint that every model call goes through the router
+was therefore unimplementable, and S3's `runWithRoute` had no contract to implement (S1 escalation
+E1, S3 ESC-1). Two drafts existed and disagreed.
+
+**Addition:** `ModelInferencePort` (`packages/contracts/src/model.ts:478`) with
+`ModelInferenceRequestSchema` (`:390`), `ModelInferenceResultSchema` (`:412`), and
+`admitModelInferenceResult` (`:441`), over `ModelMessageSchema` (`:372`),
+`ModelGenerationOptionsSchema` (`:382`), `MODEL_MESSAGE_ROLES` (`:369`), and `MODEL_FINISH_REASONS`
+(`:409`).
+
+Reconciliation decisions, recorded because both drafts had to give something up:
+
+- **The request carries the `ModelRouteSelection`, not a route handle.** S3's plan expected
+  `ModelRouteHandle` to land here. It cannot: a handle wraps an AI SDK language model, and contracts
+  must name no vendor type. S3 keeps `ModelRouteHandle` internal to `packages/model-router`, where
+  the AI SDK already lives.
+- **`SafeJsonObject` does not exist and was not created.** S1's draft referenced it for structured
+  output. Instead `responseFormat: "json"` asks the provider for JSON _text_, and the caller that owns
+  the document schema parses it — so no response schema crosses this boundary and prompt shapes stay
+  entirely in S1, which is what S3's ESC-1 also required.
+- **`maxOutputTokens` is required, not optional.** An unbounded generation cannot be checked against
+  `ModelPolicySchema.maxOutputTokens` (`:325`), and a caller that does not care still has to say so.
+- **No tool-calling and no streaming**, per S1's E5 ruling. The strict objects make both structurally
+  impossible rather than merely undocumented.
+
+The result preserves unknown provider usage through `ModelTokenUsageSchema`/`ModelCostSchema`, which
+is the only reason §10.2's "recorded as unknown rather than estimated as exact" can hold at the
+boundary that actually knows. Failures are `ModelRoutingError` (item 21), so the taxonomy survives
+the call. `createFakeModelInference` (`packages/domain/src/testing/fake-model-inference.ts:35`) joins
+the Task 0.2 fakes.
+
+### 25. Per-attempt usage ordinal — GAP (revision 4)
+
+A router that falls back keeps one `idempotencyKey` across attempts, because the caller asked once.
+The per-attempt `ModelUsageRecord`s were therefore indistinguishable, and cost would be attributed to
+whichever arrived last.
+
+**Addition:** an append-only optional `attempt` ordinal on `ModelUsageRecordSchema`
+(`packages/contracts/src/model.ts:213`), nonnegative rather than positive per S3's ruling, so a first
+attempt may be numbered 0 or 1 without the contract taking a side. Note the deliberate divergence
+from `StageRunSchema.attempt` and `PipelineStageRequestSchema.attempt`, which are positive: those
+count stage executions, this one indexes retries inside a single call.
+
+**Item 8 confirmed, not merely assumed.** S1's finding 12 claims `ModelUsageSchema` cannot express
+unknown usage while `ModelUsageRecordSchema` can. Verified and now pinned by a test: the exact-count
+shape's missing counts default to `0` and it rejects the `{ state: "unknown" }` variants outright,
+while the record shape carries them. A producer holding unknowns must therefore not fall back to
+`ModelUsageSchema` — doing so would fabricate zeros.
+
 ## Pipeline contract — spec §8, stream S4
 
 ### 11. Per-station evidence content — GAP
@@ -290,6 +355,45 @@ acceptance criteria and verification commands.
 `ImplementationEvidenceSchema.finalDiffDigest`, and `PublicationEvidenceBundleSchema`
 (`pipeline.ts:284`) already enforces that binding.
 
+### 23. Station document provenance — GAP (revision 4)
+
+Spec §16.2 requires the prompt version behind a station document to be stored, and S1's native roles
+produce triage, plan, and review documents from versioned prompts through a route. Nothing in the
+document shapes could say so, which left that requirement aspirational (S1 escalation E2).
+
+**Addition:** `StationProvenanceSchema` (`packages/contracts/src/station-evidence.ts:34`) as an
+optional `producedBy` on `TriageReportSchema` (`:70`), `PlanDocumentSchema` (`:133`), and
+`ReviewReportSchema` (`:243`), carrying `adapterId`, `promptRef`, `promptVersion`, and an optional
+`routeRef`. Optional because a document may be authored by a human, or by an adapter with no prompt
+registry.
+
+`canonicalizePlanDocumentForDigest` already listed its fields explicitly, so provenance is excluded
+from the plan digest for free — but the reason is now written down and pinned. Provenance is metadata,
+not approved content: §14.2 invalidates an approval only on _material_ change, and if a prompt bump
+moved the plan digest it would silently revoke every outstanding plan approval. This is the same
+reasoning the contract already applies to `producedAt`.
+
+### 24. Triage and review digest helpers — GAP (revision 4)
+
+`PlanDocument` and `VerificationReport` had canonicalize/digest/admit helpers; `TriageReport` and
+`ReviewReport` had none, so S1 (producer) and S4 (verifier) would each have invented one
+(S1 escalation E3).
+
+**Addition:** `canonicalizeTriageReportForDigest` (`packages/contracts/src/station-evidence.ts:385`),
+`digestTriageReport` (`:405`), `canonicalizeReviewReportForDigest` (`:417`), `digestReviewReport`
+(`:434`), and `admitTriageReport` (`:471`).
+
+Both follow the **verification report's** rule rather than the plan document's: every field is
+covered, `producedAt` and `producedBy` included, because both are evidence of one specific reading
+rather than content a human approved. That asymmetry with the plan document is the point of the pair
+and is asserted in both directions. An absent optional contributes nothing to the canonical form, so
+a document that omits one and a document that sets it to `undefined` digest alike.
+
+`admitTriageReport` binds a report to the digest it was recorded under. Triage is the first station:
+there is no upstream document to bind to and no self-digest field, so that is the only check
+available and the helper claims no more. `ReviewReport` keeps `admitReviewReport` for its upstream
+binding, with `digestReviewReport` supplying the envelope check alongside it.
+
 ### 12. Bounded implement→review rework — GAP (partly sufficient)
 
 The **counter** is durable and sufficient: `StageRunSchema.attempt`
@@ -306,6 +410,61 @@ and S4's charter names explicitly — throws.
 `isolated_review → implement` while the attempt bound holds. `assertPipelineTransition` is untouched
 and still the only path to forward progress. The bound is an argument defaulting to 3 so Milestone B's
 one-to-five workspace policy (§8.3) fits without a contract change.
+
+### 27. Rework from a failed verification — GAP (revision 4, the batch's one widening)
+
+`assertPipelineReworkTransition` accepted only `isolated_review`, so S4 had nowhere to route a failed
+verification: `assertPipelineTransition` only advances, and the single backward edge was reserved for
+review. The pipeline could represent "the reviewer rejected this" but not "its own tests reject this".
+
+**Change (orchestrator-approved, not append-only):** `PIPELINE_REWORK_SOURCE_STAGES`
+(`packages/contracts/src/pipeline.ts:424`) now admits `verify` alongside `isolated_review`
+(`:435`, `:440`). Both are judgements of the implementation, both send it back to the same station,
+and both sit under the same attempt bound. Routing a failed verification forward into review instead
+would ask a reviewer to approve code its own tests reject.
+
+It only widens: every call that succeeded before still succeeds. The one existing test asserting
+`verify` threw is replaced by tests asserting both directions.
+
+### 28. Pipeline, clarification, steering, and agent relay events — GAP (revision 4)
+
+Revision 1 deferred new `EVENT_TYPES` members with the condition that a stream needing them "should
+request the addition through the orchestrator with the coherence rules in `validateRunStreamCoherence`
+updated in the same change". S4 did, with a tabulation; this is that change.
+
+`EVENT_TYPES` (`packages/contracts/src/events.ts:87`) gains `pipeline.evidence_recorded`,
+`clarification.requested` (`:214`), `clarification.answered` (`:220`), `run.steered` (`:226`), and
+`agent.session_event` (`:240`), each with a coherence case (`:979`, `:1037`, `:1065`, `:1069`).
+
+- **`pipeline.evidence_recorded`** (`:201`) carries the evidence and optionally the document it
+  addresses, tagged by `PipelineStationDocumentSchema`
+  (`packages/contracts/src/station-evidence.ts:274`). The four document shapes share no discriminator
+  of their own — a plan and a review are simply different objects — so the tag is what tells a reader
+  which admission rule applies. Coherence orders stages per run: forward through
+  `assertPipelineTransition`, or back to `implement` through `assertPipelineReworkTransition` when the
+  previous stage judged the implementation (item 27).
+
+  **Each envelope binds only what it actually names**, which is an asymmetry worth stating rather than
+  papering over: the plan evidence names a `planDigest` and the document is admitted against it;
+  verification evidence names a pass the report must support; review evidence names a verdict and a
+  reviewed diff that must agree; **triage evidence names nothing about its report**, so run identity
+  is the whole check there. Closing that last gap would mean adding a digest field to
+  `TriageEvidenceSchema`, which is not append-only and was not in scope.
+
+- **`clarification.requested` / `clarification.answered`** enforce one question per reference per run,
+  at most one answer, and refuse an answer to a question nobody asked.
+
+- **`run.steered`** refuses a terminal run, reusing the existing `assertRunCanExecute` guard.
+
+- **`agent.session_event`** relays the normalized stream in one strictly increasing sequence per
+  session, with the envelope's `sequence` and `agentSessionId` bound to the relayed event's own so
+  there is one source of truth. Its payload uses `AgentSessionStreamEventSchema` directly: those
+  strings are already `SafeMetadataString`, so a relay that failed to redact cannot get its output
+  past the schema — **the projection is the redaction contract**, not a convention.
+
+Additive to `DomainEventType`. The only existing test touched is the completeness guard that requires
+a payload fixture per declared type — the guard doing its job; its assertions are unchanged and the
+five fixtures are appended so the positional indices other tests rely on stay put.
 
 ### 13. Clarification question/answer — GAP
 
@@ -381,6 +540,37 @@ approval and rejection actions" and S5's "approval interactivity payloads" had n
 binding §13.2 requires validating, the same evidence digest for staleness, and
 `deliveryId`/`deduplicationKey` so an interactive payload is deduplicated like any other delivery.
 
+### 26. Desktop approval, steering, and cancellation — GAP (revision 4)
+
+Item 20 added the four HTTP schemas S6's approval inbox and composer need, but the desktop bridge
+knew only `factory.health`, `factory.runs.list`, `factory.runs.events`, and `factory.runs.create`, so
+over IPC the inbox had nowhere to call.
+
+**Addition:** `DesktopFactoryApprovalListRequestSchema`
+(`packages/contracts/src/desktop-api.ts:180`), `DesktopFactoryApprovalDecideRequestSchema` (`:183`),
+`DesktopFactoryRunSteerRequestSchema` (`:188`), and `DesktopFactoryRunCancelRequestSchema` (`:192`),
+registered in the request map, the discriminated union, and the response map.
+
+Each is derived from the HTTP schema it mirrors with `.extend` rather than re-declared, so the two
+surfaces cannot drift and the inbox's paging bounds are the same bounds on both — the same discipline
+item 20 applied by reusing `ApprovalSchema.shape`. Two deliberate differences from HTTP: there is no
+idempotency key, because a renderer that could choose one could replay another window's decision by
+guessing it, so the main process derives it; and `origin` is narrowed to the literal `"desktop"`,
+because the renderer is the desktop and a contract that let it claim to be Slack would be recording a
+lie. Contracts only — Wave 2 wires the handlers and the preload surface.
+
+### 29. Work item on an agent invocation — GAP (revision 4)
+
+S1's native roles produce triage, plan, and review documents, and all three carry `workItemId` in
+their identity shape. `AgentInvocationRequestSchema` had `workspaceId`, `runId`, and `stageRunId` but
+no work item, so the only remaining source at document assembly would have been the model — and §14.1
+forbids untrusted output supplying identity for a document it authors.
+
+**Addition:** an append-only optional `workItemId` (`packages/contracts/src/agent.ts:70`). Optional
+because an adapter may be invoked outside a work item; S1's roles treat it as required at admission
+and fail closed when absent, which is the adapter's rule to enforce rather than the contract's to
+assume.
+
 ## Cross-cutting
 
 ### 19. `WorkItem` intake — SUFFICIENT
@@ -455,8 +645,10 @@ silently.
 
 ## Verification
 
-- `pnpm --filter @autostack/contracts test` — 287 passed (15 files) after revision 3; 282 at
-  revision 2.
+- `pnpm --filter @autostack/contracts test` — 320 passed (16 files) after revision 4; 287 at
+  revision 3; 282 at revision 2.
+- `pnpm --filter @autostack/domain test` — 114 passed (12 files) after revision 4, including the four
+  shared fakes.
 - `pnpm --filter @autostack/contracts test:coverage` — statements 90.6%, branches 82.5%,
   functions 93.8%, lines 92.2%; `station-evidence.ts` at 100%.
 - `pnpm check` — 12/12 tasks successful.
