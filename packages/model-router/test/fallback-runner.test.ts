@@ -186,4 +186,30 @@ describe("runWithFallback", () => {
     expect(attempt).not.toHaveBeenCalled();
     expect(sink.record).not.toHaveBeenCalled();
   });
+
+  it("raises before calling attempt when the order is empty", async () => {
+    const sink = createSink();
+    const attempt = vi.fn(async (_target: ModelRouteTarget, _ordinal: number) => "ok");
+
+    await expect(runWithFallback({ order: [], context, attempt, sink, now })).rejects.toThrow(
+      TypeError
+    );
+
+    expect(attempt).not.toHaveBeenCalled();
+  });
+
+  it("re-raises a non-ModelRoutingError unchanged without advancing or recording a fallback", async () => {
+    const sink = createSink();
+    const bug = new TypeError("undefined is not a function");
+    const attempt = vi.fn(async (_target: ModelRouteTarget, _ordinal: number) => {
+      throw bug;
+    });
+
+    const promise = runWithFallback({ order: [routeA, routeB], context, attempt, sink, now });
+
+    await expect(promise).rejects.toBe(bug);
+    await expect(promise).rejects.toBeInstanceOf(TypeError);
+    expect(attempt).toHaveBeenCalledTimes(1);
+    expect(sink.record).not.toHaveBeenCalled();
+  });
 });
