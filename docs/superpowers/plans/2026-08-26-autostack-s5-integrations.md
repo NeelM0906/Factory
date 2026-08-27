@@ -14,6 +14,8 @@
 
 **Charter:** `.superpowers/sdd/dispatch-s5.md` and the master plan's "Stream S5" section.
 
+**Review disposition:** plan reviewed 2026-08-27 — **APPROVE-WITH-CHANGES**. All eight required changes are folded in, plus the rulings on findings 9 and 17 and the confirmations on notes 14 and 15. Findings 1 and 9 became escalations E-6 and E-7 and are recorded as ruled. Notes 10–16 fold in during execution at the tasks they touch; where a note carried a ruling (note 14 bounded rendering, note 15 `redirect: "manual"`) it is written into the relevant task here rather than left to memory.
+
 ---
 
 ## Ownership and boundaries (binding)
@@ -23,9 +25,10 @@
 - `packages/integration-github/**` (new package)
 - `packages/integration-slack/**` (new package)
 - **New files only** under `apps/control-plane/src/ingress/` and their tests under `apps/control-plane/test/ingress/`
+- **New files only** under `docs/development/`: `github-app-wiring.md` and `slack-app-wiring.md` (granted by the coordinator's plan-review ruling on finding 17 — the wiring-session instruction documents)
 - This plan document; `.superpowers/sdd/progress.md` and `.superpowers/sdd/stream-report.md` in the worktree
 
-**Must not touch:** any existing `apps/control-plane` file (including its `package.json`), `packages/contracts`, `packages/domain`, `packages/workflow`, `packages/runner-local`, `packages/ui`, `packages/client-app`, `packages/db`, `apps/desktop`, `apps/web`, root config, `.github/workflows/**`.
+**Must not touch:** any existing `apps/control-plane` file (including its `package.json`), any existing `docs/development/` file, `packages/contracts`, `packages/domain`, `packages/workflow`, `packages/runner-local`, `packages/ui`, `packages/client-app`, `packages/db`, `apps/desktop`, `apps/web`, root config, `.github/workflows/**`.
 
 `pnpm-lock.yaml` will gain two importer entries when the new packages are added. That is a generated artifact of adding workspace packages, not a root-config edit; `pnpm-workspace.yaml` already globs `packages/*`, so no workspace or turbo config change is needed. If a task ever appears to need an edit outside the list above, that task **stops** and becomes an escalation.
 
@@ -54,7 +57,18 @@ These are settled here so no task re-litigates them.
 
 **D2 — Branch publication is not this stream's job.** `DeliveryIntegrationPort` exposes no push operation, and pushing locally-created commits belongs to the runner/worktree layer. This stream implements _ref-level_ branch operations on the GitHub Git Data API (create ref at a commit SHA, delete ref) with `autostack/` prefix enforcement, which is what the live suite needs and what "defense in depth at the client layer" means for us. Recorded as escalation **E-4** for orchestrator confirmation.
 
-**D3 — Draft-PR body inputs.** `PublicationEvidenceBundle` carries digests, not prose: it has no problem statement, plan summary, change summary, or verification narrative. The §4.4 sections are composed from the bundle **plus** the station reports that already exist in contracts — `TriageReport` (problem statement), `PlanDocument` (approved-plan summary and acceptance criteria), `VerificationReport` (per-command evidence), `ReviewReport` (verdict, findings → known limitations) — plus a caller-supplied `changeSummary` and `runUrl`. The composer cross-checks every digest that ties those reports to the bundle and refuses to compose when any link is broken, so the body cannot narrate a different run than the one that was approved. No contract change is required. Recorded as assumption **A-1**.
+**D3 — Draft-PR body inputs and their real admission chain.** `PublicationEvidenceBundle` carries digests, not prose: it has no problem statement, plan summary, change summary, or verification narrative. The §4.4 sections are composed from the bundle **plus** the station reports that already exist in contracts — `TriageReport` (problem statement), `PlanDocument` (approved-plan summary and acceptance criteria), `VerificationReport` (per-command evidence), `ReviewReport` (verdict, findings → known limitations) — plus a caller-supplied `changeSummary` and `runUrl`.
+
+Each supplied report is admitted through the contracts' **own** admission functions before use — `admitPlanDocument`, `admitVerificationReport`, `admitReviewReport` (`packages/contracts/src/station-evidence.ts`) — not through a hand-rolled shape check. Admission recomputes each report's self-digest, so a tampered report fails before composition.
+
+The composer then enforces exactly the digest equality links that actually exist between the reports and the bundle. There are **two**, and only two:
+
+1. `digestPlanDocument(plan) === bundle.plan.planDigest` — the rendered plan is the approved plan.
+2. `review.reviewedDiffDigest === bundle.review.reviewedDiffDigest` — the review narrated is the review of the published diff.
+
+Plus the identity check `workspaceId`/`workItemId`/`runId` equal across all four inputs and the bundle, and the semantic check `review.verdict === "approved"`.
+
+There is **no** verification-report digest on `VerificationEvidenceSchema` to compare against — `VerificationEvidence` carries only `implementationEvidenceDigest` and `status`. The verification link is therefore made through `ReviewReport.verificationReportDigest === digestVerificationReport(verification)`, which is a real field, and the earlier draft's "verification digest mismatch" test case is a **phantom** and is removed. No contract change is required. Recorded as assumption **A-1**.
 
 **D4 — Idempotency semantics.** Behavioural reference is `createFakeDeliveryIntegration` (`packages/domain/src/testing/fake-delivery-integration.ts`): a repeated idempotency key returns the previously recorded result without a second side effect, and a replay short-circuits _before_ any injected failure. The real clients keep an injected `IdempotencyRecordStore` (in-memory default, `Map`-backed, no persistence in this stream) and reproduce that ordering exactly, including "admit/validate first, then check the replay table". Durable idempotency storage belongs to the pipeline (S4).
 
@@ -62,7 +76,28 @@ These are settled here so no task re-litigates them.
 
 **D6 — Slack transport injection.** No Slack workspace app exists yet, so there is nothing live to connect to. `createSocketModeClient` takes an injected `webSocketFactory` (defaulting to `globalThis.WebSocket`) and an injected `fetch` for `apps.connections.open`. The envelope state machine, ack ordering, reconnect/`disconnect` handling, and durable-queue drain are all fully tested against a scripted fake socket — real behaviour, real code, fixture transport. This is not a placeholder: the production path is the same code with the default factory.
 
-**D7 — Never-post is structural.** `packages/integration-slack/src/message/` accepts only narrow composition inputs (stage, short status line, deep link, evidence digest, approval identity). There is no field on any composition input that can carry terminal output, a diff, model reasoning, or a credential. On top of that type-level narrowing sits `assertPostable`, a runtime gate that rejects text over the byte budget, text containing sensitive material (`containsSensitiveMaterial` from `@autostack/contracts`), and text that looks like a diff or a fenced log block. Both layers are tested.
+**D7 — Never-post is structural, over an explicit message-kind union.** `packages/integration-slack/src/message/` accepts only narrow, typed composition inputs. Spec §4.3 names five things AutoStack says in a thread, so the composer models exactly five kinds as a discriminated union rather than one generic "progress" shape:
+
+```ts
+export type SlackMessageComposition =
+  | { readonly kind: "task_summary" /* normalized summary + detected repository */ }
+  | { readonly kind: "clarifying_question" /* question + why confidence was insufficient */ }
+  | { readonly kind: "stage_progress" /* stage, status, headline, run deep link */ }
+  | { readonly kind: "attention_request" /* what the agent needs from the user */ }
+  | { readonly kind: "publication_result" /* draft-PR link + evidence summary */ };
+```
+
+Every variant is built from typed pipeline inputs (`TriageReport`, `ClarificationRequest`, `PipelineStage`, `DraftPullRequestResult`, and the evidence digests) that S4 emits; **S5 owns the composer, S4 owns the data**. No variant has — or can be given — a field capable of carrying terminal output, a diff, hidden reasoning, or a credential: the never-post list is unrepresentable, not merely unwritten. Publication approval prompts remain `composeApprovalPrompt` (the `SlackApprovalPrompt` contract). All five variants are fixture-driven now.
+
+On top of that type-level narrowing sits `assertPostable`, a runtime gate that rejects text over the byte budget, text containing sensitive material (`containsSensitiveMaterial` from `@autostack/contracts`), and text that looks like a diff, an ANSI/terminal artefact, or a fenced log block. Both layers are tested, per variant.
+
+**D8 — Ingress is mounted outside the bearer wall (coordinator ruling on E-6).** Webhooks are a different trust domain: they authenticate by provider signature over the raw body, never by the control plane's bearer token. Rather than punching an auth exemption into `/v1/*`, the ingress routes live at **`/ingress/github`, `/ingress/slack/events`, `/ingress/slack/interactivity`** — outside the versioned, bearer-protected surface entirely.
+
+When ingress is closed (`deps.ingress.isOpen() === false`), a webhook route returns **`503`** — an honest refusal. The provider's own retry/redelivery is the recovery path, and this is stated in a comment on each route so a later reader does not "fix" it into a `202`-and-drop. The `register*Ingress` factories take their base path **as given** by the caller; mounting is the composition root's job, and no `app.ts` edit is made by this stream.
+
+**D9 — Durable ingress queue: port here, storage in I1 (coordinator ruling on E-7).** This stream defines the `IngressQueue` **port** and the in-memory implementation the tests run against. The SQLite-backed implementation (on `@autostack/db`) is a named Wave 2 / I1 composition deliverable, so §13.2's "processed from the durable ingress queue" is fully satisfied only once I1 lands it. Consequently every ack-then-enqueue assertion in this plan is written **store-agnostically against the port**, never against the in-memory internals, so the same suite proves the semantics when I1 swaps the implementation.
+
+**D10 — Slack binding resolution is fail-closed, and S5 resolves no credentials.** `SlackIntegrationDependencies` takes a `resolveBinding: (input: { slackWorkspaceId: string; channelId: string }) => Promise<SlackChannelBinding>` that **throws** when no enabled binding exists — an unbound workspace or channel can never create or mutate work (spec §13.2). Disabled bindings (`enabled: false`) are treated as absent. `ChannelBinding` carries `botCredentialRefId` and `signingCredentialRefId` as **`CredentialRefId` references**; resolving a reference to an actual secret is the credential store's job (S3/desktop main), never S5's. The integration therefore takes `botToken: () => Promise<string>` and `signingSecret: () => Promise<string>` as injected suppliers and holds neither value on any object.
 
 ---
 
@@ -72,6 +107,7 @@ These are settled here so no task re-litigates them.
 
 - Create: `packages/integration-github/package.json`
 - Create: `packages/integration-github/tsconfig.json`
+- Create: `packages/integration-github/vitest.config.ts`
 - Create: `packages/integration-github/src/index.ts`
 - Create: `packages/integration-github/src/errors.ts`
 - Test: `packages/integration-github/test/errors.test.ts`
@@ -114,11 +150,28 @@ Expected failure: `No projects matched the filter "@autostack/integration-github
   "dependencies": {
     "@autostack/contracts": "workspace:*",
     "zod": "^4.1.5"
+  },
+  "devDependencies": {
+    "@autostack/domain": "workspace:*"
   }
 }
 ```
 
+`@autostack/domain` is a **devDependency only** — it exists solely so the Task 9 fake-parity suite can import `@autostack/domain/testing`. It must never appear in `dependencies`, and no file under `src/` may import it; Task 16's self-review greps for exactly that.
+
 `tsconfig.json` extends `../../tsconfig.base.json` with `"types": ["node", "vitest/globals"]` and `"include": ["src/**/*.ts", "test/**/*.ts"]`.
+
+`vitest.config.ts` merges the root config so the 80% coverage thresholds apply — the same three-line file every other package uses:
+
+```ts
+import { defineConfig, mergeConfig } from "vitest/config";
+
+import sharedConfig from "../../vitest.config.js";
+
+export default mergeConfig(sharedConfig, defineConfig({}));
+```
+
+Without it, `vitest run --coverage` inside the package directory finds no config and silently enforces no threshold — a coverage gate that passes by accident is worse than no gate.
 
 Run `pnpm install` from the worktree root, then re-run the filtered test. Expected failure now: `Cannot find module '../src/errors.js'`.
 
@@ -187,6 +240,7 @@ Tests (all with a stub `fetch` that records calls):
 7. A response failing `schema.parse` throws `invalid_response`; the thrown message contains no response body excerpt.
 8. **Header hygiene:** after any failure path, `JSON.stringify(error)` and `error.stack` contain neither the authorization value nor the string `Bearer`.
 9. `DELETE` with a `204` and empty body resolves when the schema is `z.void()`-shaped.
+10. **`redirect: "manual"` is required** (coordinator note 15, confirmed). Every request passes `redirect: "manual"` to `fetch`, and a `3xx` response throws rather than being followed. `fetch`'s default `"follow"` would replay the `Authorization` header to whatever host the `Location` names — a credential-exfiltration primitive triggerable by anything that can influence a redirect. Tests: the stub asserts `redirect === "manual"` on every call; a `302` to `https://evil.example` throws `invalid_response`, performs no second fetch, and the thrown error contains neither the `Location` value nor the authorization value.
 
 Run:
 
@@ -287,6 +341,7 @@ git commit -m "feat(integration-github): add user-token and app-installation aut
 Operations, all through the transport stub:
 
 1. `createBranch({ repositoryFullName, ref, sha })` → `POST /repos/{owner}/{repo}/git/refs` with `{ ref: "refs/heads/<ref>", sha }`; a non-`autostack/` ref throws **before** any fetch call (asserted by `expect(fetchStub).not.toHaveBeenCalled()`).
+   **Idempotency semantics (explicit, per the review):** GitHub answers a create for an existing ref with `422 "Reference already exists"`. A retried publish must not fail on its own earlier success, so `createBranch` resolves that `422` by re-reading the ref and comparing: if the existing ref already points at the requested `sha`, it resolves successfully as already-created; if it points at a **different** `sha`, it throws `GitHubBranchConflictError` — never a silent force-update, because that would rewrite a branch the approval did not cover. Three tests: fresh create, `422` + same-sha resolves, `422` + different-sha throws and issues no update call.
 2. `deleteBranch({ repositoryFullName, ref })` → `DELETE /repos/{…}/git/refs/heads/<ref>`; same pre-network guard; a `404` resolves as already-deleted (cleanup must be idempotent) while other failures throw.
 3. `getRef` returns the resolved commit SHA, schema-validated.
 4. `putFileOnBranch({ repositoryFullName, branch, path, contentUtf8, message })` → `PUT /repos/{…}/contents/{path}` with base64 content and `branch`; guarded by the same policy, and `path` is rejected if it is absolute, contains `..`, or escapes the repository root.
@@ -342,14 +397,18 @@ export const composeDraftPullRequestBody: (
 Assertions:
 
 1. A valid input produces a `DraftPullRequestBody` that `DraftPullRequestBodySchema.parse` accepts, with `problemStatement` from the triage rationale, `approvedPlanDigest` equal to `bundle.plan.planDigest`, `approvedPlanSummary` from `plan.summary`, `verificationSummary` naming every required command with its exit code and duration, `reviewVerdict: "approved"`, and `knownLimitations` listing the review's non-blocking findings (medium/low/info) in severity order.
-2. **Digest binding, one failing test per link:** `plan.planDigest !== bundle.plan.planDigest`, `review.reviewedDiffDigest !== bundle.review.reviewedDiffDigest`, `verification` digest mismatch, and a `workspaceId`/`runId` identity mismatch each throw `DraftPullRequestBodyMismatchError` naming the broken link.
-3. `review.verdict === "changes_requested"` refuses to compose — a body cannot claim an approval that does not exist (acceptance criterion 12).
-4. Oversized prose is bounded, not silently truncated mid-secret: inputs exceeding the schema maxima throw rather than slicing.
-5. Sensitive material anywhere in the prose inputs (`containsSensitiveMaterial`) throws — acceptance criterion 16 applies to PR bodies.
+2. **Admission runs first, through the contracts' own functions:** `admitPlanDocument`, `admitVerificationReport`, and `admitReviewReport` are each called on their input before any composition; a report whose self-digest does not recompute is rejected by admission, not by a hand-rolled check. A test tampers one field of each report and asserts the contract's own admission error surfaces.
+3. **Digest binding — the two real links, one failing test each** (per decision D3): `digestPlanDocument(plan) !== bundle.plan.planDigest` and `review.reviewedDiffDigest !== bundle.review.reviewedDiffDigest` each throw `DraftPullRequestBodyMismatchError` naming the broken link. A third test covers the verification link via `review.verificationReportDigest !== digestVerificationReport(verification)`. A fourth covers a `workspaceId`/`workItemId`/`runId` identity mismatch across the four inputs and the bundle.
+   There is deliberately **no** "verification evidence digest mismatch" case: `VerificationEvidenceSchema` exposes no such digest to compare against, so that assertion would be a phantom test that passes without proving anything.
+4. `review.verdict === "changes_requested"` refuses to compose — a body cannot claim an approval that does not exist (acceptance criterion 12).
+5. Oversized prose is bounded, not silently truncated mid-secret: inputs exceeding the schema maxima throw rather than slicing.
+6. Sensitive material anywhere in the prose inputs (`containsSensitiveMaterial`) throws — acceptance criterion 16 applies to PR bodies.
 
 - [ ] **Step 3: Write the failing renderer test**
 
 `renderDraftPullRequestBody(body: DraftPullRequestBody): string` produces Markdown with all seven §4.4 sections in fixed order under stable `##` headings: Problem statement, Approved plan, Change summary, Verification evidence, Review verdict, Known limitations, Run. Assertions: every heading present exactly once; the run link appears as a Markdown link to `runUrl`; the approved-plan digest is printed; an empty `knownLimitations` renders an explicit "None reported" rather than an empty section; untrusted prose is fenced/escaped so an issue body cannot inject a fake heading or an HTML comment; total output ≤ the 100 000-character `DraftPullRequestRequestSchema.body` ceiling; output round-trips through `SafeMetadataStringSchema.max(100_000)`.
+
+**Bounded rendering (coordinator note 14, confirmed).** A plan may name up to 50 verification commands and a review up to 500 findings, so the renderer must stay under the body ceiling without ever throwing on merely _large_ input. It renders a deterministic prefix and then an explicit, count-bearing elision — `_N further commands not shown._` / `_N further findings not shown._` — never a mid-string truncation. Tests: 50 commands renders the prefix plus the exact remaining count; the count is deterministic across runs; the elision line itself is never omitted; and the total stays under the ceiling. **Throwing is reserved for sensitive material** (and for schema-maximum violations on the _inputs_), not for volume — a big honest PR body is not a security event.
 
 Run:
 
@@ -397,7 +456,10 @@ Assertions, mirroring `createFakeDeliveryIntegration` ordering exactly:
 3. On success, `POST /repos/{…}/pulls` is called with `draft: true`, the composed title/body, and the scope's `head`/`base`; the result parses as `DraftPullRequestResult`, and `providerEvidenceDigest` is a digest over the canonical provider response (number, url, head sha, created_at) computed with the contracts' digest helper.
 4. **Replay:** a second call with the same idempotency key returns the identical result and performs **no** second fetch.
 5. **Replay precedes failure injection:** with the transport stubbed to fail, a replayed key still returns the recorded result (fake parity).
-6. A `422 "A pull request already exists"` for the same head resolves by looking up the existing PR (`GET /repos/{…}/pulls?head=…&state=open`) and recording it under the key — a retry after a network timeout cannot create a duplicate PR (acceptance criteria 13 and 14).
+6. A `422 "A pull request already exists"` for the same head resolves by looking up the existing PR and recording it under the key — a retry after a network timeout cannot create a duplicate PR (acceptance criteria 13 and 14). The lookup is `GET /repos/{owner}/{repo}/pulls?head={owner}:{branch}&state=all&base={base}`:
+   - **`head` must be `owner:branch`, not a bare branch name.** GitHub's list filter silently matches nothing for a bare branch, so a bare value turns "find the PR I already opened" into "find nothing" and the recovery path would fall through to a second create attempt — exactly the duplicate it exists to prevent.
+   - **`state=all`, not `state=open`.** The PR that already exists may have been closed (the live suite closes its own PR; a human may close one mid-retry). `state=open` would miss it and re-attempt a create that GitHub refuses again, turning a recoverable retry into a hard failure.
+     Tests: the stub asserts the exact query string; a closed existing PR is found and returned; a bare-branch `head` value is never sent; and a lookup returning zero results rethrows the original `422` rather than inventing a result.
 7. `draft` is always `true`; a provider response with `draft: false` throws rather than being accepted.
 
 Run:
@@ -502,7 +564,9 @@ Fixtures (hand-authored, minimal, redacted): `issues.opened.json`, `issues.edite
 
 Assertions:
 
-1. Each supported event maps to a `GitHubIngressDelivery` that `IngressDeliverySchema.parse` accepts, with `deliveryId` from the header and `deduplicationKey` derived deterministically as `github:{repositoryId}:{issueNumber}:{event}:{deliveryId}` — the same delivery replayed twice yields the same key, and two distinct deliveries never collide.
+1. Each supported event maps to a `GitHubIngressDelivery` that `IngressDeliverySchema.parse` accepts, with `deliveryId` taken verbatim from `X-GitHub-Delivery` and `deduplicationKey` derived as the **logical** key `github:{repositoryId}:{issueNumber}:{event}` — deliberately **without** `deliveryId` in it.
+   Including `deliveryId` would have made the key unique per delivery, so it would have deduplicated nothing: GitHub issues a _fresh_ delivery id when it redelivers, which is precisely the duplicate acceptance criterion 4 asks us to collapse. The two identifiers do different jobs and stay separate: `deliveryId` is transport identity (used by the edge replay guard for exact re-POSTs of the same delivery), `deduplicationKey` is logical work identity (used by `IntegrationIngressPort.accept` to recognise the same real-world event).
+   Tests: the same event redelivered under a **different** `deliveryId` produces the **same** `deduplicationKey`; two different issues, two different events on one issue, and two different repositories each produce different keys; and `deliveryId` is never a substring of `deduplicationKey`.
 2. `issues.labeled` without the configured trigger label is rejected as not-actionable (a labelled-with-something-else event must not start a run — acceptance criterion 4 concerns _labelled_ issues).
 3. An unsupported event throws `GitHubUnsupportedEventError`; the route turns that into a `202 ignored`, never a `500`.
 4. Oversized issue bodies are rejected by the contract's `max(100_000)` rather than truncated.
@@ -598,12 +662,15 @@ git commit -m "feat(integration-github): assemble the GitHub delivery integratio
 
 **Hygiene rules (binding, from the charter):** gated behind `AUTOSTACK_LIVE_GITHUB=1`; repository hard-coded to `NeelM0906/Factory` and asserted before any call; only `autostack/e2e-*` refs are created; every artifact is removed in a `finally` block; the token is read at spawn time via `execFile("gh", ["auth", "token"])` and never logged, stored, or committed; **the suite must never run in CI.**
 
+**CI-filter precondition (coordinator ruling on E-1, finding 7 — binding).** Before opening any live pull request, the suite reads the worktree's `.github/workflows/ci.yml` and asserts that `branches-ignore: ["autostack/**"]` is present under the `pull_request` trigger. If it is absent, the suite **stops** with a clear failure naming the missing filter — it does not open the PR. The filter lands on the base branch via Wave 0 Task 0.11, so it will be present after this stream's first rebase; until then this precondition is what stops a live run from burning a 60-minute macOS runner. The check reads the file from disk (it is a precondition, not a network call), and it runs inside the gated `describe` so it never affects CI.
+
 - [ ] **Step 1: Write the guard tests first (these run everywhere, including CI)**
 
 Before any live code, a non-gated test file asserts the guards themselves:
 
 1. `resolveLiveConfig(env)` returns `{ enabled: false }` when `AUTOSTACK_LIVE_GITHUB` is unset, `"0"`, or `"true"` (only exactly `"1"` enables).
 2. `assertLiveRepository("NeelM0906/Other")` throws; only `NeelM0906/Factory` passes.
+   2b. `assertPullRequestCiFilter(workflowYamlText)` passes on a `pull_request` trigger carrying `branches-ignore: ["autostack/**"]`, and throws on: no `pull_request` key, a bare `pull_request:` with no filter, a `branches-ignore` list omitting `autostack/**`, and a `branches:` allow-list instead. Table-driven, using inline YAML strings — this is the finding 7 precondition, and it is tested like any other guard.
 3. `liveBranchName(id)` always produces `autostack/e2e-<id>` and the result passes `assertAutoStackBranch`.
 4. `readGhToken` invokes `execFile` with `("gh", ["auth", "token"])` — asserted against an injected launcher — never a shell string, and trims the output; a non-zero exit throws a message containing no stdout.
 
@@ -624,6 +691,7 @@ describe.skipIf(!live)("GitHub live validation", () => { … });
 
 Flow, with a single `try/finally`:
 
+0. **Precondition:** `assertPullRequestCiFilter(readFileSync(".github/workflows/ci.yml", "utf8"))` — stop here if the `autostack/**` filter is absent.
 1. Resolve the token via `gh auth token`; build `createGitHubIntegration` with `createUserTokenAuth` and the real global `fetch`.
 2. Read the repository's default-branch head SHA.
 3. Create `autostack/e2e-base-<runId>` and `autostack/e2e-head-<runId>` at that SHA. **Both** branches are under `autostack/`, and the PR is opened head → base **between the two e2e branches**, so no PR ever targets a product branch.
@@ -706,6 +774,8 @@ Expected failure: filter matches no project; then, after scaffolding, module not
 
 - [ ] **Step 2: Scaffold the package (same shape as Task 1 Step 2), implement, gate, commit**
 
+The scaffold is identical in shape to Task 1's, including the two pieces called out there: a `packages/integration-slack/vitest.config.ts` merging the root config so the 80% thresholds actually apply, and `"devDependencies": { "@autostack/domain": "workspace:*" }` for the Task 14 fake-parity suite only — never in `dependencies`, never imported from `src/`.
+
 ```bash
 git commit -m "feat(integration-slack): verify Slack signatures and reject replayed requests"
 ```
@@ -782,7 +852,11 @@ export interface IngressQueue {
 }
 ```
 
-Assertions: FIFO order preserved; a handler failure leaves the item at the head for the next drain (at-least-once, never dropped); a bounded capacity rejects new work with `provider_unavailable` rather than growing without limit; drain is re-entrant-safe (a second concurrent drain is a no-op); and a processed item is removed exactly once. The store is injected so S4 can supply a durable one later — the default is in-memory and documented as such.
+Assertions: FIFO order preserved; a handler failure leaves the item at the head for the next drain (at-least-once, never dropped); a bounded capacity rejects new work with `provider_unavailable` rather than growing without limit; drain is re-entrant-safe (a second concurrent drain is a no-op); and a processed item is removed exactly once.
+
+**Ownership split (coordinator ruling on E-7, decision D9).** This stream owns the `IngressQueue` **port** and the in-memory implementation the tests run against; the **SQLite-backed implementation on `@autostack/db` is a named Wave 2 / I1 composition deliverable**, and §13.2's "processed from the durable ingress queue" is fully satisfied only when I1 lands it. That is called out in the module docblock so nobody mistakes the in-memory default for the durable story.
+
+Because of that split, the whole suite is written **against the port, store-agnostically**: tests exercise only `enqueue`/`drain` and never reach into the in-memory internals, never assert on an array field, and never depend on synchronous completion. The same file must pass unmodified against I1's SQLite implementation — that is the property being bought, and Task 13 Step 2's ack-ordering assertions inherit it.
 
 - [ ] **Step 2: Write the failing Socket Mode client test**
 
@@ -839,17 +913,49 @@ git commit -m "feat(integration-slack): acknowledge Socket Mode envelopes before
 
 - [ ] **Step 1: Write the failing never-post test**
 
-The composition inputs are narrow by construction:
+The composition inputs are narrow by construction, and per decision D7 they are an explicit **message-kind union** covering the five things spec §4.3 says AutoStack posts into a thread — not one generic progress shape:
 
 ```ts
-export interface ProgressComposition {
-  readonly stage: PipelineStage;
-  readonly status: "started" | "succeeded" | "failed" | "waiting";
-  readonly headline: string; // ≤ 280 chars
-  readonly runUrl: string;
-  readonly evidenceDigest: string;
-}
+export type SlackMessageComposition =
+  | {
+      readonly kind: "task_summary";
+      readonly summary: string; // ≤ 1 000 chars, from TriageReport.rationale
+      readonly taskType: TriageTaskType;
+      readonly detectedRepository: string; // "owner/name", the §4.3 "detected repository"
+      readonly runUrl: string;
+    }
+  | {
+      readonly kind: "clarifying_question";
+      readonly question: string; // ≤ 1 000 chars, from ClarificationRequest
+      readonly clarificationRef: string;
+      readonly runUrl: string;
+    }
+  | {
+      readonly kind: "stage_progress";
+      readonly stage: PipelineStage;
+      readonly status: "started" | "succeeded" | "failed" | "waiting";
+      readonly headline: string; // ≤ 280 chars
+      readonly runUrl: string;
+      readonly evidenceDigest: string;
+    }
+  | {
+      readonly kind: "attention_request";
+      readonly headline: string; // ≤ 280 chars — what the agent needs from the user
+      readonly runUrl: string;
+      readonly evidenceDigest: string;
+    }
+  | {
+      readonly kind: "publication_result";
+      readonly pullRequestUrl: string;
+      readonly pullRequestNumber: number;
+      readonly verificationHeadline: string; // ≤ 280 chars — the evidence summary
+      readonly reviewVerdict: "approved";
+      readonly runUrl: string;
+      readonly evidenceDigest: string;
+    };
 ```
+
+Every variant is derived from typed pipeline values S4 emits (`TriageReport`, `ClarificationRequest`, `PipelineStage`, `DraftPullRequestResult`); **S5 owns the composer, S4 owns the data**. All five are fixture-driven in this stream.
 
 `assertPostable(text: string)` assertions — each a separate failing case:
 
@@ -859,15 +965,36 @@ export interface ProgressComposition {
 4. Text containing a fenced block over 10 lines, or ANSI escape sequences, or `\r` carriage-return terminal artefacts, throws — terminal logs are never posted.
 5. Text containing a hidden-reasoning marker (`<thinking>`, `<reasoning>`) throws.
 6. A normal status line with a link passes.
-7. **Type-level proof:** a `@ts-expect-error` test asserting that `ProgressComposition` accepts no `logs`, `diff`, `reasoning`, `stderr`, or `terminalOutput` property — the never-post list is unrepresentable, not merely unwritten.
+7. **Type-level proof, per variant:** a `@ts-expect-error` test asserting that **each** of the five `SlackMessageComposition` variants accepts no `logs`, `diff`, `reasoning`, `stderr`, or `terminalOutput` property — the never-post list is unrepresentable, not merely unwritten. A sixth case asserts the union is exhaustive: a `switch` over `kind` with no `default` must compile, so adding a variant later without a composer arm is a type error rather than a silent gap.
 
 - [ ] **Step 2: Write the failing composition tests**
 
-`composeProgressMessage(composition): SlackProgressRequest` — assertions: the result parses under `SlackProgressRequestSchema`; the text is thread-safe and passes `assertPostable`; the idempotency key is stable for a given `(bindingRef, threadTs, stage, status, evidenceDigest)` so a retry cannot double-post; the deep link to the run is present (spec §4.3).
+`composeSlackMessage(composition: SlackMessageComposition): SlackProgressRequest` — one test per variant, plus shared assertions: the result parses under `SlackProgressRequestSchema`; the rendered text passes `assertPostable`; the deep link to the run is present (spec §4.3); and the idempotency key is stable for a given `(bindingRef, threadTs, kind, …variant identity…, evidenceDigest)` so a retry cannot double-post while two genuinely different messages in one thread never collide.
+
+Per-variant assertions: `task_summary` names the detected repository and the task type; `clarifying_question` carries the clarification reference so the answer can be correlated back; `stage_progress` names the stage and status; `attention_request` is distinguishable from ordinary progress (it is a call to action, not a status line); `publication_result` renders the draft-PR link plus the verification/review evidence summary and nothing resembling the diff itself.
 
 `composeApprovalPrompt(input): SlackApprovalPrompt` — assertions: the result parses under `SlackApprovalPromptSchema`; approve/reject block actions carry `runId`, `approvalId`, and `evidenceDigest` in their `value`, and a round-trip through `parseSlackApprovalAction` (Task 12) reproduces exactly the same identity — the prompt and the action are proven to be two halves of one contract; the summary is `assertPostable`-gated; the prompt never embeds the plan diff, only a summary and a link.
 
 - [ ] **Step 3: Write the failing integration-assembly test**
+
+The dependency shape is explicit, and per decision D10 it resolves bindings fail-closed and resolves **no credentials**:
+
+```ts
+export interface SlackIntegrationDependencies {
+  readonly fetch: typeof globalThis.fetch;
+  readonly now: () => string;
+  /** Throws when no *enabled* binding exists for the workspace/channel. Never returns undefined. */
+  readonly resolveBinding: (input: {
+    readonly slackWorkspaceId: string;
+    readonly channelId: string;
+  }) => Promise<SlackChannelBinding>;
+  /** Supplied already-resolved by the credential store; S5 never dereferences a CredentialRefId. */
+  readonly botToken: () => Promise<string>;
+  readonly signingSecret: () => Promise<string>;
+  readonly idempotency?: IdempotencyRecordStore;
+  readonly baseUrl?: string;
+}
+```
 
 `createSlackIntegration(deps)` assertions:
 
@@ -875,7 +1002,9 @@ export interface ProgressComposition {
 2. `postSlackProgress` calls `chat.postMessage` with `thread_ts` set (thread-bound, §4.3), validates the request schema first, and is idempotent by key — a replay performs no second post (fake-parity with `createFakeDeliveryIntegration.postSlackProgress`, which returns silently on a replayed key).
 3. A Slack `{ ok: false, error: "ratelimited" }` response retries with backoff; `{ ok: false, error: "invalid_auth" }` does not retry (§8.3).
 4. `postApprovalPrompt` posts the prompt into the bound thread and is idempotent by key.
-5. `index.ts` export-surface assertion, as in Task 9.
+5. **Fail-closed binding resolution (§13.2):** a `resolveBinding` that throws (no binding) and one that would return a binding with `enabled: false` both cause the post to fail with **zero** `fetch` calls — an unbound or disabled workspace/channel can never be written to. A separate test asserts a binding whose `slackWorkspaceId`/`channelId` disagree with the request is rejected rather than used.
+6. **No credential-reference resolution in S5:** the integration reads `botCredentialRefId`/`signingCredentialRefId` from the binding only as opaque identifiers and never attempts to dereference them; tokens arrive solely through the injected suppliers. Tests assert the supplier is called per request (so rotation takes effect), that no token is retained on the returned object, and that a token value appears in no error, no `describe()`-style output, and no thrown message.
+7. `index.ts` export-surface assertion, as in Task 9.
 
 Run:
 
@@ -905,6 +1034,12 @@ git commit -m "feat(integration-slack): assemble the Slack integration behind th
 
 **Boundary note:** these files import from `hono` and `@autostack/contracts` only. Every adapter behaviour (signature verification, delivery parsing) arrives as an **injected function**, so `apps/control-plane` gains no dependency on either new package and its `package.json` is untouched (which this stream may not edit anyway). The orchestrator wires the real implementations at composition time.
 
+**Mounting and trust domain (coordinator ruling on E-6, decision D8) — binding:**
+
+- Paths are **`/ingress/github`, `/ingress/slack/events`, `/ingress/slack/interactivity`** — **outside `/v1/*`**, and outside the bearer-authenticated surface entirely. Webhooks authenticate by provider signature over the raw body; they never carry a bearer token. Mounting them under `/v1/*` would require punching an auth exemption into the bearer wall, and an exemption inside the wall is a hole in the wall. A different trust domain gets a different surface.
+- **Ingress-closed behaviour is `503`, not a swallowed `202`.** When `deps.ingress.isOpen() === false`, the route returns `503` — an honest refusal that the provider's own retry/redelivery machinery is designed to recover from. Silently accepting and dropping would manufacture a lost event with a `200` receipt. **Each route file carries a comment saying exactly this**, so a future reader does not "fix" the `503` into a `202`.
+- The factories take their base path **as given** by the caller (`registerGitHubIngress(app, deps)` mounts on the `app` it is handed, at the path in `deps.basePath`, defaulting to the paths above). Mounting into the real server is the composition root's job; **this stream makes no `app.ts` edit**.
+
 - [ ] **Step 1: Write the failing GitHub ingress test**
 
 ```ts
@@ -922,13 +1057,16 @@ export interface GitHubIngressDependencies {
   }) => IngressDelivery;
   readonly now: () => string;
   readonly maximumBodyBytes?: number; // default 1 MiB
+  /** Closed ingress ⇒ 503, so the provider redelivers. Never a swallowed 202. */
+  readonly isOpen: () => boolean;
+  readonly basePath?: string; // default "/ingress/github" — outside the bearer-protected /v1 surface
 }
 export const registerGitHubIngress: (app: Hono, deps: GitHubIngressDependencies) => void;
 ```
 
 Tests drive `app.request(...)` directly (the pattern already used in `apps/control-plane/test/app.test.ts`), with the verifier implemented inline in the test via `node:crypto` so no adapter package is imported:
 
-1. `POST /v1/ingress/github` with a valid signature and an `issues.labeled` payload → `202` and exactly one `ingress.accept` call with the parsed delivery.
+1. `POST /ingress/github` with a valid signature and an `issues.labeled` payload → `202` and exactly one `ingress.accept` call with the parsed delivery.
 2. **Raw-body proof:** the route verifies over the bytes as received — a test posts a body with unusual whitespace whose signature is valid, and asserts acceptance; a second test mutates one byte and asserts `401`. The route must read the body **once** as bytes and parse JSON from those same bytes.
 3. A missing/invalid signature → `401` with the shared `ApiError` shape and no `ingress.accept` call.
 4. `accept()` returning `{ replayed: true }` → `200` with `{ replayed: true }`; a duplicate delivery therefore performs no duplicate work (acceptance criterion 4).
@@ -937,17 +1075,21 @@ Tests drive `app.request(...)` directly (the pattern already used in `apps/contr
 7. Malformed JSON after a valid signature → `400`, not `500`.
 8. An `ingress.accept` rejection surfaces as `503` (retryable) and the response body contains no internal detail.
 9. No response ever echoes the payload back.
+10. **Outside the bearer wall:** a request carrying **no** `Authorization` header succeeds (given a valid signature), proving the route is not behind bearer auth; and a request with a valid signature but a **bogus** bearer token also succeeds, proving no bearer check was bolted on. A companion test asserts the registered path does not begin with `/v1/`.
+11. **Ingress closed → `503`:** with `isOpen()` returning `false`, a validly-signed delivery returns `503` and makes **zero** `ingress.accept` calls. Signature verification still runs first, so a closed ingress never becomes an unauthenticated-probe oracle.
+12. **Base path as given:** registering with `basePath: "/custom/hook"` serves there and **not** at the default, proving the factory does not hard-code its mount point.
 
 - [ ] **Step 2: Write the failing Slack ingress test**
 
 `registerSlackIngress(app, deps)` with injected `verifySignature` (raw body + timestamp), `parseEventDelivery`, `parseMessageAction`, `parseApprovalAction`, and `ingress`:
 
-1. `POST /v1/ingress/slack/events` with a valid signature → `202`; `url_verification` returns the challenge with a `200` and does **not** call `accept`.
+1. `POST /ingress/slack/events` with a valid signature → `202`; `url_verification` returns the challenge with a `200` and does **not** call `accept`.
 2. A stale timestamp → `401` (replay rejection), asserted with an injected clock.
-3. `POST /v1/ingress/slack/interactivity` with an `application/x-www-form-urlencoded` body containing `payload=<json>` → parsed correctly; a `block_actions` approve payload reaches the approval sink; a `message_action` payload reaches `ingress.accept`.
+3. `POST /ingress/slack/interactivity` with an `application/x-www-form-urlencoded` body containing `payload=<json>` → parsed correctly; a `block_actions` approve payload reaches the approval sink; a `message_action` payload reaches `ingress.accept`.
 4. Slack's retry headers (`X-Slack-Retry-Num`) produce a `200` with no duplicate accept when the port reports `replayed`.
 5. Signature failures, oversized bodies, and malformed payloads mirror the GitHub cases.
 6. Both routes respond within Slack's 3-second expectation by acking before any downstream work — asserted by a slow injected sink that must not delay the response.
+7. The bearer-wall, ingress-closed-`503`, and base-path cases from Step 1 (items 10–12) are repeated for **both** Slack routes; the signature basestring is still computed over the raw body, so the interactivity route must verify **before** form-decoding `payload=`.
 
 Run:
 
@@ -984,7 +1126,56 @@ git commit -m "feat(control-plane): add injectable GitHub and Slack ingress rout
 
 ---
 
-## Task 16: Full gate, self-review, and stream report
+## Task 16: Installation/repository selection helper and wiring-session documents
+
+Added by the coordinator's plan-review ruling on finding 17. Acceptance criterion 2 is "a user can connect a GitHub App installation and **select an accessible repository** without storing a PAT" — the selection surface needs a listing call, and the App itself needs registering. Criterion 3 needs the Slack app created. With this task in scope, criteria 2 and 3 stay in this stream's claim.
+
+**Files:**
+
+- Create: `packages/integration-github/src/client/installations.ts`
+- Test: `packages/integration-github/test/client/installations.test.ts`
+- Create: `docs/development/github-app-wiring.md`
+- Create: `docs/development/slack-app-wiring.md`
+
+- [ ] **Step 1: Write the failing installations test**
+
+App-strategy only (a user token has no installations):
+
+```ts
+listInstallations(): Promise<readonly { id: string; accountLogin: string; targetType: string }[]>;
+listAccessibleRepositories(installationId: string): Promise<
+  readonly { id: string; fullName: string; defaultBranch: string; permissions: {…} }[]
+>;
+```
+
+Assertions, all fixture-driven against the transport stub:
+
+1. `listInstallations` → `GET /app/installations` using the **app JWT** (not an installation token); the result is schema-validated into the narrow shape above and nothing else is exposed.
+2. `listAccessibleRepositories` → `GET /installation/repositories` using the **installation token** for that installation; pagination is followed via the `Link` header with a bounded page count, and a `Link` header pointing at a foreign host is refused (same reasoning as `redirect: "manual"`).
+3. Calling either on a **user-token** strategy throws a clear `unsupported_auth_strategy` rather than issuing a doomed request.
+4. No token, JWT, or raw provider payload appears in the results or in any error.
+5. The result carries the repository's `permissions` so the selection UI can show what the installation may actually do — read-only data, no policy decisions taken here (§14.1).
+
+- [ ] **Step 2: Write the wiring documents**
+
+`docs/development/github-app-wiring.md` — click-by-click GitHub App registration: exact app name/description, homepage and callback URLs, webhook URL (`/ingress/github` — note the path is outside `/v1`) and webhook secret generation, the **minimum** permission set (metadata: read; issues: read+write; pull requests: read+write; contents: read+write; checks: read) with a sentence per permission saying which feature needs it, the subscribed events (`issues`, `issue_comment`), installing on `NeelM0906/Factory`, and where the app id / private key / webhook secret go (Keychain via the credential store — never a repo file, never `.env`). Includes a verification section: how to confirm a delivery arrived and how to read a failed delivery's signature error.
+
+`docs/development/slack-app-wiring.md` — click-by-click Slack app creation: manifest-based creation, Socket Mode enablement and `xapp-` app-level token with `connections:write`, bot scopes (`app_mentions:read`, `chat:write`, `im:history`, `commands`), event subscriptions (`app_mention`, `message.im`), the message-action (shortcut) definition, interactivity enablement, workspace install, and where the bot token / signing secret go. Includes the §13.2 note that Socket Mode is the Milestone A path and signed HTTP is Milestone B.
+
+Both documents state plainly that these are **user actions at the Wave 2 wiring session** — this stream writes the instructions and the code they exercise, and does not itself register anything.
+
+- [ ] **Step 3: Gate and commit**
+
+```bash
+pnpm --filter @autostack/integration-github test
+pnpm --filter @autostack/integration-github check
+git commit -m "feat(integration-github): list installations and accessible repositories"
+git commit -m "docs(s5): document the GitHub App and Slack app wiring sessions"
+```
+
+---
+
+## Task 17: Full gate, self-review, and stream report
 
 - [ ] **Step 1: Run the complete gate suite from the worktree root**
 
@@ -1006,8 +1197,11 @@ All green; coverage ≥80% (statements, branches, functions, lines) on both new 
 - `grep -rn "process.env" packages/integration-github/src packages/integration-slack/src` → expected: no matches (env is read only in the live test's config resolver, which takes `env` as a parameter).
 - `grep -rniE "console\.(log|info|warn|error)" packages/integration-github/src packages/integration-slack/src` → expected: no matches.
 - Re-read every error path for credential leakage; confirm every `cause` is non-enumerable.
-- Confirm no runtime dependency on `@autostack/domain` in either package (`@autostack/domain` appears only under `devDependencies`).
-- Confirm `git diff --stat 02e5cff..HEAD -- apps/control-plane` shows additions only.
+- Confirm no runtime dependency on `@autostack/domain` in either package (`@autostack/domain` appears only under `devDependencies`, and `grep -rn "@autostack/domain" packages/*/src` returns no matches).
+- Confirm `git diff --stat <base>..HEAD -- apps/control-plane` shows additions only, all under `src/ingress/` and `test/ingress/`.
+- Confirm `git diff --stat <base>..HEAD -- docs/development` shows only the two new wiring documents.
+- `grep -rn "\"/v1/ingress" apps/control-plane/src/ingress` → expected: no matches (decision D8: ingress lives outside the bearer-protected `/v1` surface).
+- Confirm both new packages carry a `vitest.config.ts` merging the root config, and that each `test:coverage` run actually reports thresholds rather than silently skipping them.
 
 - [ ] **Step 3: Write `.superpowers/sdd/stream-report.md`**
 
@@ -1023,13 +1217,18 @@ Do **not** push (protocol Push policy).
 
 ---
 
-## Escalations and assumptions (raised now, before implementation)
+## Escalations and assumptions
 
-**E-1 — The live GitHub suite will trigger a 60-minute macOS CI job on the user's repository. Needs a ruling before Task 10 runs.**
-`.github/workflows/ci.yml` triggers on `pull_request:` with **no branch filter**, and its `local-execution-macos` job is `runs-on: macos-15, timeout-minutes: 60`, unconditional. Opening _any_ pull request on `NeelM0906/Factory` — including one between two `autostack/e2e-*` branches — starts the full matrix. This directly contradicts the runner-minute reasoning behind the orchestrator's push policy.
-_Requested change (I2's file, not mine):_ add a base-branch filter to the `pull_request` trigger, e.g. `pull_request: branches-ignore: ["autostack/**"]`. Because my live PR's base is an `autostack/e2e-base-*` branch, that single line makes the live suite trigger zero CI while leaving all real PR coverage intact.
-_Mitigation I implement regardless:_ the live suite's `finally` block polls `GET /repos/{…}/actions/runs?head_sha=<sha>` and cancels any run it started before closing the PR. This is racy on its own — a run can start after the poll — which is why the filter is the real fix.
-_If neither is approved:_ I will restrict the live suite to branch + commit + comment operations and validate the draft-PR path against recorded fixtures only, which would leave the charter's "PR number opened+closed" exit criterion unmet by design rather than by omission.
+**Plan-review status (2026-08-27): APPROVE-WITH-CHANGES.** All required changes are folded in above. E-1, E-6, and E-7 are **ruled and closed**; E-2 through E-5 and A-1 through A-3 stand as accepted-as-written.
+
+**E-1 — Live GitHub PRs trigger the unfiltered CI matrix. RULED (finding 7): precondition option taken.**
+`.github/workflows/ci.yml` triggers on `pull_request:` with **no branch filter**, and its `local-execution-macos` job is `runs-on: macos-15, timeout-minutes: 60`, unconditional — so any PR on `NeelM0906/Factory`, including one between two `autostack/e2e-*` branches, would start the full matrix.
+_Ruling:_ `branches-ignore: ["autostack/**"]` lands on the base branch via Wave 0 Task 0.11 (I2's file, not mine); this stream will have it after its first rebase. **Before opening any live PR the suite asserts that filter is present in the worktree's `ci.yml` and STOPS if it is absent** (Task 10 precondition, tested by `assertPullRequestCiFilter`).
+_Mitigation retained regardless:_ the `finally` block polls `GET /repos/{…}/actions/runs?head_sha=<sha>` and cancels any run before closing the PR — belt and braces, since the precondition is the real guarantee.
+
+**E-6 — Ingress mount point and the bearer wall. RULED (finding 1).** Webhooks are a different trust domain — signature-authenticated over the raw body, never bearer. Ingress is mounted **outside `/v1/*`** at `/ingress/github`, `/ingress/slack/events`, `/ingress/slack/interactivity`; no auth exemption is punched into the bearer wall. Closed ingress returns **`503`** (honest refusal; provider redelivery is the recovery path), documented in each route's comments. The `register*Ingress` factories take the base path as given and make no `app.ts` edit. Folded into decision D8 and Task 15.
+
+**E-7 — Durable ingress queue ownership. RULED (finding 9).** This stream defines the `IngressQueue` **port** plus the in-memory implementation for tests; the **SQLite-backed implementation on `@autostack/db` is a named Wave 2 / I1 composition deliverable**, so §13.2 compliance at acceptance rides on I1. All ack-then-enqueue semantics are proven **against the port, store-agnostically**, so the same suite passes unmodified when I1 swaps the store. Folded into decision D9 and Task 13.
 
 **E-2 — `apps/control-plane/package.json` is off-limits, so the ingress tests cannot import either adapter package.** I have designed around this (Task 15: everything injected, verifier implemented inline in tests via `node:crypto`), which I believe is the _better_ design anyway — it is what the no-cross-implementation-imports rule asks for. Flagging it so the orchestrator knows the wired end-to-end test (real verifier + real route) is deliberately deferred to composition time and is not an oversight.
 
@@ -1039,7 +1238,7 @@ _If neither is approved:_ I will restrict the live suite to branch + commit + co
 
 **E-5 — Delivery-ID dedup authority.** I consume `IntegrationIngressPort.accept` for durable dedup (S4 owns "source deduplication by delivery identifier") and own only the edge guard, signature verification, and replay window. If S4 is _not_ implementing `IntegrationIngressPort`, tell me and I will add it to this stream's scope.
 
-**A-1 — Draft-PR body inputs (assumption, no ruling needed unless you disagree).** `PublicationEvidenceBundle` carries no prose, so the §4.4 body is composed from the bundle plus `TriageReport`, `PlanDocument`, `VerificationReport`, `ReviewReport`, a caller-supplied `changeSummary`, and a `runUrl`, with every digest link between them verified before composition. No contract change needed.
+**A-1 — Draft-PR body inputs.** `PublicationEvidenceBundle` carries no prose, so the §4.4 body is composed from the bundle plus `TriageReport`, `PlanDocument`, `VerificationReport`, `ReviewReport`, a caller-supplied `changeSummary`, and a `runUrl`. Per the review, the reports are admitted through the contracts' own `admitPlanDocument` / `admitVerificationReport` / `admitReviewReport`, and the composer enforces the **two** digest equality links that actually exist (`digestPlanDocument(plan) === bundle.plan.planDigest`; `review.reviewedDiffDigest === bundle.review.reviewedDiffDigest`) plus the verification link through `review.verificationReportDigest`. The phantom "verification evidence digest" test case is removed. No contract change needed. See decision D3.
 
 **A-2 — No new runtime dependencies.** HMAC, RS256 JWT signing, and timing-safe comparison all come from `node:crypto`; HTTP uses the injected global `fetch`; Socket Mode uses the injected global `WebSocket`. Both packages depend only on `@autostack/contracts` and `zod`, with `@autostack/domain` as a test-only devDependency for the fake-parity suites.
 
@@ -1064,6 +1263,7 @@ _If neither is approved:_ I will restrict the live suite to branch + commit + co
 | 11  | Slack scaffold + signature/replay window        | integration-slack        | todo   |
 | 12  | Slack ingress + approval interactivity          | integration-slack        | todo   |
 | 13  | Socket Mode ack + durable queue                 | integration-slack        | todo   |
-| 14  | Never-post gate + `createSlackIntegration`      | integration-slack        | todo   |
+| 14  | Message-kind union, never-post gate, assembly   | integration-slack        | todo   |
 | 15  | Control-plane ingress route factories           | control-plane (new only) | todo   |
-| 16  | Full gate, self-review, stream report           | —                        | todo   |
+| 16  | Installations/repos helper + wiring documents   | integration-github, docs | todo   |
+| 17  | Full gate, self-review, stream report           | —                        | todo   |
