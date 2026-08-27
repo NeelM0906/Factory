@@ -9,6 +9,7 @@ import {
   digestTerminalRunTransition,
   validateRunStreamCoherence
 } from "../src/events.js";
+import { digestPlanDocument } from "../src/station-evidence.js";
 import {
   digestCommandAuthorization,
   digestCommandScope,
@@ -74,6 +75,8 @@ const approval = {
   updatedAt: NOW
 } as const;
 
+const AGENT_SESSION_ID = "agt_123e4567-e89b-42d3-a456-426614174000";
+
 const eventBodies = [
   { type: "work_item.created", payload: { workItem } },
   { type: "run.created", payload: { run } },
@@ -111,6 +114,86 @@ const eventBodies = [
       evidenceDigest: "a".repeat(64),
       origin: "desktop",
       decidedAt: NOW
+    }
+  },
+  {
+    type: "pipeline.evidence_recorded",
+    payload: {
+      runId: RUN_ID,
+      jobId: JOB_ID,
+      attempt: 1,
+      evidence: {
+        schemaVersion: 1,
+        workspaceId: WORKSPACE_ID,
+        workItemId: WORK_ITEM_ID,
+        runId: RUN_ID,
+        stage: "triage",
+        evidenceDigest: "1".repeat(64),
+        artifactIds: [],
+        producedAt: NOW,
+        summary: "A reproducible regression."
+      }
+    }
+  },
+  {
+    type: "clarification.requested",
+    payload: {
+      runId: RUN_ID,
+      request: {
+        schemaVersion: 1,
+        workspaceId: WORKSPACE_ID,
+        workItemId: WORK_ITEM_ID,
+        runId: RUN_ID,
+        clarificationRef: "clarify.scope",
+        stage: "triage",
+        question: "Which repository should this target?",
+        evidenceDigest: "1".repeat(64),
+        requestedAt: NOW
+      }
+    }
+  },
+  {
+    type: "clarification.answered",
+    payload: {
+      runId: RUN_ID,
+      response: {
+        schemaVersion: 1,
+        idempotencyKey: "clarify:run:1",
+        runId: RUN_ID,
+        clarificationRef: "clarify.scope",
+        answer: "The factory repository.",
+        origin: "desktop",
+        actorId: "local-user",
+        answeredAt: NOW
+      }
+    }
+  },
+  {
+    type: "run.steered",
+    payload: {
+      runId: RUN_ID,
+      instruction: "Prefer the smaller refactor.",
+      origin: "desktop",
+      actorId: "local-user",
+      acceptedAt: NOW
+    }
+  },
+  {
+    type: "agent.session_event",
+    payload: {
+      runId: RUN_ID,
+      stage: "implement",
+      agentSessionId: AGENT_SESSION_ID,
+      sequence: 1,
+      event: {
+        schemaVersion: 1,
+        sessionId: AGENT_SESSION_ID,
+        sequence: 1,
+        occurredAt: NOW,
+        type: "message",
+        role: "assistant",
+        text: "Reading the failing test."
+      }
     }
   }
 ] as const;
@@ -1259,5 +1342,316 @@ describe("domain event contracts", () => {
     for (const malformed of [null, [], { ...legacy, payload: null }, { ...legacy, payload: [] }]) {
       expect(() => parseStoredDomainEvent(malformed)).toThrow();
     }
+  });
+});
+
+describe("pipeline, clarification, steering, and agent session events", () => {
+  const stationIdentity = {
+    schemaVersion: 1 as const,
+    workspaceId: WORKSPACE_ID,
+    workItemId: WORK_ITEM_ID,
+    runId: RUN_ID
+  };
+  const digestOf = (character: string): string => character.repeat(64);
+  const evidenceContext = {
+    ...stationIdentity,
+    artifactIds: [],
+    producedAt: NOW
+  };
+
+  const triageEvidence = {
+    ...evidenceContext,
+    stage: "triage" as const,
+    evidenceDigest: digestOf("1"),
+    summary: "A reproducible regression."
+  };
+  const triageReport = {
+    ...stationIdentity,
+    taskType: "bug" as const,
+    priority: "high" as const,
+    complexity: "small" as const,
+    actionable: true,
+    rationale: "A failing regression with a reproducible test.",
+    duplicates: [],
+    producedAt: NOW
+  };
+
+  const verificationCommand = {
+    executable: "pnpm",
+    args: ["test"],
+    usesShell: false,
+    required: true
+  };
+  const planDraft = {
+    ...stationIdentity,
+    planDigest: digestOf("a"),
+    summary: "Fix the regression.",
+    acceptanceCriteria: ["The regression test passes."],
+    affectedAreas: ["packages/contracts"],
+    risks: [],
+    verificationCommands: [verificationCommand],
+    requiredPermissions: [],
+    requiredCredentialRefIds: [],
+    producedAt: NOW
+  };
+
+  const recorded = (payload: Record<string, unknown>, type: string): Record<string, unknown> => ({
+    ...context,
+    type,
+    payload
+  });
+
+  const sealedPlan = async () => {
+    const planDigest = await digestPlanDocument(planDraft);
+    return { ...planDraft, planDigest };
+  };
+
+  it("declares every new type exactly once", () => {
+    for (const type of [
+      "pipeline.evidence_recorded",
+      "clarification.requested",
+      "clarification.answered",
+      "run.steered",
+      "agent.session_event"
+    ] as const) {
+      expect(EVENT_TYPES.filter((declared) => declared === type)).toEqual([type]);
+    }
+  });
+
+  it("records station evidence and admits an accompanying document", async () => {
+    const plan = await sealedPlan();
+    const stream = await validateRunStreamCoherence([
+      recorded(
+        {
+          runId: RUN_ID,
+          jobId: JOB_ID,
+          attempt: 1,
+          evidence: triageEvidence,
+          document: { kind: "triage", report: triageReport }
+        },
+        "pipeline.evidence_recorded"
+      ),
+      recorded(
+        {
+          runId: RUN_ID,
+          jobId: JOB_ID,
+          attempt: 1,
+          evidence: {
+            ...evidenceContext,
+            stage: "plan",
+            evidenceDigest: digestOf("2"),
+            planDigest: plan.planDigest
+          },
+          document: { kind: "plan", document: plan }
+        },
+        "pipeline.evidence_recorded"
+      )
+    ]);
+    expect(stream).toHaveLength(2);
+  });
+
+  it("refuses a document that does not describe the stage its envelope records", async () => {
+    await expect(
+      validateRunStreamCoherence([
+        recorded(
+          {
+            runId: RUN_ID,
+            jobId: JOB_ID,
+            attempt: 1,
+            evidence: triageEvidence,
+            document: { kind: "plan", document: planDraft }
+          },
+          "pipeline.evidence_recorded"
+        )
+      ])
+    ).rejects.toThrow(/stage/i);
+  });
+
+  it("refuses a plan document whose digest the envelope does not name", async () => {
+    const plan = await sealedPlan();
+    await expect(
+      validateRunStreamCoherence([
+        recorded(
+          {
+            runId: RUN_ID,
+            jobId: JOB_ID,
+            attempt: 1,
+            evidence: {
+              ...evidenceContext,
+              stage: "plan",
+              evidenceDigest: digestOf("2"),
+              planDigest: digestOf("b")
+            },
+            document: { kind: "plan", document: plan }
+          },
+          "pipeline.evidence_recorded"
+        )
+      ])
+    ).rejects.toThrow(/digest/i);
+  });
+
+  it("orders stages forward and lets a failed judgement route back to implement", async () => {
+    const forward = [
+      { stage: "triage", evidenceDigest: digestOf("1"), summary: "Triaged." },
+      { stage: "plan", evidenceDigest: digestOf("2"), planDigest: digestOf("a") }
+    ];
+    await expect(
+      validateRunStreamCoherence(
+        forward.map((evidence) =>
+          recorded(
+            {
+              runId: RUN_ID,
+              jobId: JOB_ID,
+              attempt: 1,
+              evidence: { ...evidenceContext, ...evidence }
+            },
+            "pipeline.evidence_recorded"
+          )
+        )
+      )
+    ).resolves.toHaveLength(2);
+
+    await expect(
+      validateRunStreamCoherence([
+        recorded(
+          {
+            runId: RUN_ID,
+            jobId: JOB_ID,
+            attempt: 1,
+            evidence: {
+              ...evidenceContext,
+              stage: "triage",
+              evidenceDigest: digestOf("1"),
+              summary: "Triaged."
+            }
+          },
+          "pipeline.evidence_recorded"
+        ),
+        recorded(
+          {
+            runId: RUN_ID,
+            jobId: JOB_ID,
+            attempt: 1,
+            evidence: {
+              ...evidenceContext,
+              stage: "implement",
+              evidenceDigest: digestOf("3"),
+              planApprovalEvidenceDigest: digestOf("2"),
+              agentSessionId: AGENT_SESSION_ID,
+              environmentId: "env_123e4567-e89b-42d3-a456-426614174000",
+              sourceCommit: "a".repeat(40),
+              resultCommit: "b".repeat(40),
+              finalDiffDigest: digestOf("f")
+            }
+          },
+          "pipeline.evidence_recorded"
+        )
+      ])
+    ).rejects.toThrow(/transition/i);
+  });
+
+  it("asks each clarification once and answers it at most once", async () => {
+    const request = {
+      ...stationIdentity,
+      clarificationRef: "clarify.scope",
+      stage: "triage" as const,
+      question: "Which repository should this target?",
+      evidenceDigest: digestOf("1"),
+      requestedAt: NOW
+    };
+    const response = {
+      schemaVersion: 1 as const,
+      idempotencyKey: "clarify:run:1",
+      runId: RUN_ID,
+      clarificationRef: "clarify.scope",
+      answer: "The factory repository.",
+      origin: "desktop" as const,
+      actorId: "local-user",
+      answeredAt: NOW
+    };
+
+    await expect(
+      validateRunStreamCoherence([
+        recorded({ runId: RUN_ID, request }, "clarification.requested"),
+        recorded({ runId: RUN_ID, response }, "clarification.answered")
+      ])
+    ).resolves.toHaveLength(2);
+
+    await expect(
+      validateRunStreamCoherence([
+        recorded({ runId: RUN_ID, request }, "clarification.requested"),
+        recorded({ runId: RUN_ID, request }, "clarification.requested")
+      ])
+    ).rejects.toThrow(/clarification/i);
+
+    await expect(
+      validateRunStreamCoherence([recorded({ runId: RUN_ID, response }, "clarification.answered")])
+    ).rejects.toThrow(/clarification/i);
+
+    await expect(
+      validateRunStreamCoherence([
+        recorded({ runId: RUN_ID, request }, "clarification.requested"),
+        recorded({ runId: RUN_ID, response }, "clarification.answered"),
+        recorded({ runId: RUN_ID, response }, "clarification.answered")
+      ])
+    ).rejects.toThrow(/clarification/i);
+  });
+
+  it("refuses to steer a run that already reached a terminal state", async () => {
+    const steer = recorded(
+      {
+        runId: RUN_ID,
+        instruction: "Prefer the smaller refactor.",
+        origin: "desktop",
+        actorId: "local-user",
+        acceptedAt: NOW
+      },
+      "run.steered"
+    );
+    await expect(validateRunStreamCoherence([steer])).resolves.toHaveLength(1);
+
+    const terminal = {
+      ...context,
+      schemaVersion: 1 as const,
+      eventId: EVENT_ID,
+      stream: { kind: "run" as const, id: RUN_ID },
+      streamVersion: 1,
+      globalSequence: 1,
+      type: "run.transitioned",
+      payload: { runId: RUN_ID, from: "publishing", to: "completed", reason: "Published." }
+    };
+    await expect(validateRunStreamCoherence([terminal, steer])).rejects.toThrow(/terminal/i);
+  });
+
+  it("relays agent session events in one strictly increasing sequence", async () => {
+    const relay = (sequence: number) =>
+      recorded(
+        {
+          runId: RUN_ID,
+          stage: "implement",
+          agentSessionId: AGENT_SESSION_ID,
+          sequence,
+          event: {
+            schemaVersion: 1,
+            sessionId: AGENT_SESSION_ID,
+            sequence,
+            occurredAt: NOW,
+            type: "message",
+            role: "assistant",
+            text: "Reading the failing test."
+          }
+        },
+        "agent.session_event"
+      );
+
+    await expect(validateRunStreamCoherence([relay(1), relay(2)])).resolves.toHaveLength(2);
+    await expect(validateRunStreamCoherence([relay(2), relay(1)])).rejects.toThrow(/sequence/i);
+    await expect(validateRunStreamCoherence([relay(1), relay(1)])).rejects.toThrow(/sequence/i);
+
+    const mismatched = relay(1);
+    const payload = mismatched["payload"] as Record<string, unknown>;
+    await expect(
+      validateRunStreamCoherence([{ ...mismatched, payload: { ...payload, sequence: 5 } }])
+    ).rejects.toThrow(/sequence/i);
   });
 });

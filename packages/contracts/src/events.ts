@@ -9,6 +9,7 @@ import {
   WorkItemSchema
 } from "./entities.js";
 import {
+  AgentSessionIdSchema,
   ApprovalIdSchema,
   CommandIdSchema,
   EnvironmentAuthorizationIdSchema,
@@ -44,7 +45,24 @@ import {
   digestExecutionScope,
   validateCommandAuthorizationAgainstEnvironment
 } from "./runner.js";
-import { normalizeSafeJson, type SafeJsonValue } from "./secret-safety.js";
+import { AgentSessionStreamEventSchema } from "./agent.js";
+import {
+  PipelineEvidenceSchema,
+  assertPipelineReworkTransition,
+  assertPipelineTransition,
+  type PipelineStage
+} from "./pipeline.js";
+import {
+  SafeMetadataStringSchema,
+  normalizeSafeJson,
+  type SafeJsonValue
+} from "./secret-safety.js";
+import {
+  ClarificationRequestSchema,
+  ClarificationResponseSchema,
+  PipelineStationDocumentSchema,
+  admitPlanDocument
+} from "./station-evidence.js";
 import { WorkflowFailureSchema } from "./workflow-failure.js";
 
 export const EVENT_TYPES = [
@@ -65,7 +83,12 @@ export const EVENT_TYPES = [
   "command.started",
   "command.completed",
   "artifact.recorded",
-  "environment.disposed"
+  "environment.disposed",
+  "pipeline.evidence_recorded",
+  "clarification.requested",
+  "clarification.answered",
+  "run.steered",
+  "agent.session_event"
 ] as const;
 
 const EventContextSchema = z
@@ -107,6 +130,9 @@ const StageIdentityShape = {
   stage: RunStageSchema,
   jobId: JobIdSchema
 } as const;
+
+/** Pipeline evidence names its own stage, so the envelope carries only the run and the job. */
+const PipelineEvidenceIdentityShape = { runId: RunIdSchema, jobId: JobIdSchema } as const;
 
 const DomainEventBodySchema = z.discriminatedUnion("type", [
   z
@@ -166,6 +192,61 @@ const DomainEventBodySchema = z.discriminatedUnion("type", [
         .object({
           ...StageIdentityShape,
           error: WorkflowFailureSchema
+        })
+        .strict()
+    })
+    .strict(),
+  z
+    .object({
+      type: z.literal("pipeline.evidence_recorded"),
+      payload: z
+        .object({
+          ...PipelineEvidenceIdentityShape,
+          attempt: z.number().int().positive(),
+          evidence: PipelineEvidenceSchema,
+          document: PipelineStationDocumentSchema.optional()
+        })
+        .strict()
+    })
+    .strict(),
+  z
+    .object({
+      type: z.literal("clarification.requested"),
+      payload: z.object({ runId: RunIdSchema, request: ClarificationRequestSchema }).strict()
+    })
+    .strict(),
+  z
+    .object({
+      type: z.literal("clarification.answered"),
+      payload: z.object({ runId: RunIdSchema, response: ClarificationResponseSchema }).strict()
+    })
+    .strict(),
+  z
+    .object({
+      type: z.literal("run.steered"),
+      payload: z
+        .object({
+          runId: RunIdSchema,
+          instruction: SafeMetadataStringSchema.max(20_000),
+          origin: z.enum(["desktop", "web", "cli", "slack", "github", "api"]),
+          actorId: z.string().trim().min(1).max(240),
+          acceptedAt: z.iso.datetime()
+        })
+        .strict()
+    })
+    .strict(),
+  z
+    .object({
+      type: z.literal("agent.session_event"),
+      payload: z
+        .object({
+          runId: RunIdSchema,
+          stage: RunStageSchema,
+          agentSessionId: AgentSessionIdSchema,
+          sequence: z.number().int().positive(),
+          // The stream event's own strings are SafeMetadataString, so a relay that failed to redact
+          // cannot get its output past this schema. The projection is the redaction contract.
+          event: AgentSessionStreamEventSchema
         })
         .strict()
     })
@@ -486,6 +567,9 @@ export const validateRunStreamCoherence = async (
     }
   >();
   const terminalRuns = new Map<string, TerminalRunEvidence>();
+  const pipelineStages = new Map<string, PipelineStage>();
+  const clarifications = new Map<string, boolean>();
+  const agentSessionSequences = new Map<string, number>();
   const phaseDigests = new Map<string, { readonly digest: string; readonly context: string }>();
   const assertAuthorizationIsActiveAt = (
     authorization: EnvironmentAuthorization | CommandAuthorization,
@@ -890,6 +974,112 @@ export const validateRunStreamCoherence = async (
           );
         }
         environments.set(event.payload.environmentId, { ...environment, disposed: true });
+        break;
+      }
+      case "pipeline.evidence_recorded": {
+        const { evidence, document, attempt } = event.payload;
+        const runKey = `${event.workspaceId}:${event.payload.runId}`;
+        if (evidence.workspaceId !== event.workspaceId || evidence.runId !== event.payload.runId) {
+          throw new TypeError("Pipeline evidence belongs to a different run.");
+        }
+        const previousStage = pipelineStages.get(runKey);
+        if (previousStage !== undefined) {
+          // A failed judgement routes back rather than forward; every other move advances.
+          if (
+            evidence.stage === "implement" &&
+            (previousStage === "verify" || previousStage === "isolated_review")
+          ) {
+            assertPipelineReworkTransition(previousStage, attempt);
+          } else {
+            assertPipelineTransition(previousStage, evidence.stage);
+          }
+        }
+        pipelineStages.set(runKey, evidence.stage);
+
+        if (document !== undefined) {
+          if (document.kind !== evidence.stage) {
+            throw new TypeError(
+              "Station document does not describe the stage its envelope records."
+            );
+          }
+          const carried = document.kind === "plan" ? document.document : document.report;
+          if (
+            carried.workspaceId !== evidence.workspaceId ||
+            carried.workItemId !== evidence.workItemId ||
+            carried.runId !== evidence.runId
+          ) {
+            throw new TypeError("Station document belongs to a different run than its envelope.");
+          }
+          // Each envelope can only bind what it actually names. Triage names nothing about its
+          // report, so identity is the whole check; the other three name something and it is bound.
+          if (document.kind === "plan" && evidence.stage === "plan") {
+            await admitPlanDocument(document.document);
+            if (evidence.planDigest !== document.document.planDigest) {
+              throw new TypeError("Plan evidence does not name this plan document's digest.");
+            }
+          }
+          if (document.kind === "verify" && document.report.status !== "passed") {
+            throw new TypeError(
+              "Verification evidence records a pass that its report does not support."
+            );
+          }
+          if (document.kind === "isolated_review" && evidence.stage === "isolated_review") {
+            if (
+              evidence.verdict !== document.report.verdict ||
+              evidence.reviewedDiffDigest !== document.report.reviewedDiffDigest
+            ) {
+              throw new TypeError("Review evidence and review report disagree.");
+            }
+          }
+        }
+        break;
+      }
+      case "clarification.requested": {
+        const { request } = event.payload;
+        if (request.workspaceId !== event.workspaceId || request.runId !== event.payload.runId) {
+          throw new TypeError("Clarification request belongs to a different run.");
+        }
+        const key = `${event.workspaceId}:${event.payload.runId}:${request.clarificationRef}`;
+        if (clarifications.has(key)) {
+          throw new TypeError("Clarification reference is already asked on this run.");
+        }
+        clarifications.set(key, false);
+        break;
+      }
+      case "clarification.answered": {
+        const { response } = event.payload;
+        if (response.runId !== event.payload.runId) {
+          throw new TypeError("Clarification answer belongs to a different run.");
+        }
+        const key = `${event.workspaceId}:${event.payload.runId}:${response.clarificationRef}`;
+        const answered = clarifications.get(key);
+        if (answered === undefined) {
+          throw new TypeError("Clarification answer has no matching clarification request.");
+        }
+        if (answered) {
+          throw new TypeError("Clarification reference is already answered.");
+        }
+        clarifications.set(key, true);
+        break;
+      }
+      case "run.steered": {
+        assertRunCanExecute(event.workspaceId, event.payload.runId);
+        break;
+      }
+      case "agent.session_event": {
+        const { agentSessionId, sequence } = event.payload;
+        const relayed = event.payload.event;
+        if (relayed.sessionId !== agentSessionId) {
+          throw new TypeError("Agent session event names a different session than its envelope.");
+        }
+        if (relayed.sequence !== sequence) {
+          throw new TypeError("Agent session event sequence disagrees with its envelope sequence.");
+        }
+        const lastSequence = agentSessionSequences.get(agentSessionId);
+        if (lastSequence !== undefined && sequence <= lastSequence) {
+          throw new TypeError("Agent session event sequence must strictly increase.");
+        }
+        agentSessionSequences.set(agentSessionId, sequence);
         break;
       }
       default:

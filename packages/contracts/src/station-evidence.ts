@@ -266,6 +266,18 @@ export const ReviewReportSchema = z
     }
   });
 
+/**
+ * The document a station produced, tagged by the stage that produced it. The four document shapes
+ * share no discriminating field of their own — a plan and a review are simply different objects —
+ * so the tag is what lets an event carry any of them and a reader know which admission rule applies.
+ */
+export const PipelineStationDocumentSchema = z.discriminatedUnion("kind", [
+  z.object({ kind: z.literal("triage"), report: TriageReportSchema }).strict(),
+  z.object({ kind: z.literal("plan"), document: PlanDocumentSchema }).strict(),
+  z.object({ kind: z.literal("verify"), report: VerificationReportSchema }).strict(),
+  z.object({ kind: z.literal("isolated_review"), report: ReviewReportSchema }).strict()
+]);
+
 /** A focused question that moves a run to `needs_clarification` or `waiting_for_user`. */
 export const ClarificationRequestSchema = z
   .object({
@@ -509,5 +521,6 @@ export type PlanPermissionKind = z.infer<typeof PlanPermissionKindSchema>;
 export type VerificationResult = z.infer<typeof VerificationResultSchema>;
 export type ReviewFindingLocation = z.infer<typeof ReviewFindingLocationSchema>;
 export type ReviewFinding = z.infer<typeof ReviewFindingSchema>;
+export type PipelineStationDocument = z.infer<typeof PipelineStationDocumentSchema>;
 export type ClarificationRequest = z.infer<typeof ClarificationRequestSchema>;
 export type ClarificationResponse = z.infer<typeof ClarificationResponseSchema>;
