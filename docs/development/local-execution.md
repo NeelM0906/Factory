@@ -6,6 +6,15 @@ AutoStack's desktop alpha supervises two independent Electron utility processes.
 
 Prerequisites are macOS arm64, Node.js 24–26, pnpm 10.27.0, Xcode command-line tools, and Git 2.45 or newer.
 
+The Git requirement is specifically about `/usr/bin/git`. The host daemon pins `trustedGitExecutable` to that path and runs its utility process with `PATH` restricted to the system directories, so a newer Git installed through Homebrew or another package manager is deliberately out of reach and does not satisfy this. `/usr/bin/git` is a shim that resolves through the active developer directory, so the version it reports follows whichever toolchain `xcode-select` points at:
+
+```bash
+xcode-select -p
+/usr/bin/git --version
+```
+
+If that reports a version below 2.45, select a newer installed Xcode with `sudo xcode-select -s /Applications/Xcode_<version>.app/Contents/Developer`, or install newer command-line tools. Below the floor, `GitClient` rejects the executable and the host fails closed at startup — the desktop application reports a degraded runtime rather than starting.
+
 ```bash
 CI=true pnpm install --frozen-lockfile
 pnpm desktop:build

@@ -42,7 +42,9 @@ docs/
 
 ## Quick start
 
-Prerequisites are Node.js 24 and pnpm 10.27 through Corepack.
+Prerequisites are Node.js 24 and pnpm 10.27 through Corepack. The desktop application additionally
+requires macOS on Apple Silicon and Git 2.45 or newer at `/usr/bin/git`, which is the only Git the
+local runner will use — see [docs/development/local-execution.md](docs/development/local-execution.md).
 
 ```bash
 corepack enable

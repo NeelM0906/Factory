@@ -117,6 +117,44 @@ jobs:
           test "$(uname -m)" = arm64
           test "$(node -p process.arch)" = arm64
 
+      - name: Install locked dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Build Electron and native runtime
+        run: pnpm desktop:build
+
+      - name: Select the newest installed Xcode
+        # `/usr/bin/git` is the command-line-tools shim: it resolves through the *active developer
+        # directory*, so the effective git version follows whatever `xcode-select` points at. The
+        # macos-15 image defaults to Xcode 16.4, whose Apple Git is 2.39.5 -- below the >= 2.45
+        # floor the desktop host requires, which is what failed run 33118019098. That same image
+        # also ships Xcode 26.0.1 through 26.3, whose Apple Git is 2.50.x, so selecting the newest
+        # installed Xcode clears the floor with no runner-image change.
+        #
+        # Placed here, after the native build rather than before it, on purpose: `pnpm install` and
+        # `desktop:build` compile node-pty through the active toolchain and both are already green
+        # on the image default. Only git needs to move, so only the steps after this one see the
+        # newer Xcode. It is deliberately not fatal -- the preflight below is the single gate, so a
+        # surprise in the layout surfaces there as a version, not here as a shell error.
+        run: |
+          shopt -s nullglob
+          versioned=(/Applications/Xcode_*.app)
+          newest=""
+          if [ ${#versioned[@]} -gt 0 ]; then
+            newest="$(printf '%s\n' "${versioned[@]}" | sort -V | tail -1)"
+          elif [ -d /Applications/Xcode.app ]; then
+            newest=/Applications/Xcode.app
+          fi
+          if [ -n "${newest}" ] && [ -d "${newest}/Contents/Developer" ]; then
+            echo "selecting ${newest}"
+            sudo xcode-select -s "${newest}/Contents/Developer" ||
+              echo "::warning::xcode-select failed; leaving the active developer directory unchanged"
+          else
+            echo "::warning::no Xcode found under /Applications; leaving the active developer directory unchanged"
+          fi
+          echo "active developer directory: $(xcode-select -p)"
+          echo "system git: $(/usr/bin/git --version)"
+
       - name: Require a supported system Git
         # The desktop host pins `trustedGitExecutable: "/usr/bin/git"` and runs its utility with
         # PATH restricted to the system directories, so this exact binary is the one the product
@@ -138,12 +176,6 @@ jobs:
             echo "::error::/usr/bin/git is ${version}; @autostack/runner-local requires git >= 2.45."
             exit 1
           }
-
-      - name: Install locked dependencies
-        run: pnpm install --frozen-lockfile
-
-      - name: Build Electron and native runtime
-        run: pnpm desktop:build
 
       - name: Verify real local execution composition
         run: node scripts/verify-local-execution.mjs
