@@ -447,45 +447,52 @@ export const describeRunnerProviderConformance = (
       }
     });
 
-    it("reassembles and authenticates artifacts while rejecting every foreign boundary", async () => {
-      const { provider, control } = await fixture.create();
-      await provider.prepareEnvironment(fixture.prepare);
-      await provider.startCommand(fixture.start);
-      await control.completeCommand(fixture.start.commandId);
-      const whole = await readWholeArtifact(provider, fixture.artifact);
-      expect(whole.bytes).toEqual(fixture.expectedArtifactBytes);
-      expect(whole.descriptor.byteSize).toBe(fixture.expectedArtifactBytes.byteLength);
-      expect(await sha256Hex(whole.bytes)).toBe(whole.descriptor.digest);
-      expect(whole.descriptor).toMatchObject({
-        artifactId: fixture.artifact.artifactId,
-        workspaceId: fixture.artifact.workspaceId,
-        runId: fixture.artifact.runId,
-        commandId: fixture.artifact.commandId
-      });
+    // Digest-bound: this case reads a whole artifact chunk by chunk and re-hashes it, which has no
+    // margin under the 5s default once V8 coverage instrumentation is on and the workspace's
+    // packages run in parallel. Every other case in this suite finishes in tens of milliseconds.
+    it(
+      "reassembles and authenticates artifacts while rejecting every foreign boundary",
+      { timeout: 20_000 },
+      async () => {
+        const { provider, control } = await fixture.create();
+        await provider.prepareEnvironment(fixture.prepare);
+        await provider.startCommand(fixture.start);
+        await control.completeCommand(fixture.start.commandId);
+        const whole = await readWholeArtifact(provider, fixture.artifact);
+        expect(whole.bytes).toEqual(fixture.expectedArtifactBytes);
+        expect(whole.descriptor.byteSize).toBe(fixture.expectedArtifactBytes.byteLength);
+        expect(await sha256Hex(whole.bytes)).toBe(whole.descriptor.digest);
+        expect(whole.descriptor).toMatchObject({
+          artifactId: fixture.artifact.artifactId,
+          workspaceId: fixture.artifact.workspaceId,
+          runId: fixture.artifact.runId,
+          commandId: fixture.artifact.commandId
+        });
 
-      const rejected = async (overrides: Partial<ReadArtifactChunkRequest>): Promise<void> => {
+        const rejected = async (overrides: Partial<ReadArtifactChunkRequest>): Promise<void> => {
+          await expect(
+            provider.readArtifactChunk({ ...fixture.artifact, ...overrides })
+          ).rejects.toBeDefined();
+        };
+        await rejected({ workspaceId: fixture.foreign.workspaceId });
+        await rejected({ runId: fixture.foreign.runId });
+        await rejected({ environmentId: fixture.foreign.environmentId });
+        await rejected({ commandId: fixture.foreign.commandId });
+        await rejected({ environmentAuthorizationId: fixture.foreign.environmentAuthorizationId });
+        await rejected({ environmentAuthorizationDigest: fixture.foreign.digest });
+        await rejected({ commandAuthorizationId: fixture.foreign.commandAuthorizationId });
+        await rejected({ commandAuthorizationDigest: fixture.foreign.digest });
+        await rejected({ artifactId: fixture.foreign.artifactId });
         await expect(
-          provider.readArtifactChunk({ ...fixture.artifact, ...overrides })
+          Reflect.apply(provider.readArtifactChunk, provider, [{ ...fixture.artifact, offset: -1 }])
         ).rejects.toBeDefined();
-      };
-      await rejected({ workspaceId: fixture.foreign.workspaceId });
-      await rejected({ runId: fixture.foreign.runId });
-      await rejected({ environmentId: fixture.foreign.environmentId });
-      await rejected({ commandId: fixture.foreign.commandId });
-      await rejected({ environmentAuthorizationId: fixture.foreign.environmentAuthorizationId });
-      await rejected({ environmentAuthorizationDigest: fixture.foreign.digest });
-      await rejected({ commandAuthorizationId: fixture.foreign.commandAuthorizationId });
-      await rejected({ commandAuthorizationDigest: fixture.foreign.digest });
-      await rejected({ artifactId: fixture.foreign.artifactId });
-      await expect(
-        Reflect.apply(provider.readArtifactChunk, provider, [{ ...fixture.artifact, offset: -1 }])
-      ).rejects.toBeDefined();
-      await expect(
-        Reflect.apply(provider.readArtifactChunk, provider, [
-          { ...fixture.artifact, length: ARTIFACT_CHUNK_LIMIT + 1 }
-        ])
-      ).rejects.toBeDefined();
-    });
+        await expect(
+          Reflect.apply(provider.readArtifactChunk, provider, [
+            { ...fixture.artifact, length: ARTIFACT_CHUNK_LIMIT + 1 }
+          ])
+        ).rejects.toBeDefined();
+      }
+    );
 
     it("disposes only with exact authoritative terminal evidence and never implicitly", async () => {
       const { provider, control } = await fixture.create();
