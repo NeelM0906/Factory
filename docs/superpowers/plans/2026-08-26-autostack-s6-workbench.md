@@ -109,9 +109,19 @@ No API contract carries `AgentSessionStreamEvent` (`packages/contracts/src/agent
 
 There is no web Playwright suite. The web accessibility guarantee is enforced by Task 10b's axe-in-Vitest gate instead.
 
-### Note — coverage was not being enforced on `@autostack/client-app`
+### Correction — the client-app coverage claim in revision 1 was wrong (retracted)
 
-`packages/client-app` has no `vitest.config.ts`, so `test:coverage` runs without the root config's 80% thresholds (verified: 89.34% statements reported, exit 0, thresholds never applied). Task 1 adds the two-line shim `packages/ui` and `apps/web` already have.
+Revision 1 of this plan asserted that `@autostack/client-app` was escaping the 80% coverage floor because it has no `vitest.config.ts`, and Task 1 proposed adding the two-line `mergeConfig` shim that `packages/ui` and `apps/web` carry. **That was inferred from a green run, not measured. It is false, and it is retracted.**
+
+Measured, three ways, at `02e5cff`:
+
+1. Raising the **root** `vitest.config.ts` statement threshold to 99 and running `pnpm --filter @autostack/client-app test:coverage` **with no package config present** fails with `ERROR: Coverage for statements (89.34%) does not meet global threshold (99%)`, exit 1. The root thresholds were always in force — Vitest resolves the workspace root config for a package that declares none.
+2. A `test/probe.spec.ts` file is **not** collected either way, because the root config's `include: ["**/*.test.ts", "**/*.test.tsx"]` is already applied and excludes `.spec.ts`. (This was the first clue, and it is what prompted measuring instead of assuming.)
+3. With the shim added, behavior is byte-for-byte identical.
+
+**Consequence:** the shim is decorative — it would have added a file that provably changes nothing, under a justification that does not hold. It is **not** added. Task 1 keeps only its real work. The identical shims in `packages/ui` and `apps/web` are pre-existing and out of scope; they are noted, not removed.
+
+The root config was restored immediately after the measurement and `git status` confirms it unmodified. The floor on every owned package is real and is verified in Task 16 as planned.
 
 ---
 
@@ -131,29 +141,19 @@ Three surfaces sit on the boundary of the charter's pane list. Each is decided h
 
 **Files:**
 
-- Create: `packages/client-app/vitest.config.ts`
 - Create: `packages/client-app/src/testing/factory-fixture.ts`
 - Create: `packages/client-app/src/testing/mock-api-server.ts`
 - Create: `packages/client-app/src/testing/index.ts`
 - Modify: `packages/client-app/package.json` (add the `./testing` export)
 - Test: `packages/client-app/test/mock-api-server.test.ts`
 
-- [ ] **Step 1: Add the missing vitest config and observe the floor engage**
-
-```ts
-// packages/client-app/vitest.config.ts
-import { defineConfig, mergeConfig } from "vitest/config";
-
-import sharedConfig from "../../vitest.config.js";
-
-export default mergeConfig(sharedConfig, defineConfig({}));
-```
+- [ ] **Step 1: Record the measured coverage baseline**
 
 ```bash
 pnpm --filter @autostack/client-app test:coverage
 ```
 
-Expected: still green (89.34% / 84.35% / 90.8% / 92.07% against an 80% floor), but the summary now ends with the threshold check instead of silence. If any number is below 80, stop and report — that is a pre-existing gap, not something to paper over.
+Expected: green at 89.34% / 84.35% / 90.8% / 92.07% against the root config's 80% floor, which is already in force (see the retraction above — no config shim is added). This is the number Task 16 compares against; every task from here must leave it at or above 80 on all four axes.
 
 - [ ] **Step 2: Write the failing mock-server contract test first**
 
@@ -225,7 +225,7 @@ Rules, each of which gets its own test case:
 pnpm --filter @autostack/client-app check
 pnpm --filter @autostack/client-app test:coverage
 pnpm format:check
-git add packages/client-app/vitest.config.ts packages/client-app/src/testing packages/client-app/package.json packages/client-app/test/mock-api-server.test.ts
+git add packages/client-app/src/testing packages/client-app/package.json packages/client-app/test/mock-api-server.test.ts
 git commit -m "test(client-app): serve the factory API from its own contracts"
 ```
 
