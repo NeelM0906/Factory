@@ -1,0 +1,211 @@
+{
+  "provenance": {
+    "source": "authored",
+    "cli": "acp",
+    "version": "1",
+    "recordedAt": "2026-08-27T23:45:00.000Z",
+    "argv": ["/tmp/agent-workspace/.bin/acp-agent", "--acp", "--cwd", "/tmp/agent-workspace"],
+    "stability": "stable",
+    "notes": "AUTHORED, NOT RECORDED. No ACP agent is installed on the recording host, so every frame in this file is written against the Agent Client Protocol schema at github.com/zed-industries/agent-client-protocol, schema/v1 (meta.json reports version 1), and provenance.source is \"authored\" rather than \"recorded\". `provenance.version` is the ACP PROTOCOL version this fixture targets -- the integer 1 that `initialize` negotiates -- not a CLI release. v1 is targeted rather than v2 because v1 is the version that carries `session/load`, which is the method the resume path is specified against; v2 replaces it with `session/resume`. WIRE SHAPE: ACP is line-delimited JSON-RPC 2.0 over stdio in BOTH directions, so unlike Codex every frame here carries \"jsonrpc\":\"2.0\". `session/update` and `session/cancel` are notifications (no id); `session/request_permission` is an agent->client REQUEST and carries an id that must be answered. Paths are already at the TRANSCRIPT_PLACEHOLDERS values -- workspace /tmp/agent-workspace, home /home/agent, username agent -- since nothing here came off a real machine. CAPABILITY NEGOTIATION -- two variants exist and Task 4 derives a descriptor from each. acp-completes.json is the FULL negotiation: `agentCapabilities.loadSession: true` (so resume: true), permission support advertised, `promptCapabilities` and `mcpCapabilities` populated, and a `session/new` result carrying `modes` (SessionModeState) and `configOptions` for model and reasoning selection, which is where D-9's selection.modelSelection and selection.reasoningSelection come from. acp-completes-minimal.json is the MINIMAL negotiation: loadSession false, no permission advertisement, no modes, no configOptions -- from which the descriptor must derive resume: false, permissions: false, empty permissionModes, both selection flags false, and the returned harness must have no `respondToPermission` property at all. CAVEAT, IMPORTANT: ACP v1 has NO standard capability flag for permission prompting. Any agent may send `session/request_permission` at any time; the schema's AgentCapabilities carries only loadSession, promptCapabilities, mcpCapabilities, sessionCapabilities and auth. That key is an AutoStack convention, not part of ACP. Task 4 must treat its ABSENCE as permissions: false (fail closed), which is exactly what the minimal variant exercises. THIS IS THE MINIMAL VARIANT of the `completes` family, and it is the second of the two negotiation results Task 4 derives descriptors from. It advertises neither `loadSession` nor permission support, returns a bare `session/new` result with no `modes` and no `configOptions`, and has no `session/load` tail, so the derived descriptor must be resume: false, permissions: false, permissionModes empty, modelSelection false, reasoningSelection false, and the harness object must not carry a `respondToPermission` property at all. It still emits a `plan` session/update: an adapter that derives structuredPlans: false from this negotiation must map that frame to an `output` event rather than a `plan` event, and this fixture is the material for that assertion. Loaded alongside acp-completes.json, whose scenario is also `completes`. Permission capability is not advertised by ACP v1 at all; per plan decision D-12 it is derived from the configured launch profile rather than from an invented protocol extension."
+  },
+  "scenario": "completes",
+  "frames": [
+    {
+      "kind": "awaitStdin",
+      "match": {
+        "method": "initialize"
+      }
+    },
+    {
+      "kind": "emit",
+      "value": {
+        "jsonrpc": "2.0",
+        "id": 1,
+        "result": {
+          "protocolVersion": 1,
+          "agentInfo": {
+            "name": "example-acp-agent-minimal",
+            "version": "0.9.0"
+          },
+          "agentCapabilities": {
+            "loadSession": false,
+            "promptCapabilities": {
+              "image": false,
+              "audio": false,
+              "embeddedContext": false
+            },
+            "mcpCapabilities": {
+              "http": false,
+              "sse": false
+            },
+            "sessionCapabilities": {},
+            "auth": {}
+          },
+          "authMethods": []
+        }
+      }
+    },
+    {
+      "kind": "awaitStdin",
+      "match": {
+        "method": "session/new"
+      }
+    },
+    {
+      "kind": "emit",
+      "value": {
+        "jsonrpc": "2.0",
+        "id": 2,
+        "result": {
+          "sessionId": "sess_01k9m3q4r5s6t7u8v9w0x1y2"
+        }
+      }
+    },
+    {
+      "kind": "awaitStdin",
+      "match": {
+        "method": "session/prompt"
+      }
+    },
+    {
+      "kind": "emit",
+      "value": {
+        "jsonrpc": "2.0",
+        "method": "session/update",
+        "params": {
+          "sessionId": "sess_01k9m3q4r5s6t7u8v9w0x1y2",
+          "update": {
+            "sessionUpdate": "plan",
+            "entries": [
+              {
+                "content": "Read README.md",
+                "priority": "high",
+                "status": "in_progress"
+              },
+              {
+                "content": "Print its contents and stop",
+                "priority": "medium",
+                "status": "pending"
+              }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "kind": "emit",
+      "value": {
+        "jsonrpc": "2.0",
+        "method": "session/update",
+        "params": {
+          "sessionId": "sess_01k9m3q4r5s6t7u8v9w0x1y2",
+          "update": {
+            "sessionUpdate": "agent_thought_chunk",
+            "content": {
+              "type": "text",
+              "text": "The file is small; a single read is enough."
+            }
+          }
+        }
+      }
+    },
+    {
+      "kind": "emit",
+      "value": {
+        "jsonrpc": "2.0",
+        "method": "session/update",
+        "params": {
+          "sessionId": "sess_01k9m3q4r5s6t7u8v9w0x1y2",
+          "update": {
+            "sessionUpdate": "agent_message_chunk",
+            "content": {
+              "type": "text",
+              "text": "Reading README.md."
+            }
+          }
+        }
+      }
+    },
+    {
+      "kind": "emit",
+      "value": {
+        "jsonrpc": "2.0",
+        "method": "session/update",
+        "params": {
+          "sessionId": "sess_01k9m3q4r5s6t7u8v9w0x1y2",
+          "update": {
+            "sessionUpdate": "tool_call",
+            "toolCallId": "call_01hq8p3n",
+            "title": "Read README.md",
+            "kind": "read",
+            "status": "in_progress",
+            "locations": [
+              {
+                "path": "/tmp/agent-workspace/README.md"
+              }
+            ],
+            "rawInput": {
+              "path": "/tmp/agent-workspace/README.md"
+            }
+          }
+        }
+      }
+    },
+    {
+      "kind": "emit",
+      "value": {
+        "jsonrpc": "2.0",
+        "method": "session/update",
+        "params": {
+          "sessionId": "sess_01k9m3q4r5s6t7u8v9w0x1y2",
+          "update": {
+            "sessionUpdate": "tool_call_update",
+            "toolCallId": "call_01hq8p3n",
+            "status": "completed",
+            "content": [
+              {
+                "type": "content",
+                "content": {
+                  "type": "text",
+                  "text": "hello from the disposable repo"
+                }
+              }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "kind": "emit",
+      "value": {
+        "jsonrpc": "2.0",
+        "method": "session/update",
+        "params": {
+          "sessionId": "sess_01k9m3q4r5s6t7u8v9w0x1y2",
+          "update": {
+            "sessionUpdate": "agent_message_chunk",
+            "content": {
+              "type": "text",
+              "text": "README.md contains one line: hello from the disposable repo"
+            }
+          }
+        }
+      }
+    },
+    {
+      "kind": "emit",
+      "value": {
+        "jsonrpc": "2.0",
+        "id": 3,
+        "result": {
+          "stopReason": "end_turn"
+        }
+      }
+    },
+    {
+      "kind": "exit",
+      "code": 0,
+      "signal": null
+    }
+  ]
+}

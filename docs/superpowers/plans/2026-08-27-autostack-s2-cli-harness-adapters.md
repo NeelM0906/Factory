@@ -28,6 +28,7 @@
 - 80% coverage floor (statements, branches, functions, lines) on every package this stream owns.
 - Tests inject clocks, id factories, executable resolvers, and temp dirs. Live tests use disposable temp repositories, never the AutoStack checkout.
 - No pushes to origin (stream-lead protocol, Push policy). Commit locally, per task, conventional-commit style.
+- **Single-committer model (option A, adopted 2026-08-27 after S3 hit a shared-index race twice).** Implementer subagents in this worktree are **report-only**: they never run `git commit`, `git reset`, `git amend`, `git stash`, `git checkout`, or `git restore`. The stream lead is the sole committer. The git index is shared process-wide, so a plain `git commit` sweeps whatever a sibling agent has staged, and a `git reset` silently unstages a sibling's work — neither is visible to the agent that caused it. Removing write access to the index removes the whole class rather than narrowing it. The lead additionally stages with explicit pathspecs and reviews `git status --short` before every commit.
 - Do not modify `packages/contracts`, `packages/domain`, `packages/runner-local`, another stream's packages, root config, or CI. `pnpm-workspace.yaml` already globs `packages/*`, so new packages need no root edit; if one seems necessary, that is an escalation.
 
 ## Decisions (settled by the orchestrator at plan review — no longer open)
@@ -45,11 +46,40 @@
 
 A non-zero exit code alone never decides this; only the presence of a provider error shape does.
 
-**D-3 — Permission normalization.** An approval-gated provider call surfaces as `permission_requested` **only**. No `tool_call` event — of any phase — is emitted for that call until the decision allows it; `tool_call` with phase `started` is emitted at the moment the decision permits the call to proceed. This keeps conformance behaviour 4's "no side effect before the decision" assertion true by construction rather than by luck, since `tool_call` is one of its side-effect types. Task 1 records transcripts that reproduce this ordering so the mappers are tested against it.
+**D-3 — Permission normalization is earned by the adapter, not staged by the fixture.** _(Revised after Task 1 measured the provider; the original wording had the provider ordering backwards.)_
+
+An approval-gated provider call surfaces as `permission_requested` **only**. No `tool_call` event — of any phase — is emitted for that call until the decision allows it, because `tool_call` is one of conformance behaviour 4's side-effect types.
+
+Reality does not cooperate, and the fixtures record it anyway. Claude Code announces the tool call on stdout **before** it asks permission over the MCP socket, on a different channel with no ordering guarantee between them. Measured on 2026-08-27, same `tool_use_id` throughout:
+
+```text
+23:46:33.749  stdout  assistant TOOL_USE   toolu_019Y8NLPUjVz6iBEQxvtnSUr  Write
+23:46:33.759  socket  PERMISSION ASK      _meta["claudecode/toolUseId"]=toolu_019Y8N…   (+10 ms)
+23:46:33.771  stdout  user TOOL_RESULT     toolu_019Y8NLPUjVz6iBEQxvtnSUr               (+12 ms)
+```
+
+A fixture that reordered these to approval-first would let an adapter pass behaviour 4 without ever doing the work — fixture-rigging by another name. So fixtures reproduce the real interleaving, and the adapter earns D-3 by **buffering, keyed on `tool_use.id`**, with no timers and no heuristics:
+
+- on a `tool_use` frame — buffer it, emit nothing;
+- if an approval arrives for that id — emit `permission_requested`; on the decision emit `permission_resolved`, then `tool_call` phase `started`;
+- if a `tool_result` arrives for that id with no approval seen — the call was never gated, so emit `tool_call` `started` then `completed`/`failed`.
+
+The buffer is **bounded** in both entry count and total bytes, and overflow is a classified failure (`provider_output_malformed`). An adapter that buffers without limit against a misbehaving provider is a hang, not a safeguard.
+
+Accepted cost: for ungated tools, `started` is emitted at completion rather than at launch, losing a live "running" signal. Gated calls still surface `permission_requested` immediately, which is the more valuable live signal, and correctness wins at a permission boundary.
 
 **D-4 — Redaction happens after parsing, per field.** The frame reader sees raw bytes; redaction is applied to each extracted string field after `JSON.parse`, via `redactCompleteText` (or a per-field `StreamingSecretRedactor` that is finalized before the field is used). Redacting the byte stream is forbidden for two independent reasons: substituting a marker mid-JSON corrupts the frame, and the streaming redactor deliberately withholds a tail to catch secrets spanning chunk boundaries — a withheld tail is bytes the transport is holding, which would make `quiesce()` report idle while a frame is still in flight.
 
 **D-5 — Ambient authentication is an opaque key-copy over an explicit allowlist.** The spawn environment is built from a fixed allowlist — `HOME`, `PATH`, `USER`, `SHELL`, `LANG`, `TMPDIR`, every `LC_*`, plus each provider's documented authentication variables (pinned in Task 1) — copied key-by-key from `process.env` without the value ever being read into anything that is logged, scanned, persisted, compared, or placed in an event. This is a different channel from `AgentInvocationRequest.environment`, whose entries are contract-supplied, non-secret, and validated by `NonSecretEnvironmentEntrySchema`; adapters apply that schema's `/^[A-Z_][A-Z0-9_]*$/` name rule to their own allowlist too. Tested by giving each allowlisted variable a credential-shaped value, running a full session, and asserting the value appears in no event, no error message, no transcript artifact, and no log.
+
+**The per-provider lists, pinned from the CLIs' own referenced variables rather than from memory:**
+
+| Provider | Forwarded                                                                                                                                                                                          |
+| -------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Claude   | `ANTHROPIC_API_KEY`, `ANTHROPIC_AUTH_TOKEN`, `ANTHROPIC_CUSTOM_HEADERS`, `ANTHROPIC_BASE_URL`, `CLAUDE_CODE_OAUTH_TOKEN`, `CLAUDE_CONFIG_DIR`, `CLAUDE_CODE_USE_BEDROCK`, `CLAUDE_CODE_USE_VERTEX` |
+| Codex    | `OPENAI_API_KEY`, `CODEX_API_KEY`, `CODEX_ACCESS_TOKEN`, `CODEX_HOME`                                                                                                                              |
+
+Variables excluded on security grounds are enumerated in **D-11**.
 
 **D-6 — `isAuthenticated()` may spawn in production.** The "never spawn a real CLI" rule is a unit-test constraint, not a production one. The production probe runs the CLI's own status command as `executable` + `args` under a bounded timeout with its output passed through redaction, and reads its exit status. It must not read provider config files or home directories. Per adapter: `claude auth status`; `codex login status`; for ACP, the negotiated `initialize` result plus the agent's advertised auth methods — there is no external command to run. Unit tests inject the probe; only the live smoke exercises the spawning path.
 
@@ -59,6 +89,36 @@ A non-zero exit code alone never decides this; only the presence of a provider e
 
 **D-9 — Model and reasoning selection are derived, not assumed.** `AgentHarnessProfile.selection` is populated per provider from the real surface: Claude from `--model` and `--effort` (`low|medium|high|xhigh|max`); Codex from `-m/--model` and the reasoning-effort config override; ACP from the `initialize` negotiation. A provider mode that offers neither declares both false.
 
+**D-10 — Claude's permission channel is an MCP stdio server over a unix domain socket.** Task 1 established empirically that `--permission-mode manual` auto-denies with no round trip, while the hidden-but-accepted `--permission-prompt-tool` invokes an MCP tool that genuinely gates the side effect. Claude Code spawns that MCP server itself, so it is a grandchild and needs a back-channel to the adapter. The channel is a **unix domain socket**, not a localhost HTTP endpoint: an unauthenticated loopback listener deciding permissions would be a spec §14 regression, and this codebase deliberately minimizes loopback surface. Binding constraints:
+
+- The socket lives in a per-session temp directory created mode `0700` **before** the spawn, and is unlinked on `dispose()`.
+- The shipped MCP server is a dependency-free `.mjs` in the package; its path and argv go through the same launch-config validation as every other executable this stream spawns.
+- Data arriving on the socket is **untrusted input** (spec §14.1): the tool call is schema-parsed before a `permission_requested` event is constructed from it.
+
+Scoped as one module plus its tests inside Task 8.
+
+**D-11 — Host-injected provider credentials are never forwarded. (Security decision; merge security review starts here.)**
+
+Claude Code reads a family of variables that a _host_ sets when it runs Claude Code as a managed child of another Claude Code:
+
+`CLAUDE_CODE_SESSION_ACCESS_TOKEN`, `CLAUDE_CODE_HOST_CREDS_FILE`, `CLAUDE_CODE_OAUTH_TOKEN_FILE_DESCRIPTOR`, `CLAUDE_CODE_CHILD_SESSION`, `CLAUDE_CODE_PROVIDER_MANAGED_BY_HOST`.
+
+None of them is forwarded. They are not the user's ambient credential — they are the _enclosing session's_ credential. AutoStack will frequently be developed, tested, and run from inside exactly such a session (this stream was built from one), so a naive "forward anything the CLI reads" allowlist would make the adapter's child authenticate as the developer's session instead of as the user. The failure is quiet and the worst kind: the session comes up **green**, reports `authenticated: true`, and does real work under the wrong principal, with usage and audit attributed to whoever happened to be running the build.
+
+Enforcement is structural rather than advisory: a test asserts each of these names is absent from every constructed spawn environment **even when present in `process.env`**, so the guarantee cannot rot into a comment.
+
+Internal endpoint overrides (`CODEX_AUTHAPI_BASE_URL`, `*_URL_OVERRIDE`, `CODEX_INTERNAL_ORIGINATOR_OVERRIDE`) are excluded on the same fail-closed reasoning: they let ambient environment redirect an already-authenticated call. `ANTHROPIC_BASE_URL` _is_ forwarded, because it is the documented user-facing gateway setting and a proxy user's ambient auth breaks without it.
+
+Bedrock and Vertex delegation is out of scope for Milestone A beyond forwarding the two `USE_` flags; users on those paths authenticate through cloud-provider credentials this stream does not enumerate.
+
+**D-12 — ACP's permission capability comes from the launch profile, not from an invented protocol extension.**
+
+ACP v1's `AgentCapabilities` carries `loadSession`, `promptCapabilities`, `mcpCapabilities`, `sessionCapabilities`, and `auth` — there is no flag for permission support. Extending the wire format with an AutoStack-specific `_meta` key was considered and **rejected**: inventing protocol against a specified protocol is precisely what review exists to prevent, and any agent that did not know the extension would be silently mis-described.
+
+Instead ACP follows the same rule as the other two adapters (E-2): `permissions` is declared by the **configured launch profile** — a profile wired with a permission responder declares `true`, one configured to auto-deny declares `false`. One rule across all three adapters, no protocol invention, and the declaration still describes exactly what the configured adapter does.
+
+Two corrections from the same review: the ACP adapter targets protocol **v1**, because v2 replaces `session/load` with `session/resume`; and D-9's ACP selection derives from the `session/new` result's modes and config options, not from `initialize`.
+
 **Remaining escalations:** none blocking. E-1 is resolved in favour of Option B — S2 implements the child supervisor inside `agent-adapter-kit`, modelled on but not copied from the private `packages/runner-local/src/process-runner.ts`, importing runner-local's public redaction, path-policy, and signal exports. The module is to be written so that promoting it into `runner-local` later is a clean lift. E-3's `AgentEvidenceSink` port is confirmed as S2-owned.
 
 ---
@@ -67,7 +127,7 @@ A non-zero exit code alone never decides this; only the presence of a provider e
 
 **Files:**
 
-- Create: `packages/agent-adapter-kit/test/fixtures/transcript-format.ts`
+- Create: `packages/agent-adapter-kit/src/testing/transcript-format.ts`
 - Create: `packages/agent-adapter-kit/scripts/record-transcripts.mjs`
 - Create: `packages/agent-claude/test/fixtures/transcripts/*.json`
 - Create: `packages/agent-codex/test/fixtures/transcripts/*.json`
@@ -111,11 +171,17 @@ interface TranscriptFixture {
 }
 
 type TranscriptFrame =
-  | { readonly emit: unknown }
-  | { readonly emitStderr: string }
-  | { readonly awaitStdin: { readonly match: unknown } }
-  | { readonly exit: { readonly code: number | null; readonly signal: string | null } };
+  | { readonly kind: "emit"; readonly value: unknown }
+  | { readonly kind: "emitStderr"; readonly text: string }
+  | { readonly kind: "awaitStdin"; readonly match: unknown }
+  | {
+      readonly kind: "exit";
+      readonly code: number | null;
+      readonly signal: string | null;
+    };
 ```
+
+Two refinements settled while implementing: the frame union carries an explicit `kind` discriminator, matching the style the domain fake's `FakeHarnessScript` already uses so a reader moving between the two is not learning a second shape; and the module lives at `packages/agent-adapter-kit/src/testing/transcript-format.ts` rather than under `test/`, because three separate adapter packages load these fixtures and a `test/` module is not reachable across a package boundary — the same reason the conformance suite lives in `packages/domain/src/testing`.
 
 `emitStderr` exists because provider diagnostics arrive on stderr and the adapters must prove they surface them as `output` events without ever letting them reach the frame parser. `stability` is recorded because `codex app-server` is marked `[experimental]` in the CLI's own help — that is a real risk to this stream's Codex profile and it travels with the fixtures.
 

@@ -1,0 +1,448 @@
+{
+  "provenance": {
+    "source": "recorded",
+    "cli": "claude",
+    "version": "2.1.228",
+    "recordedAt": "2026-08-27T23:15:10.179Z",
+    "argv": [
+      "/opt/homebrew/bin/claude",
+      "-p",
+      "--output-format",
+      "stream-json",
+      "--input-format",
+      "stream-json",
+      "--verbose",
+      "--session-id",
+      "11111111-2222-4333-8444-555555555555",
+      "--setting-sources",
+      "project"
+    ],
+    "stability": "stable",
+    "notes": "Recorded from Claude Code 2.1.228 driving a disposable git repository under TMPDIR, never the AutoStack checkout. Machine-specific values are normalized to TRANSCRIPT_PLACEHOLDERS in both the frames and the recorded argv: the temp repository to /tmp/agent-workspace, the home directory to /home/agent, the username to agent. The `system/init` frame carries the operator's global hooks, plugins, skills, agents, slash commands and connected MCP servers, which are machine shape rather than protocol shape; those six keys are replaced by the values observed on the clean `--setting-sources project` re-run of the same session, and every other init field (session_id, uuid, cwd, model, permissionMode, claude_code_version) is the recording's own. `result` is a TURN boundary, not a session boundary: a steered session emits one `result` per turn, so `completed` must be minted on session end. Conformance behaviour 8's honestly-unreported figure lives in the per-message `assistant.message.usage` objects here: they report input, output, cache creation and cache read tokens but carry NO cost and NO thinking tokens, so a per-message usage event records those two as { state: \"unknown\" }. The terminal `result.usage` by contrast reports every figure including `output_tokens_details.thinking_tokens` and `total_cost_usd`, so a result-derived usage event alone would have nothing unknown and would fail the unknown-versus-fabricated-zero assertion. The adapter emits both kinds. The stdout frames are from the first `completes` run, whose argv predated `--setting-sources project`; the recorded argv above is the canonical form the stream settled on, and the init frame is the clean re-run's per the shared note."
+  },
+  "scenario": "completes",
+  "frames": [
+    {
+      "kind": "emit",
+      "value": {
+        "type": "system",
+        "subtype": "init",
+        "cwd": "/tmp/agent-workspace",
+        "session_id": "11111111-2222-4333-8444-555555555555",
+        "tools": [
+          "Task",
+          "Artifact",
+          "Bash",
+          "CronCreate",
+          "CronDelete",
+          "CronList",
+          "DesignSync",
+          "Edit",
+          "EnterWorktree",
+          "ExitWorktree",
+          "ListAgents",
+          "Monitor",
+          "NotebookEdit",
+          "PushNotification",
+          "Read",
+          "RemoteTrigger",
+          "ReportFindings",
+          "ScheduleWakeup",
+          "SendMessage",
+          "ShareOnboardingGuide",
+          "Skill",
+          "TaskCreate",
+          "TaskGet",
+          "TaskList",
+          "TaskOutput",
+          "TaskStop",
+          "TaskUpdate",
+          "ToolSearch",
+          "WebFetch",
+          "WebSearch",
+          "Workflow",
+          "Write"
+        ],
+        "mcp_servers": [],
+        "model": "claude-opus-5[1m]",
+        "permissionMode": "auto",
+        "slash_commands": [
+          "deep-research",
+          "design-sync",
+          "dataviz",
+          "artifact-design",
+          "artifact-diagramming",
+          "artifact-capabilities",
+          "update-config",
+          "verify",
+          "debug",
+          "code-review",
+          "simplify",
+          "batch",
+          "fewer-permission-prompts",
+          "doctor",
+          "loop",
+          "schedule",
+          "claude-api",
+          "run",
+          "run-skill-generator",
+          "agents",
+          "auto-mode-setup",
+          "autocompact",
+          "clear",
+          "color",
+          "compact",
+          "config",
+          "context",
+          "effort",
+          "fast",
+          "heapdump",
+          "init",
+          "mcp",
+          "import",
+          "model",
+          "__remote-workflow",
+          "workflow-launch-exec",
+          "reload-skills",
+          "rename",
+          "security-review",
+          "usage-credits",
+          "extra-usage",
+          "usage",
+          "insights",
+          "recap",
+          "goal",
+          "design",
+          "design-consent",
+          "design-revoke",
+          "list-agents",
+          "team-onboarding"
+        ],
+        "apiKeySource": "none",
+        "claude_code_version": "2.1.228",
+        "output_style": "default",
+        "agents": [
+          "claude",
+          "claude-code-guide",
+          "Explore",
+          "general-purpose",
+          "Plan",
+          "statusline-setup"
+        ],
+        "skills": [
+          "deep-research",
+          "design-sync",
+          "dataviz",
+          "artifact-design",
+          "artifact-diagramming",
+          "artifact-capabilities",
+          "update-config",
+          "verify",
+          "debug",
+          "code-review",
+          "simplify",
+          "batch",
+          "fewer-permission-prompts",
+          "doctor",
+          "loop",
+          "schedule",
+          "claude-api",
+          "run",
+          "run-skill-generator"
+        ],
+        "plugins": [],
+        "capabilities": ["interrupt_receipt_v1", "interrupt_cancel_queued_v1", "msg_lifecycle_v1"],
+        "analytics_disabled": false,
+        "product_feedback_disabled": false,
+        "uuid": "a705f9f7-7788-45b6-996a-4647e8363fbd",
+        "memory_paths": {
+          "auto": "/home/agent/.claude/projects/-tmp-agent-workspace/memory/"
+        },
+        "messaging_socket_path": "/tmp/agent-workspace/cc-sock/claude.sock",
+        "fast_mode_state": "off",
+        "fast_mode_disabled_reason": "sdk_opt_in_required"
+      }
+    },
+    {
+      "kind": "emit",
+      "value": {
+        "type": "assistant",
+        "message": {
+          "model": "claude-opus-5",
+          "id": "msg_011CeU6xHgiZFN9S6zHmzozS",
+          "type": "message",
+          "role": "assistant",
+          "content": [
+            {
+              "type": "text",
+              "text": "I'll read the README."
+            }
+          ],
+          "stop_reason": null,
+          "stop_sequence": null,
+          "stop_details": null,
+          "usage": {
+            "input_tokens": 2,
+            "cache_creation_input_tokens": 62036,
+            "cache_read_input_tokens": 0,
+            "cache_creation": {
+              "ephemeral_5m_input_tokens": 0,
+              "ephemeral_1h_input_tokens": 62036
+            },
+            "output_tokens": 1,
+            "service_tier": "standard",
+            "inference_geo": "not_available"
+          },
+          "diagnostics": null,
+          "context_management": null
+        },
+        "parent_tool_use_id": null,
+        "session_id": "11111111-2222-4333-8444-555555555555",
+        "uuid": "2dddfc3a-b4d4-4fb6-a245-0c365f61e32f",
+        "timestamp": "2026-08-27T23:15:06.005Z",
+        "request_id": "req_011CeU6xGtbAfx4oX1Hzb1Gv"
+      }
+    },
+    {
+      "kind": "emit",
+      "value": {
+        "type": "assistant",
+        "message": {
+          "model": "claude-opus-5",
+          "id": "msg_011CeU6xHgiZFN9S6zHmzozS",
+          "type": "message",
+          "role": "assistant",
+          "content": [
+            {
+              "type": "tool_use",
+              "id": "toolu_01Hajk2K89W4gfdHrT63gngd",
+              "name": "Bash",
+              "input": {
+                "command": "cat /tmp/agent-workspace/README.md",
+                "description": "Print README.md contents"
+              },
+              "caller": {
+                "type": "direct"
+              }
+            }
+          ],
+          "stop_reason": null,
+          "stop_sequence": null,
+          "stop_details": null,
+          "usage": {
+            "input_tokens": 2,
+            "cache_creation_input_tokens": 62036,
+            "cache_read_input_tokens": 0,
+            "cache_creation": {
+              "ephemeral_5m_input_tokens": 0,
+              "ephemeral_1h_input_tokens": 62036
+            },
+            "output_tokens": 1,
+            "service_tier": "standard",
+            "inference_geo": "not_available"
+          },
+          "diagnostics": null,
+          "context_management": null
+        },
+        "parent_tool_use_id": null,
+        "session_id": "11111111-2222-4333-8444-555555555555",
+        "uuid": "14be5db0-a13b-423f-8a02-20ca78914043",
+        "timestamp": "2026-08-27T23:15:06.864Z",
+        "request_id": "req_011CeU6xGtbAfx4oX1Hzb1Gv"
+      }
+    },
+    {
+      "kind": "emit",
+      "value": {
+        "type": "rate_limit_event",
+        "rate_limit_info": {
+          "status": "allowed",
+          "resetsAt": 1787874000,
+          "rateLimitType": "five_hour",
+          "overageStatus": "allowed",
+          "overageResetsAt": 1788220800,
+          "isUsingOverage": false
+        },
+        "uuid": "ee0e0e0a-83d2-473d-a10e-d18c2510422e",
+        "session_id": "11111111-2222-4333-8444-555555555555"
+      }
+    },
+    {
+      "kind": "emit",
+      "value": {
+        "type": "system",
+        "subtype": "task_summary",
+        "detail": "Printing README.md contents",
+        "uuid": "f7160fc0-c84e-4859-b4b4-9d0edd4a8ecd",
+        "session_id": "11111111-2222-4333-8444-555555555555"
+      }
+    },
+    {
+      "kind": "emit",
+      "value": {
+        "type": "user",
+        "message": {
+          "role": "user",
+          "content": [
+            {
+              "tool_use_id": "toolu_01Hajk2K89W4gfdHrT63gngd",
+              "type": "tool_result",
+              "content": "hello from the disposable repo",
+              "is_error": false
+            }
+          ]
+        },
+        "parent_tool_use_id": null,
+        "session_id": "11111111-2222-4333-8444-555555555555",
+        "uuid": "21ff7747-7c77-4961-946b-8b2ec2ffc4b2",
+        "timestamp": "2026-08-27T23:15:08.525Z",
+        "tool_use_result": {
+          "stdout": "hello from the disposable repo",
+          "stderr": "",
+          "interrupted": false,
+          "isImage": false,
+          "noOutputExpected": false
+        }
+      }
+    },
+    {
+      "kind": "emit",
+      "value": {
+        "type": "assistant",
+        "message": {
+          "model": "claude-opus-5",
+          "id": "msg_011CeU6xceEezEpHZonhvSWA",
+          "type": "message",
+          "role": "assistant",
+          "content": [
+            {
+              "type": "text",
+              "text": "README.md contents:\n\n```\nhello from the disposable repo\n```\n\nThat's the entire file — one line."
+            }
+          ],
+          "stop_reason": null,
+          "stop_sequence": null,
+          "stop_details": null,
+          "usage": {
+            "input_tokens": 2,
+            "cache_creation_input_tokens": 119,
+            "cache_read_input_tokens": 62036,
+            "cache_creation": {
+              "ephemeral_5m_input_tokens": 0,
+              "ephemeral_1h_input_tokens": 119
+            },
+            "output_tokens": 1,
+            "service_tier": "standard",
+            "inference_geo": "not_available"
+          },
+          "diagnostics": null,
+          "context_management": null
+        },
+        "parent_tool_use_id": null,
+        "session_id": "11111111-2222-4333-8444-555555555555",
+        "uuid": "28e024d0-0f46-4d28-9224-2d2093d2e1ea",
+        "timestamp": "2026-08-27T23:15:10.179Z",
+        "request_id": "req_011CeU6xbpsniGyLUcomwCug"
+      }
+    },
+    {
+      "kind": "emit",
+      "value": {
+        "type": "system",
+        "subtype": "post_turn_summary",
+        "summarizes_uuid": "28e024d0-0f46-4d28-9224-2d2093d2e1ea",
+        "status_category": "review_ready",
+        "status_detail": "README.md contents printed",
+        "needs_action": "",
+        "uuid": "d8f3f6ac-6083-4273-8472-413081a8ff87",
+        "session_id": "11111111-2222-4333-8444-555555555555"
+      }
+    },
+    {
+      "kind": "emit",
+      "value": {
+        "is_error": false,
+        "duration_api_ms": 4509,
+        "num_turns": 2,
+        "stop_reason": "end_turn",
+        "session_id": "11111111-2222-4333-8444-555555555555",
+        "total_cost_usd": 0.6560380000000001,
+        "usage": {
+          "input_tokens": 4,
+          "cache_creation_input_tokens": 62155,
+          "cache_read_input_tokens": 62036,
+          "output_tokens": 138,
+          "output_tokens_details": {
+            "thinking_tokens": 0
+          },
+          "server_tool_use": {
+            "web_search_requests": 0,
+            "web_fetch_requests": 0
+          },
+          "service_tier": "standard",
+          "cache_creation": {
+            "ephemeral_1h_input_tokens": 62155,
+            "ephemeral_5m_input_tokens": 0
+          },
+          "inference_geo": "not_available",
+          "iterations": [
+            {
+              "input_tokens": 2,
+              "output_tokens": 33,
+              "cache_read_input_tokens": 62036,
+              "cache_creation_input_tokens": 119,
+              "cache_creation": {
+                "ephemeral_5m_input_tokens": 0,
+                "ephemeral_1h_input_tokens": 119
+              },
+              "type": "message"
+            }
+          ],
+          "speed": "standard"
+        },
+        "modelUsage": {
+          "claude-opus-5[1m]": {
+            "inputTokens": 4,
+            "outputTokens": 138,
+            "cacheReadInputTokens": 62036,
+            "cacheCreationInputTokens": 62155,
+            "webSearchRequests": 0,
+            "costUSD": 0.6560380000000001,
+            "contextWindow": 1000000,
+            "maxOutputTokens": 64000,
+            "canonicalModel": "claude-opus-5",
+            "provider": "firstParty"
+          }
+        },
+        "permission_denials": [],
+        "terminal_reason": "completed",
+        "fast_mode_state": "off",
+        "fast_mode_disabled_reason": "sdk_opt_in_required",
+        "subtype": "success",
+        "api_error_status": null,
+        "result": "README.md contents:\n\n```\nhello from the disposable repo\n```\n\nThat's the entire file — one line.",
+        "ttft_ms": 1992,
+        "ttft_stream_ms": 1249,
+        "time_to_request_ms": 34,
+        "type": "result",
+        "duration_ms": 7374,
+        "uuid": "d8667ea1-778b-4169-86c3-d36f5bbfb21f"
+      }
+    },
+    {
+      "kind": "emit",
+      "value": {
+        "type": "system",
+        "subtype": "task_summary",
+        "detail": null,
+        "uuid": "44a982c5-3d96-4c61-b405-36e389644493",
+        "session_id": "11111111-2222-4333-8444-555555555555"
+      }
+    },
+    {
+      "kind": "exit",
+      "code": 0,
+      "signal": null
+    }
+  ]
+}
