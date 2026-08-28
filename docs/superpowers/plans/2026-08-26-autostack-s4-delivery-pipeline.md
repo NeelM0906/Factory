@@ -824,7 +824,7 @@ pnpm build --filter=@autostack/workflow --filter=@autostack/domain --filter=@aut
 pnpm --filter @autostack/workflow test:coverage
 pnpm --filter @autostack/domain test:coverage
 pnpm --filter @autostack/control-plane test:coverage
-npx turbo run test --concurrency=2
+pnpm test --concurrency=2
 git add packages/workflow/test/pipeline-negative.test.ts
 git commit -m "test(workflow): prove the pipeline's negative guarantees"
 ```
@@ -858,14 +858,24 @@ git commit -m "test(workflow): prove the pipeline's negative guarantees"
 
 Converged practice across the streams; adopt it in every verification step.
 
-- **Full-suite runs while sibling streams are active: `npx turbo run test --concurrency=2`.** Simultaneous unbounded verifications drove load to 31.5 on a 10-core box.
-- **`pnpm test -- --concurrency=2` does NOT do this** — verified. `pnpm` forwards everything after `--` to the script, so the flag sails past turbo into vitest, which rejects it with `Unknown option --concurrency`. The flag has to reach **turbo**, which means invoking turbo directly. Loud failure rather than a silent one, but it is not the limiter anyone intends.
+**Full-suite runs while sibling streams are active must bound concurrency.** Simultaneous unbounded verifications drove load to 31.5 on a 10-core box. All three forms below were verified with `--dry`; the trap is inserting `--`, nothing else.
+
+| Form                                 | Result                                                                                                                                                                                                                                            |
+| ------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `pnpm test --concurrency=2`          | **Works.** pnpm forwards the unrecognized flag to the script, turbo parses it. **This is CI's own idiom** — `ci.yml:78` runs `pnpm test:coverage --concurrency=2 --filter='!@autostack/runner-local'`. Prefer it, so local and CI stay identical. |
+| `npx turbo run test --concurrency=2` | Works. Equivalent; use when you want turbo invoked explicitly.                                                                                                                                                                                    |
+| `pnpm test -- --concurrency=2`       | **Broken.** The explicit `--` sends everything after it past turbo into vitest, which rejects it: `CACError: Unknown option --concurrency`.                                                                                                       |
+
+**Do not "fix" the bare form by adding `--`.** It reads like the more correct incantation and is the one that breaks. Applied to `ci.yml:78` it would break CI.
+
+**The broken form is not free.** Turbo launches the workspace tasks **unbounded** before the vitest failures surface, so it burns the full parallel load on its way to erroring. Loud failure, yes — but the contention damage is already done, which is the entire cost the limiter exists to avoid.
+
 - **Package-scoped suites during development** (`pnpm --filter <pkg> test`); reserve the full suite for task boundaries and pre-merge.
 - **A full-suite failure is suspect-until-isolated.** Re-run the failing package alone before believing it. A _different_ victim each run, all timeouts, is contention — not a regression. Only a failure that reproduces in isolation is real.
 
 ## Completion evidence required before requesting merge
 
-- `pnpm format:check`, `pnpm check`, package-filtered `pnpm build`, `pnpm test:coverage` for `@autostack/workflow`, `@autostack/domain`, `@autostack/control-plane`, and a full `npx turbo run test --concurrency=2` — all green, coverage ≥80% on every owned package.
+- `pnpm format:check`, `pnpm check`, package-filtered `pnpm build`, `pnpm test:coverage` for `@autostack/workflow`, `@autostack/domain`, `@autostack/control-plane`, and a full `pnpm test --concurrency=2` — all green, coverage ≥80% on every owned package.
 - All 190 pre-existing control-plane characterization tests pass unmodified.
 - Task 7's threat analysis written before its implementation and its security-lens merge review recorded.
 - `.superpowers/sdd/progress.md` ledger complete; `.superpowers/sdd/stream-report.md` written.
