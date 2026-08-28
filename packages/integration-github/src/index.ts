@@ -1,12 +1,26 @@
 export {
+  GitHubBranchConflictError,
   GitHubBranchPolicyError,
   GitHubRequestError,
   classifyGitHubFailure,
+  type GitHubBranchConflictErrorOptions,
   type GitHubBranchPolicyErrorOptions,
   type GitHubFailureClassification,
   type GitHubFailureCode,
   type GitHubRequestErrorOptions
 } from "./errors.js";
+
+export { assertAutoStackBranch } from "./branch-policy.js";
+
+export {
+  createBranchRefsClient,
+  type CreateBranchRequest,
+  type DeleteBranchRequest,
+  type GetRefRequest,
+  type GitHubBranchRefsClient,
+  type PutFileOnBranchRequest,
+  type PutFileOnBranchResult
+} from "./client/branch-refs.js";
 
 export {
   createGitHubTransport,

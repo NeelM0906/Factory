@@ -125,3 +125,43 @@ export class GitHubBranchPolicyError extends Error {
     Object.freeze(this);
   }
 }
+
+export interface GitHubBranchConflictErrorOptions {
+  readonly cause?: unknown;
+  readonly sensitiveValues?: readonly string[];
+}
+
+/**
+ * Thrown when `createBranch`'s 422-"already exists" recovery re-reads the ref and finds it
+ * pointing at a sha different from the one requested. Never force-updates the ref -- that would
+ * rewrite a branch the approval never covered -- so both shas are recorded for the caller to
+ * decide what to do next.
+ */
+export class GitHubBranchConflictError extends Error {
+  readonly ref: string;
+  readonly requestedSha: string;
+  readonly existingSha: string;
+  readonly retryable = false;
+
+  constructor(
+    ref: string,
+    requestedSha: string,
+    existingSha: string,
+    options: GitHubBranchConflictErrorOptions = {}
+  ) {
+    const sensitiveValues = options.sensitiveValues ?? [];
+    super(
+      redactSensitiveText(
+        `Branch "${ref}" already exists at sha "${existingSha}", which differs from the ` +
+          `requested sha "${requestedSha}". Refusing to force-update an existing ref.`,
+        sensitiveValues
+      )
+    );
+    this.name = "GitHubBranchConflictError";
+    this.ref = redactSensitiveText(ref, sensitiveValues);
+    this.requestedSha = redactSensitiveText(requestedSha, sensitiveValues);
+    this.existingSha = redactSensitiveText(existingSha, sensitiveValues);
+    attachNonEnumerableCause(this, options.cause);
+    Object.freeze(this);
+  }
+}
