@@ -2,8 +2,8 @@ import { ZodError } from "zod";
 
 import {
   ModelRoutingError,
-  WorkflowFailureCodeSchema,
   WorkflowFailureSchema,
+  normalizeWorkflowFailureCode,
   redactSensitiveText,
   type WorkflowFailure
 } from "@autostack/contracts";
@@ -48,12 +48,6 @@ const isAgentSessionFailure = (error: unknown): error is AgentSessionFailureLike
   );
 };
 
-/** Accepts a harness-reported code only if normalizing it changes nothing (fail closed). */
-const normalizeAgentCode = (code: string): string | undefined => {
-  const parsed = WorkflowFailureCodeSchema.safeParse(code);
-  return parsed.success && parsed.data === code ? parsed.data : undefined;
-};
-
 /** Redacts, defaults, and bounds arbitrary text before it is allowed into a `WorkflowFailure`. */
 const safeText = (candidate: string | undefined, fallback: string, maxLength: number): string => {
   const redacted = redactSensitiveText(candidate ?? "").trim();
@@ -93,7 +87,10 @@ export const classifyStageFailure = (error: unknown): WorkflowFailure => {
       "The agent session reported a failure.",
       MAX_MESSAGE_LENGTH
     );
-    const normalized = normalizeAgentCode(error.code);
+    // Unchanged-acceptance is the shared contracts rule (`normalizeWorkflowFailureCode`); the
+    // fallback below — `agent_error` and forcing `retryable: false` — is this consumer's own
+    // decision, which is why the tests covering it live here and not in contracts.
+    const normalized = normalizeWorkflowFailureCode(error.code);
     if (normalized === undefined) {
       return build({ code: "agent_error", name: "AgentSessionFailure", message, retryable: false });
     }
