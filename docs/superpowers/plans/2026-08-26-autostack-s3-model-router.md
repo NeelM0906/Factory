@@ -16,7 +16,7 @@ Secrets have exactly **two** call sites, and the credential store is the only co
 
 **Base:** worktree `/Users/zidane/factory-s3`, branch `codex/milestone-a-s3-model-router`, cut from `02e5cff`. Baseline verified before planning: `pnpm install --frozen-lockfile` clean, `pnpm check` 12/12, `pnpm format:check` clean, `pnpm test` 21/21 tasks green (no runner-local flake on this run).
 
-**Rebase dependency:** base Task 0.12 lands `ModelInferencePort` and an append-only optional `ModelUsageRecordSchema.attempt` field. Tasks 1, 2, 8, and 11 are cleared to run before it (they touch neither); Tasks 9, 10, and 12 assume the post-rebase contract and are written against it below.
+**Rebase status: DONE.** Rebased onto `codex/milestone-a-wave0` @ `4bc06ef` on 2026-08-27, clean, no conflicts. `ModelInferencePort` and the optional `ModelUsageRecordSchema.attempt` ordinal both landed; the attempt field matches DEC-4 exactly. The landed inference shape differs from revision 2's prediction and ESC-1 below now records the **verified** shape — Tasks 9, 10 and 12 are written against that, not against the earlier guess.
 
 ---
 
@@ -51,21 +51,21 @@ Inherited verbatim from the master plan's Global constraints and the stream-lead
 
 Read from `@autostack/contracts` (`packages/contracts/src/model.ts` unless noted):
 
-| Symbol                                                                                                                      | Line                           | Use in S3                                                                                             |
-| --------------------------------------------------------------------------------------------------------------------------- | ------------------------------ | ----------------------------------------------------------------------------------------------------- |
-| `ModelRouterPort`                                                                                                           | `:372`                         | The interface `createModelRouter` implements — `resolve`, `getRoute`, `recordUsage`                   |
-| `ModelInferencePort`                                                                                                        | base Task 0.12                 | The invocation seam S1 depends on; `runWithRoute` implements it (finding 13 / ESC-1)                  |
-| `ModelRouteSchema` / `ModelTransportSchema`                                                                                 | `:54` / `:48`                  | Route configuration admitted at construction; the three transport kinds and their pinned model fields |
-| `ModelRouteContextSchema`                                                                                                   | `:64`                          | The resolve request: attribution + `requiredCapabilities`                                             |
-| `ModelRouteSelectionSchema`                                                                                                 | `:76`                          | The resolve result; its `reason` carries catalog freshness and `discoveredAt`                         |
-| `ModelCatalogEntrySchema`, `MODEL_MODALITIES`, `MODEL_FEATURES`                                                             | `:127`, `:111`, `:114`         | Capability declaration produced by discovery; the closed vocabularies filtering decides over          |
-| `ModelPolicySchema`                                                                                                         | `:318`                         | Per-station constraints: allowed/fallback routes, token and cost ceilings, reasoning level            |
-| `ModelRouteFallbackSchema`                                                                                                  | `:230`                         | One record per fallback activation; `failureCode` is taxonomy-bound                                   |
-| `ModelUsageRecordSchema` (+ `attempt`, base Task 0.12), `ModelTokenUsageSchema`, `ModelTokenCountSchema`, `ModelCostSchema` | `:185`, `:175`, `:159`, `:164` | Per-attempt normalized usage with `reported` / `unknown` states                                       |
-| `ModelUsageSchema`                                                                                                          | `:86`                          | The flat exact-numbers shape `ModelRouterPort.recordUsage` still takes                                |
-| `MODEL_ROUTING_FAILURE_CODES`, `ModelRoutingFailureSchema`, `ModelRoutingError`                                             | `:220`, `:264`, `:299`         | The entire failure surface                                                                            |
-| `CredentialRefSchema`, `CredentialRefIdSchema`                                                                              | `entities.ts:370`, `ids.ts:63` | What the credential store keys on                                                                     |
-| `KNOWN_CREDENTIAL_SPECS`                                                                                                    | `secret-safety.ts:44`          | Drives Task 12c's credential-shaped sweep                                                             |
+| Symbol                                                                                                                                                                                          | Line                           | Use in S3                                                                                             |
+| ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------ | ----------------------------------------------------------------------------------------------------- |
+| `ModelRouterPort`                                                                                                                                                                               | `:372`                         | The interface `createModelRouter` implements — `resolve`, `getRoute`, `recordUsage`                   |
+| `ModelInferencePort`, `ModelInferenceRequestSchema`, `ModelInferenceResultSchema`, `ModelGenerationOptionsSchema`, `ModelMessageSchema`, `ModelFinishReasonSchema`, `admitModelInferenceResult` | `model.ts` (landed `4bc06ef`)  | The invocation seam; Task 10 implements the port. Verified shape in ESC-1                             |
+| `ModelRouteSchema` / `ModelTransportSchema`                                                                                                                                                     | `:54` / `:48`                  | Route configuration admitted at construction; the three transport kinds and their pinned model fields |
+| `ModelRouteContextSchema`                                                                                                                                                                       | `:64`                          | The resolve request: attribution + `requiredCapabilities`                                             |
+| `ModelRouteSelectionSchema`                                                                                                                                                                     | `:76`                          | The resolve result; its `reason` carries catalog freshness and `discoveredAt`                         |
+| `ModelCatalogEntrySchema`, `MODEL_MODALITIES`, `MODEL_FEATURES`                                                                                                                                 | `:127`, `:111`, `:114`         | Capability declaration produced by discovery; the closed vocabularies filtering decides over          |
+| `ModelPolicySchema`                                                                                                                                                                             | `:318`                         | Per-station constraints: allowed/fallback routes, token and cost ceilings, reasoning level            |
+| `ModelRouteFallbackSchema`                                                                                                                                                                      | `:230`                         | One record per fallback activation; `failureCode` is taxonomy-bound                                   |
+| `ModelUsageRecordSchema` (+ `attempt`, base Task 0.12), `ModelTokenUsageSchema`, `ModelTokenCountSchema`, `ModelCostSchema`                                                                     | `:185`, `:175`, `:159`, `:164` | Per-attempt normalized usage with `reported` / `unknown` states                                       |
+| `ModelUsageSchema`                                                                                                                                                                              | `:86`                          | The flat exact-numbers shape `ModelRouterPort.recordUsage` still takes                                |
+| `MODEL_ROUTING_FAILURE_CODES`, `ModelRoutingFailureSchema`, `ModelRoutingError`                                                                                                                 | `:220`, `:264`, `:299`         | The entire failure surface                                                                            |
+| `CredentialRefSchema`, `CredentialRefIdSchema`                                                                                                                                                  | `entities.ts:370`, `ids.ts:63` | What the credential store keys on                                                                     |
+| `KNOWN_CREDENTIAL_SPECS`                                                                                                                                                                        | `secret-safety.ts:44`          | Drives Task 12c's credential-shaped sweep                                                             |
 
 Read from `@autostack/domain/testing`: `createFakeModelRouter` — the behavioral reference the real router must match (Task 6 asserts parity).
 
@@ -134,7 +134,23 @@ Rulings received are marked **RULED**; the remainder are implemented as written 
 
 ## Escalations
 
-- **ESC-1 — RESOLVED.** `ModelRouterPort` had no invocation surface, so S1's "all model calls through `ModelRouterPort`" was unimplementable. Base Task 0.12 adds `ModelInferencePort`; S3's `runWithRoute` implements it, and `ModelRouteHandle` lands in contracts rather than being exported ad hoc from this package. Prompt and response shapes stay entirely in S1 — `packages/model-router` never authors a message, tool, or output schema. **This gates Task 10 only** (finding 13); Tasks 1, 2, 8, and 11 are cleared to run before the rebase, and Tasks 3–7 depend on nothing from it. The exact `ModelInferencePort` signature is confirmed against contracts at rebase time; if it differs from the seam described here, that is a Task 10 adjustment, not a re-plan.
+- **ESC-1 — RESOLVED AND VERIFIED AGAINST THE LANDED CONTRACT (rebase onto `4bc06ef`, 2026-08-27).** `ModelRouterPort` had no invocation surface, so S1's "all model calls through `ModelRouterPort`" was unimplementable. The base resolved it with `ModelInferencePort`, and **the landed shape differs from what revision 2 predicted** — the text below is the verified shape, not the guess:
+
+  ```ts
+  interface ModelInferencePort {
+    run(request: ModelInferenceRequest): Promise<ModelInferenceResult>;
+  }
+  ```
+
+  - **`ModelRouteHandle` did NOT land in contracts** — deliberately. Revision 2 asked for it there so S1 could depend on it by type; the base declined, so `runWithRoute` and any handle type stay **S3-internal**, and Task 10 implements `ModelInferencePort` instead of exporting a handle factory. The seam is now a request/result value boundary rather than a shared object, which is stronger: no vendor type and no S3 type crosses to S1 at all.
+  - **The request carries an already-resolved `selection: ModelRouteSelection`.** Resolving a route and spending money on it are separate authorities — the pipeline resolves, the adapter invokes. Task 6's selection output feeds this field directly and unchanged.
+  - **`ModelGenerationOptionsSchema.maxOutputTokens` is REQUIRED**, not optional. This strengthens DEC-3: the invocation-time output-demand check is now guaranteed an input, so "a stated output demand above `policy.maxOutputTokens`" can never be skipped because a caller omitted it.
+  - **`ModelInferenceResult` already carries unknown-preserving `tokens`/`cost`** (`ModelTokenUsageSchema`, `ModelCostSchema`) plus `actual.provider`/`actual.model`/`actual.providerRequestId?` and a closed `finishReason` enum (`stop | length | content_filter | error`). Task 9 normalizes from this shape; Task 10 maps provider finish reasons into that closed enum and must fail closed on an unrecognized one rather than widening it.
+  - **`admitModelInferenceResult(request, result)`** validates that the result answers this request (`idempotencyKey`) and came from the route the request resolved (`routeRef`). Task 10 uses it rather than hand-rolling those checks.
+  - **`ModelMessageSchema.content` is `SafeMetadataStringSchema`**, so prompt content passes the credential scanner — Task 10's fixtures must use safe content, and a credential-shaped prompt is rejected at the boundary rather than sent.
+  - **Fallback stays above the port.** `run` executes one resolved route and knows nothing of fallback, so Task 8's `runWithFallback` composes over it exactly as designed — resolve → run → on retryable failure → next target. No change to Task 8.
+  - `createFakeModelInference` in `@autostack/domain/testing` is the reference double for Tasks 10 and 12.
+
 - **ESC-2 (informational) — new dependencies mutate `pnpm-lock.yaml`.** No AI SDK package exists anywhere in the repo today (`grep` over every `package.json`: zero hits for `"ai"`, `@ai-sdk/*`, `@openrouter/*`). Adding them to `packages/model-router/package.json` necessarily rewrites the root `pnpm-lock.yaml`, which the protocol lists under untouchable root config. Read as the mechanical consequence of a package I own. Resolved versions are recorded in the stream report.
 - **ESC-3 (informational) — provider catalog fixtures are documentation-derived, not recorded.** Wave 1 forbids live calls, so the five catalog endpoints' responses are hand-authored from each provider's published shape. Mitigation, implemented in Tasks 3–5: every parser is fail-closed — an unrecognized catalog payload produces a classified `provider_error`, never a guessed capability set — so a fixture that drifts from reality degrades to "route unavailable", not to "route silently mis-declared". Wave 2's live smoke proves the shapes; recorded payloads from the user's four credential sets replace the hand-authored fixtures verbatim if the orchestrator can supply them.
 
@@ -723,7 +739,7 @@ git add packages/model-router && git commit -m "feat(model-router): normalize pe
 
 ## Task 10: Transport clients over the Vercel AI SDK
 
-**Gated on the base rebase that lands `ModelInferencePort`** (ESC-1, finding 13). Nothing else depends on it.
+**Rebase landed; unblocked.** Implements `ModelInferencePort` as verified in ESC-1.
 
 **Files:**
 
@@ -733,7 +749,9 @@ git add packages/model-router && git commit -m "feat(model-router): normalize pe
 
 - [ ] **Step 1: Add the failing factory test**
 
-`createLanguageModelFactory({ credentials, fetch })` returns `resolveLanguageModel(route): Promise<ModelRouteHandle>`. Using the fixture-fetch double as the AI SDK provider's `fetch` option, assert for each of the five transport configurations (gateway, openrouter, direct-openai, direct-anthropic, direct-xai):
+**Revised at rebase (see ESC-1).** Task 10 implements `ModelInferencePort` — `run(request: ModelInferenceRequest): Promise<ModelInferenceResult>` — over an internal `createLanguageModelFactory({ credentials, fetch })`. `ModelRouteHandle` stays S3-internal and is not exported. `run` reads `request.selection.routeRef` to find the route, builds the language model for its transport, issues one `generateText`, maps the provider finish reason into `ModelFinishReasonSchema` (failing closed on an unrecognized value rather than widening the enum), preserves unreported token counts and cost as `unknown`, and returns a result admitted through `admitModelInferenceResult(request, result)`. Every failure is raised as `ModelRoutingError` so the taxonomy survives the call.
+
+Using the fixture-fetch double as the AI SDK provider's `fetch` option, assert for each of the five transport configurations (gateway, openrouter, direct-openai, direct-anthropic, direct-xai):
 
 - a language model is produced whose `provider` and `model` match the route's transport fields, with `model` equal to the **pinned** model (DEC-0);
 - driving a minimal `generateText` through it issues exactly one request to the expected provider URL, carrying an `Authorization` (or `x-api-key`, for Anthropic) header whose **name** is asserted and whose value is never read (finding 14 — `generateText` only; streaming is S1's concern and appears nowhere in this package);
