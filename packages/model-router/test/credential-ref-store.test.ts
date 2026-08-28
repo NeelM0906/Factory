@@ -339,4 +339,79 @@ describe("credential ref store", () => {
       await expect(store.resolve(ref)).rejects.toThrow(ref.id);
     });
   });
+
+  describe("rotation", () => {
+    const findStoredFile = async (): Promise<string> => {
+      const entries = await (await import("node:fs/promises")).readdir(root);
+      const credEntries = entries.filter((entry) => entry.endsWith(".cred"));
+      const [entry] = credEntries;
+      if (entry === undefined) throw new Error("expected exactly one stored credential file");
+      return join(root, entry);
+    };
+
+    it("replaces the secret: resolve returns the second value put, not the first", async () => {
+      const store = createCredentialRefStore({ root, protector });
+      const ref = makeMacosRef();
+
+      await store.put(ref, "first");
+      await store.put(ref, "second");
+
+      await expect(store.resolve(ref)).resolves.toBe("second");
+    });
+
+    it("leaves neither the old nor the new plaintext secret on disk, at any offset", async () => {
+      const store = createCredentialRefStore({ root, protector });
+      const ref = makeMacosRef();
+      const first = "sk-rotation-first-secret-value";
+      const second = "sk-rotation-second-secret-value";
+
+      await store.put(ref, first);
+      await store.put(ref, second);
+
+      const filePath = await findStoredFile();
+      const raw = await readFile(filePath);
+      const rawText = raw.toString("latin1");
+      for (const secret of [first, second]) {
+        for (let offset = 0; offset <= rawText.length - secret.length; offset += 1) {
+          expect(rawText.slice(offset, offset + secret.length)).not.toBe(secret);
+        }
+      }
+    });
+
+    it("keeps the credential file at 0o600 after rotation", async () => {
+      const store = createCredentialRefStore({ root, protector });
+      const ref = makeMacosRef();
+
+      await store.put(ref, "first");
+      await store.put(ref, "second");
+
+      const filePath = await findStoredFile();
+      const fileStat = await stat(filePath);
+      expect(fileStat.mode & 0o777).toBe(0o600);
+    });
+
+    it("leaves exactly one credential file after rotation, no orphaned stale copy", async () => {
+      const store = createCredentialRefStore({ root, protector });
+      const ref = makeMacosRef();
+
+      await store.put(ref, "first");
+      await store.put(ref, "second");
+
+      const entries = await (await import("node:fs/promises")).readdir(root);
+      const credEntries = entries.filter((entry) => entry.endsWith(".cred"));
+      expect(credEntries).toHaveLength(1);
+    });
+
+    it("leaves no temp files behind after a successful put", async () => {
+      const store = createCredentialRefStore({ root, protector });
+      const ref = makeMacosRef();
+
+      await store.put(ref, "first");
+      await store.put(ref, "second");
+
+      const entries = await (await import("node:fs/promises")).readdir(root);
+      const tmpEntries = entries.filter((entry) => entry.endsWith(".tmp"));
+      expect(tmpEntries).toHaveLength(0);
+    });
+  });
 });

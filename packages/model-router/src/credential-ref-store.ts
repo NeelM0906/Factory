@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { chmod, link, lstat, mkdir, open, stat, unlink } from "node:fs/promises";
+import { chmod, lstat, mkdir, open, rename, stat, unlink } from "node:fs/promises";
 import { join } from "node:path";
 
 import type { CredentialRef } from "@autostack/contracts";
@@ -12,8 +12,10 @@ import type { SecretProtector } from "./credential/secret-protector.js";
 
 /**
  * Follows `apps/desktop/src/main/credential-store.ts`'s pattern (not its code — see
- * `src/credential/secret-protector.ts`): atomic `open(..., "wx")` + `link` write, `0o600` file /
- * `0o700` directory modes, ownership and symlink checks, fail closed when protection is unavailable.
+ * `src/credential/secret-protector.ts`): atomic `open(..., "wx")` write + `rename` into place,
+ * `0o600` file / `0o700` directory modes, ownership and symlink checks, fail closed when protection
+ * is unavailable. `rename` atomically replaces an existing file, so `put` doubles as a safe upsert:
+ * there is never a moment with no file at `path`.
  *
  * Milestone A's local secret store scopes to the Keychain (spec §14.3): only the `macos_keychain`
  * variant of `CredentialRefSchema` is accepted. `vercel`, `server_encrypted`, and `external_vault`
@@ -79,11 +81,7 @@ class CredentialRefStoreImpl implements CredentialRefStore {
     }
     await chmod(temporaryPath, PRIVATE_FILE_MODE);
     try {
-      await link(temporaryPath, path);
-    } catch (error) {
-      if (!isAlreadyExists(error)) throw error;
-      await unlink(path).catch(() => undefined);
-      await link(temporaryPath, path);
+      await rename(temporaryPath, path);
     } finally {
       await unlink(temporaryPath).catch(() => undefined);
     }
@@ -144,9 +142,6 @@ class CredentialRefStoreImpl implements CredentialRefStore {
     await chmod(this.#root, PRIVATE_DIRECTORY_MODE);
   }
 }
-
-const isAlreadyExists = (error: unknown): boolean =>
-  typeof error === "object" && error !== null && "code" in error && error.code === "EEXIST";
 
 export const createCredentialRefStore = (options: CredentialRefStoreOptions): CredentialRefStore =>
   new CredentialRefStoreImpl(options);
