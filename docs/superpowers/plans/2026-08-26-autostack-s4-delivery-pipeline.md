@@ -682,6 +682,8 @@ git commit -m "feat(workflow): publish an approved draft pull request idempotent
 | GET    | `/v1/approvals?status=pending`                   | `ListApprovalsQuerySchema`                        | `ListApprovalsResponseSchema`    |
 | POST   | `/v1/runs/:runId/approvals/:approvalId/decision` | `ApprovalDecisionRequestSchema` (key derived, D9) | `ApprovalDecisionResponseSchema` |
 
+**R0 note — shared origin vocabulary.** `ORIGINS` / `OriginSchema` is now declared once in `entities.ts` and reused by the approval decision, the HTTP and desktop decision requests, the clarification response, and the `approval.decided` and `run.steered` events. Tasks 14 and 15 consume that shared schema — never a locally re-declared origin enum — so a channel cannot be admitted on one surface and rejected on another.
+
 Assert, following the conventions the 190 existing tests pin:
 
 - Both require authentication; neither is reachable when ingress is closed; `/v1/health` stays reachable.
