@@ -98,6 +98,16 @@ CI pins `node-version: 24` (`.github/workflows/ci.yml:26,108`); this machine run
 
 Consequence for Task 10b and Task 14: `<ThemeProvider storage={window.localStorage}>` is correct in `apps/web/src/main.tsx` and the desktop renderer — real browsers and Electron both have it — but any _test_ that renders those composition roots must stub it.
 
+### Verification etiquette, and why turbo's exit code is not evidence
+
+Converged across streams 2026-08-28, after this machine hit load 31.5 on 10 cores with siblings active.
+
+- **Full-suite runs:** `pnpm exec turbo run test --concurrency=2`.
+  **Not** `pnpm test -- --concurrency=2` — pnpm forwards the flag past turbo into vitest, which errors (S4 verified). Not bare `pnpm test` either; that is unbounded.
+- **During development:** package-scoped runs only (`pnpm --filter <pkg> test`).
+- **A full-suite failure is suspect until isolated.** Varying victims across runs, all of them timeouts, is the contention signature — not a regression. Observed directly here: `apps/control-plane` failed one full run and then passed **210/210 in isolation**; `runner-local` was the victim on the very next run. Isolate before reporting.
+- **Turbo can exit 0 on an incomplete run.** One attempt here reported `exit=0` alongside `Force killed Turborepo tasks: @autostack/runner-local#test`, finishing in 1m40s when that suite alone takes ~7 minutes. **Never read the exit code alone.** Read the `Tasks: N successful, M total` line and confirm `N == M`. A green exit over a force-killed task is the same class of lie as a guard that never fails, and Task 16's gate evidence must quote that line rather than an exit status.
+
 ### Lockfile discipline (note 13)
 
 Three tasks touch `pnpm-lock.yaml`, all unavoidably and all expected: Task 10b adds `axe-core` as a devDependency of `@autostack/web`; Task 11a creates the `packages/observability` workspace entry. `pnpm install --frozen-lockfile` is a CI gate, so the lockfile change is committed **with the task that causes it**, never separately, and no task adds a dependency it does not consume in the same commit.
