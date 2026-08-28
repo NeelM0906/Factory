@@ -2,8 +2,8 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Date:** 2026-08-27 · **Revision 2** (folds the orchestrator's APPROVE-WITH-CHANGES review of 2026-08-27)
-**Stream:** S1 (Wave 1) · **Worktree:** `/Users/zidane/factory-s1` · **Branch:** `codex/milestone-a-s1-agent-runtime` · **Base:** `02e5cff`
+**Date:** 2026-08-27 · **Revision 3** (rebased onto the Wave 0 tip; R0 enumeration reconciled against the landed contracts)
+**Stream:** S1 (Wave 1) · **Worktree:** `/Users/zidane/factory-s1` · **Branch:** `codex/milestone-a-s1-agent-runtime` · **Base:** `4bc06ef` (`codex/milestone-a-wave0`)
 **Charter:** `docs/superpowers/plans/2026-08-26-autostack-milestone-a-parallel.md` § "Stream S1: Agent runtime and native agent"
 **Spec:** `docs/superpowers/specs/2026-08-20-autostack-design.md` §8.1, §8.2, §8.3, §9.1, §9.4, §10.2, §14.1, §14.4, §15, §16.2
 **Contract map:** `docs/development/milestone-a-contract-audit.md` items 1–5, 8–11, 21, plus Wave 0 Task 0.12
@@ -24,18 +24,31 @@ Task numbers are stable identities (they are how the orchestrator and this strea
 
 The reorder is a required change from the plan review: T7 (context assembly) builds the unit that T6's conformance fixture needs to script a genuine permission gate, so building the harness core first would have meant scripting the gate before the thing that gates. T2/T3 (registry and supervisor) follow the harness because T13's cross-package composition test — the check that catches interruption-ownership drift before I1 — needs all three.
 
-**Unblocked now:** T1, T4, T5, T7. **Gated on the Task 0.12 rebase:** T6, T8, T9, T10, T11 (and T13, which composes them).
+**Unblocked:** all of them — the 0.12 rebase landed on 2026-08-27, so the gates on T6, T8–T11, and T13 are released. The task headings still name the gate for history; it is satisfied.
 
 ---
 
-## Contract dependencies resolved by Wave 0 Task 0.12
+## Contract surface as of the 0.12 rebase (base `4bc06ef`)
 
-The three blocking escalations raised with revision 1 were approved and land on the base branch as Task 0.12. This stream rebases when told, then unblocks T6 and the role tasks. What 0.12 delivers, and what this plan therefore assumes:
+Rebased 2026-08-27. **This section is the R0 enumeration — it was written from `git diff 02e5cff..codex/milestone-a-wave0 -- packages/contracts/src/ packages/domain/src/`, not from the shapes this plan proposed.** Where the landed contract differs from revision 2's proposal, the landed contract wins and the difference is called out, because a stale quote in a plan is how a stream builds against a schema that does not exist.
 
-- **`ModelInferencePort`** (E1) — reconciled with S3's seam. `ModelRouterPort` resolves a route; the inference port executes one resolved route and raises `ModelRoutingError` so the taxonomy survives the call. Its result carries unknown-preserving `ModelTokenUsage`/`ModelCost`, which is the only reason §10.2's "missing provider usage is recorded as unknown" can hold at the boundary that knows it. A matching fake lands in `@autostack/domain/testing`. No tool-calling round trip and no token streaming (see the E5 ruling below).
-- **`producedBy` provenance** (E2) — an optional provenance object on `TriageReportSchema`, `PlanDocumentSchema`, and `ReviewReportSchema` recording `adapterId`, `promptRef`, `promptVersion`, and `routeRef`, excluded from `canonicalizePlanDocumentForDigest` on the same reasoning the contract already applies to `producedAt` (§14.2 invalidates an approval on _material_ change; re-planning byte-identical content under a new prompt version is not one). This is what makes spec §16.2's stored prompt version real rather than aspirational.
-- **Triage and review digest helpers** (E3) — `canonicalize`/`digest`/`admit` for `TriageReport` and `ReviewReport`, mirroring the verification-report rule. `agent-native` defines no canonicalization of its own.
-- **`workItemId` on `AgentInvocationRequestSchema`** (review finding 2a) — append-only and **optional** in the contract, because other adapters may not have one. The native roles treat it as **required at admission and fail closed when absent**: the three station documents all carry `workItemId` in their identity shape, and the only alternative source would be the model, which must never be able to supply identity for a document it authors.
+- **`ModelInferencePort`** (E1) — landed as `run(request): Promise<ModelInferenceResult>`, **not `generate`**. The request is `{ schemaVersion, idempotencyKey, selection: ModelRouteSelection, messages, options }`:
+  - `selection` carries the **whole `ModelRouteSelection`** the router returned, not a bare `routeRef`. A role therefore threads `router.resolve(...)`'s return value straight through, which is what makes "resolve before you spend" structurally checkable.
+  - `messages` are `{ role, content }` — the field is **`content`**, not `text`. A refinement rejects a request made only of system messages, so every prompt render must produce a user message (T4 Step 1.5 already requires one; it is now contract-enforced).
+  - `options` is `{ maxOutputTokens (REQUIRED, ≤ 1_000_000), reasoningLevel?, responseFormat: "text" | "json" (default "text") }`. Required rather than optional so an unbounded generation cannot escape `ModelPolicySchema.maxOutputTokens`; each role config therefore declares its own ceiling.
+  - `responseFormat: "json"` asks the provider for JSON **text**. Parsing and validating it stays with the caller that owns the document schema — which is exactly T5's job, unchanged.
+  - The result is `{ schemaVersion, idempotencyKey, routeRef, content, actual, tokens, cost, finishReason, latencyMs, completedAt }` — the payload field is **`content`**, not `text`. `MODEL_FINISH_REASONS` is `stop | length | content_filter | error`, matching T11's truncation case.
+  - `admitModelInferenceResult(request, result)` binds a result to the request and route it claims to answer. Roles call it; `createFakeModelInference` already applies it internally, so a role that skipped it would pass against the fake and fail against S3.
+- **`producedBy` provenance** (E2) — `StationProvenanceSchema` is optional on all three station documents. **`promptVersion` is a `StableRefSchema` string, not a number** (revision 2 proposed an integer). Prompt artifacts keep a numeric `version` for the contiguity and ordering assertions in T4; the contract field carries its string form.
+  - Digest treatment differs per document and both directions must be pinned: `canonicalizePlanDocumentForDigest` **excludes** `producedBy` (a prompt bump must not revoke outstanding plan approvals), while `digestTriageReport` and `digestReviewReport` **include** it (those are evidence of one execution, and a later reading under a different prompt is a different reading).
+- **Triage and review digest helpers** (E3) — `canonicalizeTriageReportForDigest` / `digestTriageReport` / `admitTriageReport`, and `canonicalizeReviewReportForDigest` / `digestReviewReport`. Note the signature difference: **`admitTriageReport(input, expectedDigest)` takes the digest to compare against**, because triage is the first station and has neither an upstream document to bind to nor a self-digest field. `admitPlanDocument(input)` remains one-argument. Both canonicalizers normalize absent optionals by omission rather than emitting `undefined`.
+- **`workItemId` on `AgentInvocationRequestSchema`** (review finding 2a) — optional in the contract, and the landed comment states this stream's obligation verbatim: a station writing a document that carries `workItemId` must fail closed when it is absent. The native roles do.
+- **`normalizeWorkflowFailureCode(candidate)`** (new, not requested by this stream) — the shared lift into the failure alphabet, **unchanged-acceptance**: it returns the code only if it is already exactly what the alphabet accepts, and `undefined` otherwise. It exists because `WorkflowFailureCodeSchema` carries `.trim()`, so `" rate_limited"` parses successfully to a _different_ string; trim-then-accept would conjure a code the stream never carried. The conformance evidence module now uses it, and so must T5 and T11 — no locally derived normalizer anywhere in this stream. `WorkflowFailureCode` is now an exported type, so T1's `AgentRuntimeError.code` annotation is real rather than aspirational.
+- **`agent.session_event` durable event** (new, not requested by this stream) — carries `{ agentSessionId, sequence, event: AgentSessionStreamEvent }`, and the event-coherence checker requires the envelope sequence to equal the carried event's sequence and to strictly increase per session. This is the eventual backing of T3's `persist` sink, and it is satisfiable only because the supervisor re-stamps sequence numbers rather than trusting the adapter's — T3 Step 1.2 is now load-bearing for a contract rule, not just tidiness. `run.steered` also landed, which is the durable form of the steer the T6 ruling implements.
+- **`PipelineStationDocumentSchema`** (new) — a tagged union over `triage | plan | verify | isolated_review`. Same vocabulary as the route stages T8–T10 pin; noted so a later task uses the tag rather than inventing one.
+- **`ModelUsageRecordSchema.attempt`** (new, optional) — orders the records a retried request produces. Informational only: per the finding 12 ruling this stream writes no usage records.
+
+**Fakes available:** `createFakeModelInference({ outcomes, now })` in `@autostack/domain/testing`, with `{ kind: "completed", result }` / `{ kind: "failure", failure }` outcomes consumed by a cursor. It throws when a script runs out, and exposes `requests`, so T5's and T8's call-count assertions read `fake.requests.length` rather than a spy.
 
 ### Rulings folded into this plan
 
@@ -165,7 +178,7 @@ Commit: `feat(agent-runtime): scaffold the package and its sequence-ordered sess
 
 Spec §16.2 requires a stored version for every prompt used by a run, and my charter requires prompts to be exported, versioned constants rather than inline strings. Assert:
 
-1. Each artifact is `{ promptRef, version, system, modelAuthoredFields, render(input) }`, deeply frozen, with `promptRef` matching the `StableRefSchema` alphabet (`autostack.native.triage`, `.plan`, `.review`) and `version` a positive integer.
+1. Each artifact is `{ promptRef, version, system, modelAuthoredFields, render(input) }`, deeply frozen, with `promptRef` matching the `StableRefSchema` alphabet (`autostack.native.triage`, `.plan`, `.review`) and `version` a positive integer. The artifact's `version` stays numeric so contiguity and ordering are assertable; `StationProvenanceSchema.promptVersion` is a `StableRefSchema` **string**, so the roles carry `String(version)` into `producedBy` and a test pins that the string form parses as a `StableRef`.
 2. `promptRef` values are unique across the registry and the registry is exhaustive over `NATIVE_AGENT_ROLES`.
 3. `render` returns `ModelMessage[]` whose first message is the artifact's `system` text and whose user message contains the untrusted inputs in a delimited block.
 4. **Field exhaustiveness, scoped.** Each artifact declares `modelAuthoredFields` — the subset of its output schema the model is asked to author (triage: `taskType`, `priority`, `complexity`, `actionable`, `rationale`, `duplicates`, `clarificationRef`). The test asserts every declared field name appears in the rendered instruction, so a prompt cannot silently stop asking for a field the schema demands. The complementary assertion is the load-bearing one: **no identity, digest, or timestamp field name appears in the rendered prompt at all** — not `workspaceId`, `workItemId`, `runId`, `schemaVersion`, `planDigest`, `reviewedDiffDigest`, `verificationReportDigest`, `producedAt`, or `producedBy`. The model is never invited to author identity or evidence addressing; the harness supplies all of it (review finding 2a).
@@ -229,7 +242,7 @@ A frozen table maps every `ModelRoutingFailureCode` to a native failure. Assert:
 
 1. The table is exhaustive over `MODEL_ROUTING_FAILURE_CODES` — a test iterates the exported const array, so adding a taxonomy code makes this fail rather than fall through to a default.
 2. `retryable` is preserved from the `ModelRoutingError`, never recomputed: the taxonomy's refinement (`packages/contracts/src/model.ts:274`) already forbids a retryable `budget_exceeded`, and re-deriving it locally would be a second source of truth.
-3. Every native code matches `^[a-z][a-z0-9_]{0,63}$` and `WorkflowFailureSchema.parse` accepts its lifted form — the same normalization identity the conformance suite asserts.
+3. Every native code round-trips through **`normalizeWorkflowFailureCode` unchanged** — `normalizeWorkflowFailureCode(code) === code`, never `undefined` — and `WorkflowFailureSchema.parse` accepts its lifted form. The helper is imported from `@autostack/contracts`; this stream derives no normalizer of its own, because the whole point of the shared rule is that the classifier and the retry policy branch on the same one. The test also pins the sharp edge the helper exists for: a table entry keyed `" rate_limited"` with a leading space must be rejected, not silently trimmed into acceptance.
 4. A non-`ModelRoutingError` throwable classifies as `native_agent_internal_error`, `retryable: false`, with its message drawn from the table and never from the throwable — and with the original attached as a non-enumerable `cause`.
 5. Codes are distinct from messages (the conformance suite asserts `code !== message`).
 
@@ -472,7 +485,7 @@ export interface AgentSessionSupervisorDeps {
 Assert against a `createFakeAgentHarness` subject:
 
 1. `supervise(invocation)` relays every adapter event into the relay, re-validating each through `AgentSessionStreamEventSchema` — an adapter that emits an invalid event terminates the session `failed` with code `agent_event_invalid`, and the invalid event never reaches a reader.
-2. Sequence numbers in the relayed stream are strictly increasing and the adapter's own numbering is _not_ trusted: the supervisor re-stamps, so two adapters with different numbering conventions are indistinguishable downstream.
+2. Sequence numbers in the relayed stream are strictly increasing and the adapter's own numbering is _not_ trusted: the supervisor re-stamps, so two adapters with different numbering conventions are indistinguishable downstream. This is now load-bearing for a contract rule rather than tidiness — the `agent.session_event` envelope that eventually carries these events requires its sequence to equal the carried event's and to strictly increase per session, which an adapter's own numbering cannot be relied on to satisfy. The test asserts the relayed sequences against an adapter that deliberately numbers from 100 and skips values.
 3. `persist` is called with each batch before the events are visible to readers; a rejecting `persist` ends the session `interrupted` (evidence preserved, not `completed`) — "artifact upload failure prevents a stage from reporting success when that artifact is required evidence" (spec §15).
 4. `snapshot()` reports `{ state, lastSequence }` where state is one of `running | completed | failed | cancelled | interrupted`, and never reports `completed` for a session whose terminal was anything else. It deliberately does not carry `evidenceDigests`: no consumer in this stream reads them, and the digests are already in the relayed events, which is the one place they cannot go stale.
 5. A second `supervise` call for the same `agentSessionId` raises `agent_session_already_supervised`.
@@ -552,17 +565,17 @@ Commit: `test(agent-native): compose the native harness with the runtime registr
 
 Assert, with a scripted inference fake and the Wave 0 `createFakeModelRouter`:
 
-1. The role resolves its route through `ModelRouterPort.resolve` with **`stage: "triage"`** and `requiredCapabilities: ["text", "structured_output"]`, and calls `inference.generate` with the resolved `routeRef` — a role that calls inference without resolving first fails the test.
+1. The role resolves its route through `ModelRouterPort.resolve` with **`stage: "triage"`** and `requiredCapabilities: ["text", "structured_output"]`, then calls **`inference.run`** with that exact `ModelRouteSelection` threaded into the request's `selection` field, `options.responseFormat: "json"`, and the role's declared `options.maxOutputTokens`. Asserted by reading `fake.requests[0].selection` and comparing it to the selection the router returned — a role that calls inference without resolving first, or that rebuilds a selection of its own, fails here. The result is admitted through `admitModelInferenceResult` before its `content` is parsed.
 2. A well-formed model response becomes a `TriageReportSchema`-valid `TriageReport` whose `workspaceId`, `workItemId`, and `runId` come from the invocation and never from the model; a response that supplies any of them is rejected rather than merged, and an invocation missing `workItemId` fails closed with `native_invocation_incomplete` before the model call.
-3. `producedBy` records the triage prompt's `promptRef` and `version`, the `adapterId`, and the resolved `routeRef`.
-4. The session emits, in order: `started`, `message`, `tool_call` pairs for any context reads, `usage` (unknown-preserving, taken from the inference result verbatim), and `completed` whose `evidenceDigests` contains `await digestTriageReport(report)`.
+3. `producedBy` records the triage prompt's `promptRef` and its `version` in string form, the `adapterId`, and the resolved `routeRef`. Because `digestTriageReport` **includes** `producedBy`, a companion case mutates it and asserts the digest **changes** — the mirror of T9's plan-document case, and the pairing is what stops the two opposite rules being conflated.
+4. The session emits, in order: `started`, `message`, `tool_call` pairs for any context reads, `usage` (unknown-preserving, taken from the inference result's `tokens`/`cost` verbatim), and `completed` whose `evidenceDigests` contains `await digestTriageReport(report)`. The report then admits through **`admitTriageReport(report, thatDigest)`** — the two-argument digest-compare form, since triage has no upstream document to bind to.
 5. Duplicate detection round-trips: a response naming two duplicates with the same `reference` is rejected by the schema refinement and classified `malformed_model_output`, not silently deduplicated.
 6. `actionable: false` still produces a complete report and a `completed` terminal; triage deciding "not actionable" is a successful triage.
 7. A `clarificationRef` in the response is carried through unchanged.
 
 - [ ] **Step 2: Add the failing failure-path tests**
 
-A `capability_unavailable` from `resolve` terminates the session `failed` with that exact code and `retryable: false`; a `rate_limited` from `generate` terminates `failed` with `retryable: true`; a malformed response with `maxRepairAttempts: 1` produces exactly two `inference.generate` calls and then a `failed` terminal with `malformed_model_output`. Each asserts the terminal is the last event and that no `completed` was emitted.
+A `capability_unavailable` from `resolve` terminates the session `failed` with that exact code and `retryable: false`; a `rate_limited` from `inference.run` terminates `failed` with `retryable: true`; a malformed response with `maxRepairAttempts: 1` produces exactly two entries in `fake.requests` and then a `failed` terminal with `malformed_model_output`. Each asserts the terminal is the last event and that no `completed` was emitted. Note the fake throws a `TypeError` when a script runs out of outcomes, so an implementation that re-asks more often than the policy allows fails loudly rather than silently exhausting the script.
 
 - [ ] **Step 3: Implement `role-config.ts`, `triage-role.ts`, `evidence.ts`; verify; commit**
 
@@ -584,7 +597,7 @@ Commit: `feat(agent-native): produce triage reports through the routed native ro
 The digest is the point of this role: S4 verifies approval staleness against it. The route stage is **`"plan"`**.
 
 1. The produced document admits through `admitPlanDocument` — the strongest available assertion, since it recomputes the digest from the canonical fields and rejects a mismatch.
-2. The role computes `planDigest` with `digestPlanDocument` and never with a local rule; a test mutates one canonical field (`summary`) and asserts admission now fails, and mutates one excluded field (`producedAt`) and asserts the digest is **unchanged** — pinning the material-change semantics the contract comment describes (`packages/contracts/src/station-evidence.ts:280`). A third case mutates `producedBy` and asserts the digest is likewise unchanged, pinning 0.12's exclusion decision.
+2. The role computes `planDigest` with `digestPlanDocument` and never with a local rule; a test mutates one canonical field (`summary`) and asserts admission now fails, and mutates one excluded field (`producedAt`) and asserts the digest is **unchanged** — pinning the material-change semantics the contract comment describes. A third case mutates `producedBy` and asserts the plan digest is likewise **unchanged**, pinning 0.12's exclusion decision: a prompt bump must not revoke an outstanding plan approval. This is the exact opposite of the triage and review rule (T8 Step 1.3, T10 Step 1.7), and the two are asserted in both directions on purpose.
 3. A `plan` detail event is emitted carrying that same `planDigest` and a summary; this is the only role whose descriptor declares `structuredPlans: true`.
 4. `verificationCommands` are `executable` + `args`; a response whose command carries a shell string in `executable` (`"pnpm test && pnpm build"`) is rejected — the schema permits `usesShell`, but a command that smuggles shell syntax into `executable` while declaring `usesShell: false` is a lie about what will execute, and the role rejects it as `malformed_model_output`.
 5. A response with no `required: true` command is rejected by the schema refinement and classified, not repaired by promoting one.
@@ -625,7 +638,7 @@ Assert:
 4. `verdict: "approved"` alongside a `critical` or `high` finding is rejected by the schema refinement and classified `malformed_model_output`. The role does not "fix" the verdict — spec §8.2: a failed review "never silently marks itself passed", and its inverse, silently downgrading an approval, is the same defect.
 5. Duplicate `findingRef`s are rejected; a finding `location` outside the reviewed diff's paths is rejected, since the model may not attribute a finding to a file the run never touched.
 6. The reviewer's context carries no implementer transcript: the test hands the provider one as a decoy and asserts it appears in no rendered message.
-7. `completed.evidenceDigests` contains `await digestReviewReport(report)`.
+7. `completed.evidenceDigests` contains `await digestReviewReport(report)`, and — because `canonicalizeReviewReportForDigest` **includes** `producedBy` — mutating `producedBy` **changes** the digest, the mirror of T9 Step 1.2's plan-document case.
 
 - [ ] **Step 2: Implement, verify, commit**
 
@@ -643,7 +656,7 @@ Commit: `feat(agent-native): produce isolated review reports bound to plan and v
 
 One table-driven suite over `["triage", "plan", "review"]` × every failure mode, so a role added later cannot skip a path:
 
-- each `ModelRoutingFailureCode` raised from `resolve` and again from `generate`;
+- each `ModelRoutingFailureCode` raised from `router.resolve` and again from `inference.run`;
 - non-JSON output, schema-invalid output, double-object output, credential-shaped output;
 - `finishReason: "length"` (a truncated structured response classifies as `malformed_model_output`, never as a partial document);
 - a missing `workItemId` on the invocation (`native_invocation_incomplete`);
