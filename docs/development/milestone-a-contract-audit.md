@@ -11,6 +11,16 @@ Wave 1 stream leads: read the **Additions** section for the new shapes you are e
 against, and the **Resolved escalations** section for the two ingress-enum changes the orchestrator
 approved after the first review pass.
 
+**Revision 5 (Task 0.12 closing pass):** review of the batch found that item 27's widening was only
+half a change — see item 31, the most important entry in this document. Item 32 completes item 28's
+"every station names something".
+
+**Method note, learned the hard way.** Citations in this document are verified by grep **against the
+final head of a batch, not per commit**. Every citation added in revision 4 was correct when written
+and stale by the time the batch closed, because later commits in the same batch inserted lines above
+them. A per-commit check cannot catch that; only a sweep after the last commit can. Revision 5
+re-swept and corrected the revision-3 and revision-4 citations.
+
 **Revision 4 (Task 0.12 — the consolidated Wave 1 batch):** the six stream plans were written against
 revision 3 and surfaced nine further gaps between them. Items 22–29 record them. Every change is
 append-only on an existing export — new schemas, new optional fields, new `EVENT_TYPES` members with
@@ -59,6 +69,8 @@ inbox paging (item 20).
 | 28  | Pipeline, clarification, steering, agent relay events   | GAP — fixed (revision 4)                               |
 | 29  | Work item on an agent invocation (§14.1)                | GAP — fixed (revision 4)                               |
 | 30  | Shared failure-code normalization rule (§8.3)           | GAP — fixed (revision 4)                               |
+| 31  | Failed verification: representable and unpublishable    | GAP — fixed (revision 5, widening + gate)              |
+| 32  | Review evidence names its report                        | GAP — fixed (revision 5)                               |
 
 ## Agent contract — spec §9.1–9.3, streams S1 and S2
 
@@ -215,7 +227,7 @@ enum would have become a de-facto cross-stream interface without ever being revi
 is exactly what the Task 0.2 fake did before this was added.
 
 **Addition:** `MODEL_ROUTING_FAILURE_CODES` and `ModelRoutingFailureSchema`
-(`packages/contracts/src/model.ts:220`, `:264`) declare the shared vocabulary — `capability_unavailable`,
+(`packages/contracts/src/model.ts:271`, `:227`) declare the shared vocabulary — `capability_unavailable`,
 `route_disabled`, `provider_error`, `rate_limited`, `budget_exceeded` — with secret-safe operator
 text, a `retryable` flag, and optional `routeRef`/`requestedModel` attribution.
 `ModelRoutingError` (`:299`) is the throwable form, and it admits its input in the constructor so an
@@ -384,9 +396,9 @@ reasoning the contract already applies to `producedAt`.
 `ReviewReport` had none, so S1 (producer) and S4 (verifier) would each have invented one
 (S1 escalation E3).
 
-**Addition:** `canonicalizeTriageReportForDigest` (`packages/contracts/src/station-evidence.ts:385`),
-`digestTriageReport` (`:405`), `canonicalizeReviewReportForDigest` (`:417`), `digestReviewReport`
-(`:434`), and `admitTriageReport` (`:471`).
+**Addition:** `canonicalizeTriageReportForDigest` (`packages/contracts/src/station-evidence.ts:392`),
+`digestTriageReport` (`:420`), `canonicalizeReviewReportForDigest` (`:432`), `digestReviewReport`
+(`:455`), and `admitTriageReport` (`:492`).
 
 Both follow the **verification report's** rule rather than the plan document's: every field is
 covered, `producedAt` and `producedBy` included, because both are evidence of one specific reading
@@ -423,13 +435,20 @@ verification: `assertPipelineTransition` only advances, and the single backward 
 review. The pipeline could represent "the reviewer rejected this" but not "its own tests reject this".
 
 **Change (orchestrator-approved, not append-only):** `PIPELINE_REWORK_SOURCE_STAGES`
-(`packages/contracts/src/pipeline.ts:424`) now admits `verify` alongside `isolated_review`
-(`:435`, `:440`). Both are judgements of the implementation, both send it back to the same station,
+(`packages/contracts/src/pipeline.ts:447`) now admits `verify` alongside `isolated_review`
+(`:463`). Both are judgements of the implementation, both send it back to the same station,
 and both sit under the same attempt bound. Routing a failed verification forward into review instead
 would ask a reviewer to approve code its own tests reject.
 
 It only widens: every call that succeeded before still succeeds. The one existing test asserting
 `verify` threw is replaced by tests asserting both directions.
+
+**Revision 5 correction.** This helper only checks _which stage_ the rework came from; it cannot see
+whether that stage's judgement failed, because it takes a stage and an attempt and nothing else.
+Coherence therefore accepted `verify → implement` after a verification that **passed** — a pipeline
+ignoring its own green build. That was uncheckable while `VerificationEvidenceSchema.status` was
+`z.literal("passed")`; item 31 makes it checkable and `validateRunStreamCoherence` now enforces it
+for both judging stages.
 
 ### 28. Pipeline, clarification, steering, and agent relay events — GAP (revision 4)
 
@@ -437,11 +456,11 @@ Revision 1 deferred new `EVENT_TYPES` members with the condition that a stream n
 request the addition through the orchestrator with the coherence rules in `validateRunStreamCoherence`
 updated in the same change". S4 did, with a tabulation; this is that change.
 
-`EVENT_TYPES` (`packages/contracts/src/events.ts:87`) gains `pipeline.evidence_recorded`,
-`clarification.requested` (`:214`), `clarification.answered` (`:220`), `run.steered` (`:226`), and
-`agent.session_event` (`:240`), each with a coherence case (`:979`, `:1037`, `:1065`, `:1069`).
+`EVENT_TYPES` (`packages/contracts/src/events.ts:71`) gains `pipeline.evidence_recorded`,
+`clarification.requested` (`:217`), `clarification.answered` (`:223`), `run.steered` (`:229`), and
+`agent.session_event` (`:243`), each with a coherence case (`:988`, `:1074`, `:1102`, `:1106`).
 
-- **`pipeline.evidence_recorded`** (`:201`) carries the evidence and optionally the document it
+- **`pipeline.evidence_recorded`** (`:204`) carries the evidence and optionally the document it
   addresses, tagged by `PipelineStationDocumentSchema`
   (`packages/contracts/src/station-evidence.ts:274`). The four document shapes share no discriminator
   of their own — a plan and a review are simply different objects — so the tag is what tells a reader
@@ -453,7 +472,7 @@ updated in the same change". S4 did, with a tabulation; this is that change.
   names a `planDigest` and the document is admitted against it; verification evidence names a pass
   the report must support; review evidence names a verdict and a reviewed diff that must agree; and
   triage evidence names a `triageReportDigest` (`packages/contracts/src/pipeline.ts:57`), admitted
-  through `admitTriageReport` (`packages/contracts/src/events.ts:1020`).
+  through `admitTriageReport` (`packages/contracts/src/events.ts:1038`).
 
   Triage was identity-only in the first pass of this batch, and the note here claimed closing it
   would not be append-only. That was wrong: an **optional** digest field is append-only, evidence
@@ -581,6 +600,57 @@ because an adapter may be invoked outside a work item; S1's roles treat it as re
 and fail closed when absent, which is the adapter's rule to enforce rather than the contract's to
 assume.
 
+### 31. Failed verification: representable, and unpublishable — GAP (revision 5)
+
+**The entry in this document most worth reading, because the second half is not obvious.**
+
+`VerificationEvidenceSchema.status` was `z.literal("passed")` (now
+`packages/contracts/src/pipeline.ts:105`). Spec §17.4 journey 6 — a verification fails, the run
+routes back to implement, the retry passes — had no durable evidence for its first step, and item 27's
+rework edge could not be conditioned on a judgement it could not read.
+
+**The half that is not obvious.** `PublicationEvidenceBundleSchema` carried **no** verification-status
+check, and did not need one: a failed verification was unrepresentable, so the **type** was the
+publication gate. Widening `status` alone would have deleted that gate silently.
+`admitPublicationEvidenceBundle` would then accept a bundle carrying a failed verification whenever
+the digests lined up — a draft PR opened on a red build, against §8.2 and acceptance criterion 12 —
+**and no test anywhere would have gone red**, because no test asserted a property that had been
+carried by the type system.
+
+**Addition, in the same commit as the widening and never to be separated from it:** a symmetric
+refinement at `packages/contracts/src/pipeline.ts:344`, rejecting at `["verification","status"]` with
+"Publication requires a passed verification." It mirrors the `review.verdict` refinement immediately
+below it. The negative test builds a bundle whose every other binding is correct, so the status is
+the only thing that can reject it.
+
+**Coherence.** Rework is now reachable only from a judgement that failed — a passed verification
+advances to review, an approved review advances to publish — enforced for both judging stages, with
+the §17.4 journey-6 stream as a fixture: triage, plan, plan_approval, implement, verify(failed),
+implement, verify(passed), isolated_review.
+
+The general lesson: when a literal type is widened, look for the invariants that literal was silently
+enforcing. They do not announce themselves, and no test protects them.
+
+### 32. Review evidence names its report — GAP (revision 5)
+
+Item 28 claimed "every envelope binds what it names" once triage gained a digest, but review evidence
+still named nothing about its `ReviewReport`. `ReviewEvidenceSchema` gains an optional
+`reviewReportDigest` (`packages/contracts/src/pipeline.ts:129`), checked in coherence against
+`digestReviewReport` — which also makes that helper production-consumed rather than test-only.
+
+`admitReviewReport` is deliberately **not** what performs this check: it binds a review to its plan
+and verification _documents_, which a single event does not carry. The digest the envelope names is
+what an event can check, so that is what it checks.
+
+Revision 5 also consolidated the origin vocabulary, which had been declared five times over
+identical values (`entities.ts`, `api.ts`, `station-evidence.ts`, and twice in `events.ts`). `ORIGINS`
+and `OriginSchema` (`packages/contracts/src/entities.ts:265`, `:266`) are declared once and reused at
+all five sites, so a channel cannot be admitted on one surface and rejected on another. And the array
+canonicalizers now normalize their per-element optionals — `findings[].location`,
+`results[].exitCode`, and `duplicates[].url` shared one latent defect — so a caller that spreads a
+parsed value forward and reproduces an explicitly-undefined key digests identically to the omitted
+form instead of throwing.
+
 ## Cross-cutting
 
 ### 30. Shared failure-code normalization rule — GAP (revision 4)
@@ -683,7 +753,7 @@ silently.
 
 ## Verification
 
-- `pnpm --filter @autostack/contracts test` — 327 passed (17 files) after revision 4; 287 at
+- `pnpm --filter @autostack/contracts test` — 338 passed (17 files) after revision 4; 287 at
   revision 3; 282 at revision 2.
 - `pnpm --filter @autostack/domain test` — 114 passed (12 files) after revision 4, including the four
   shared fakes.
