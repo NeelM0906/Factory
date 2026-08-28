@@ -23,3 +23,20 @@ export {
   type ParseSlackMessageActionInput,
   type SlackApprovalActionBinding
 } from "./ingress/interactivity.js";
+export {
+  createMemoryIngressQueue,
+  type CreateMemoryIngressQueueOptions,
+  type IngressQueue,
+  type QueuedEnvelope
+} from "./socket-mode/queue.js";
+export {
+  createGlobalWebSocketFactory,
+  type SocketLike,
+  type WebSocketConstructorLike,
+  type WebSocketFactory
+} from "./socket-mode/transport.js";
+export {
+  createSocketModeClient,
+  type SocketModeClient,
+  type SocketModeDependencies
+} from "./socket-mode/client.js";
