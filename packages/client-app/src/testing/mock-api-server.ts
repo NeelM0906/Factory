@@ -312,6 +312,9 @@ export function createMockApiServer(options: MockApiServerOptions): MockApiServe
     if (failure === "unauthorized") {
       return errorResponse(401, "unauthorized", "Authentication is required.");
     }
+    if (failure === "conflict") {
+      return errorResponse(409, "idempotency_conflict", "The request conflicts with a prior one.");
+    }
     if (match?.route !== "health") {
       const token = extractBearerToken(request.headers);
       if (token === undefined || token.length === 0) {

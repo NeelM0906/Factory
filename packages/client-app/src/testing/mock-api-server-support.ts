@@ -20,7 +20,15 @@ export type MockApiRoute =
   | "steerRun"
   | "cancelRun";
 
-export type MockApiFailureMode = "unauthorized" | "network" | "malformed";
+/**
+ * `conflict` exists because three of the client's four 409 branches are otherwise unreachable:
+ * only the approval-decision route produces a 409 from real business logic (stale evidence or a
+ * conflicting decision), so `listApprovals`, `steerRun`, and `cancelRun` could map 409 to
+ * `ApiConflictError` incorrectly and no test would notice. A 409 on those routes is real — the
+ * control plane can return `idempotency_conflict` for a reused key — so the branch is worth
+ * keeping, and worth being able to exercise.
+ */
+export type MockApiFailureMode = "unauthorized" | "network" | "malformed" | "conflict";
 
 export type MockApiServerFailures = Readonly<Partial<Record<MockApiRoute, MockApiFailureMode>>>;
 

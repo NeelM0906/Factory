@@ -1,11 +1,20 @@
 import { describe, expect, it, vi } from "vitest";
 
+import { ListApprovalsQuerySchema } from "@autostack/contracts";
+
 import {
   ApiAuthenticationError,
   ApiResponseError,
   createApiClient,
-  createDesktopApiClient
+  createDesktopApiClient,
+  type AutoStackApiClient
 } from "../src/api-client.js";
+import {
+  ApiConflictError,
+  ApiOperationUnavailableError,
+  ApiRequestValidationError
+} from "../src/api-errors.js";
+import { createMockApiServer, seedFactoryFixture } from "../src/testing/index.js";
 
 const TOKEN = "0123456789abcdef0123456789abcdef";
 const health = {
@@ -208,5 +217,401 @@ describe("AutoStack web API client", () => {
     controller.abort();
 
     await expect(client.health(controller.signal)).rejects.toMatchObject({ name: "AbortError" });
+  });
+});
+
+interface RecordedRequest {
+  readonly url: string;
+  readonly method: string;
+  readonly headers: Headers;
+}
+
+/** Wraps a fetch implementation to record every outbound request's method, URL, and headers. */
+function recording(
+  fetchImpl: typeof globalThis.fetch,
+  sent: RecordedRequest[]
+): typeof globalThis.fetch {
+  return async (input, init) => {
+    const url = input instanceof Request ? input.url : input.toString();
+    const method = init?.method ?? (input instanceof Request ? input.method : "GET");
+    const headers = new Headers(
+      init?.headers ?? (input instanceof Request ? input.headers : undefined)
+    );
+    sent.push({ url, method, headers });
+    return fetchImpl(input, init);
+  };
+}
+
+function findPendingApproval(fixture: ReturnType<typeof seedFactoryFixture>) {
+  const approval = fixture.approvals.find((candidate) => candidate.status === "pending");
+  if (approval === undefined) throw new Error("Fixture has no pending approval to decide.");
+  return approval;
+}
+
+function firstRun(fixture: ReturnType<typeof seedFactoryFixture>) {
+  const run = fixture.runs[0];
+  if (run === undefined) throw new Error("Fixture has no runs.");
+  return run;
+}
+
+describe("approvals, steering, and cancellation", () => {
+  it("pages the approval inbox past the first window", async () => {
+    const server = createMockApiServer({ fixture: seedFactoryFixture({ approvalCount: 137 }) });
+    const client = createApiClient({ baseUrl: "", getToken: () => TOKEN, fetch: server.fetch });
+
+    const first = await client.listApprovals({ status: "pending", limit: 100 });
+    expect(first.items).toHaveLength(100);
+    const cursor = first.nextCursor;
+    if (cursor === undefined) throw new Error("Expected a nextCursor after the first page.");
+
+    const second = await client.listApprovals({ status: "pending", limit: 100, cursor });
+    expect(second.items).toHaveLength(37);
+    expect(second.nextCursor).toBeUndefined();
+
+    const allIds = new Set([...first.items, ...second.items].map((item) => item.approvalId));
+    expect(allIds.size).toBe(137);
+  });
+
+  it("sends no Idempotency-Key on an approval decision, because the server derives its own", async () => {
+    const fixture = seedFactoryFixture();
+    const approval = findPendingApproval(fixture);
+    const server = createMockApiServer({ fixture });
+    const sent: RecordedRequest[] = [];
+    const client = createApiClient({
+      baseUrl: "",
+      getToken: () => TOKEN,
+      fetch: recording(server.fetch, sent)
+    });
+
+    await client.decideApproval(approval.runId, approval.id, {
+      decision: "approved",
+      evidenceDigest: approval.evidenceDigest,
+      origin: "web"
+    });
+
+    expect(sent.at(-1)?.headers.has("Idempotency-Key")).toBe(false);
+  });
+
+  it("sends a UUID Idempotency-Key on steer and cancel", async () => {
+    const fixture = seedFactoryFixture();
+    const run = firstRun(fixture);
+    const server = createMockApiServer({ fixture });
+    const sent: RecordedRequest[] = [];
+    const client = createApiClient({
+      baseUrl: "",
+      getToken: () => TOKEN,
+      fetch: recording(server.fetch, sent)
+    });
+
+    await client.steerRun(run.id, { instruction: "narrow the diff" });
+    expect(sent.at(-1)?.headers.get("Idempotency-Key")).toMatch(/^[0-9a-f-]{36}$/);
+
+    await client.cancelRun(run.id, { reason: "duplicate work" });
+    expect(sent.at(-1)?.headers.get("Idempotency-Key")).toMatch(/^[0-9a-f-]{36}$/);
+  });
+
+  it("gives steer a fresh key on every call, from the injected factory", async () => {
+    const fixture = seedFactoryFixture();
+    const run = firstRun(fixture);
+    const server = createMockApiServer({ fixture });
+    const sent: RecordedRequest[] = [];
+    const client = createApiClient({
+      baseUrl: "",
+      getToken: () => TOKEN,
+      fetch: recording(server.fetch, sent)
+    });
+
+    await client.steerRun(run.id, { instruction: "narrow the diff" });
+    const firstKey = sent.at(-1)?.headers.get("Idempotency-Key");
+    await client.steerRun(run.id, { instruction: "narrow the diff again" });
+    const secondKey = sent.at(-1)?.headers.get("Idempotency-Key");
+
+    expect(firstKey).not.toBe(secondKey);
+  });
+
+  it("replays an identical decision rather than deciding twice", async () => {
+    const fixture = seedFactoryFixture();
+    const approval = findPendingApproval(fixture);
+    const server = createMockApiServer({ fixture });
+    const client = createApiClient({ baseUrl: "", getToken: () => TOKEN, fetch: server.fetch });
+    const input = {
+      decision: "approved" as const,
+      evidenceDigest: approval.evidenceDigest,
+      origin: "web" as const
+    };
+
+    const once = await client.decideApproval(approval.runId, approval.id, input);
+    const twice = await client.decideApproval(approval.runId, approval.id, input);
+
+    expect(twice.replayed).toBe(true);
+    expect(twice.decidedAt).toBe(once.decidedAt);
+  });
+
+  it("surfaces a stale approval decision as a conflict rather than a generic failure", async () => {
+    const fixture = seedFactoryFixture();
+    const approval = findPendingApproval(fixture);
+    const server = createMockApiServer({ fixture });
+    const client = createApiClient({ baseUrl: "", getToken: () => TOKEN, fetch: server.fetch });
+
+    await expect(
+      client.decideApproval(approval.runId, approval.id, {
+        decision: "approved",
+        evidenceDigest: "f".repeat(64),
+        origin: "web"
+      })
+    ).rejects.toBeInstanceOf(ApiConflictError);
+  });
+
+  it("surfaces a conflicting decision on the same approval the same way", async () => {
+    const fixture = seedFactoryFixture();
+    const approval = findPendingApproval(fixture);
+    const server = createMockApiServer({ fixture });
+    const client = createApiClient({ baseUrl: "", getToken: () => TOKEN, fetch: server.fetch });
+
+    await client.decideApproval(approval.runId, approval.id, {
+      decision: "approved",
+      evidenceDigest: approval.evidenceDigest,
+      origin: "web"
+    });
+
+    // Same evidence, opposite decision: a 409 from the server. The client must not distinguish
+    // this from a stale-digest conflict — both surface as the same ApiConflictError (D2).
+    await expect(
+      client.decideApproval(approval.runId, approval.id, {
+        decision: "rejected",
+        evidenceDigest: approval.evidenceDigest,
+        origin: "web"
+      })
+    ).rejects.toBeInstanceOf(ApiConflictError);
+  });
+
+  it("refuses to send an operator note containing credential material, before any network call", async () => {
+    const fixture = seedFactoryFixture();
+    const approval = findPendingApproval(fixture);
+    const server = createMockApiServer({ fixture });
+    const sent: RecordedRequest[] = [];
+    const client = createApiClient({
+      baseUrl: "",
+      getToken: () => TOKEN,
+      fetch: recording(server.fetch, sent)
+    });
+
+    await expect(
+      client.decideApproval(approval.runId, approval.id, {
+        decision: "approved",
+        evidenceDigest: approval.evidenceDigest,
+        origin: "web",
+        note: `ghp_${"a".repeat(36)}`
+      })
+    ).rejects.toBeInstanceOf(ApiRequestValidationError);
+
+    expect(sent).toHaveLength(0);
+  });
+
+  it("refuses to send a steer instruction containing credential material, before any network call", async () => {
+    const fixture = seedFactoryFixture();
+    const run = firstRun(fixture);
+    const server = createMockApiServer({ fixture });
+    const sent: RecordedRequest[] = [];
+    const client = createApiClient({
+      baseUrl: "",
+      getToken: () => TOKEN,
+      fetch: recording(server.fetch, sent)
+    });
+
+    await expect(
+      client.steerRun(run.id, { instruction: `ghp_${"a".repeat(36)}` })
+    ).rejects.toBeInstanceOf(ApiRequestValidationError);
+
+    expect(sent).toHaveLength(0);
+  });
+
+  it("uses the named authentication error for a 401 on the approvals route", async () => {
+    const fixture = seedFactoryFixture();
+    const server = createMockApiServer({ fixture, failures: { listApprovals: "unauthorized" } });
+    const client = createApiClient({ baseUrl: "", getToken: () => TOKEN, fetch: server.fetch });
+
+    await expect(client.listApprovals()).rejects.toBeInstanceOf(ApiAuthenticationError);
+  });
+
+  it("uses the named response error for a malformed approvals response", async () => {
+    const fixture = seedFactoryFixture();
+    const server = createMockApiServer({ fixture, failures: { listApprovals: "malformed" } });
+    const client = createApiClient({ baseUrl: "", getToken: () => TOKEN, fetch: server.fetch });
+
+    await expect(client.listApprovals()).rejects.toBeInstanceOf(ApiResponseError);
+  });
+
+  // `ListApprovalsQueryInput` is declared locally in api-client.ts rather than imported, because
+  // contracts exports the schema but not its input type and client-app declares no zod dependency.
+  // That is a drift risk: a field added to the contract schema would go unnoticed. This pins the
+  // schema's own key set, so such an addition fails here instead of silently going unsupported.
+  it("supports every field the approvals query contract declares", () => {
+    expect(Object.keys(ListApprovalsQuerySchema.shape).sort()).toEqual([
+      "cursor",
+      "limit",
+      "status"
+    ]);
+  });
+
+  // Only the decision route produces a 409 from real business logic, so without injected conflicts
+  // these three branches were unreachable and could have mapped 409 to the wrong error unnoticed.
+  it.each([
+    ["listApprovals", (client: AutoStackApiClient, _runId: string) => client.listApprovals()],
+    [
+      "steerRun",
+      (client: AutoStackApiClient, runId: string) =>
+        client.steerRun(runId, { instruction: "Narrow the diff." })
+    ],
+    [
+      "cancelRun",
+      (client: AutoStackApiClient, runId: string) =>
+        client.cancelRun(runId, { reason: "No longer needed." })
+    ]
+  ] as const)("maps a 409 on the %s route to the shared conflict error", async (route, call) => {
+    const fixture = seedFactoryFixture();
+    const run = fixture.runs[0];
+    if (run === undefined) throw new Error("Fixture has no runs.");
+    const server = createMockApiServer({ fixture, failures: { [route]: "conflict" } });
+    const client = createApiClient({ baseUrl: "", getToken: () => TOKEN, fetch: server.fetch });
+
+    await expect(call(client, run.id)).rejects.toBeInstanceOf(ApiConflictError);
+  });
+
+  // A 401 mis-mapped to ApiResponseError would leave the UI showing "unavailable" instead of
+  // re-prompting for authentication, so each mutating route's auth mapping is pinned too.
+  it.each([
+    [
+      "steerRun",
+      (client: AutoStackApiClient, runId: string) =>
+        client.steerRun(runId, { instruction: "Narrow the diff." })
+    ],
+    [
+      "cancelRun",
+      (client: AutoStackApiClient, runId: string) =>
+        client.cancelRun(runId, { reason: "No longer needed." })
+    ]
+  ] as const)("maps 401 and a malformed body on the %s route", async (route, call) => {
+    const fixture = seedFactoryFixture();
+    const run = fixture.runs[0];
+    if (run === undefined) throw new Error("Fixture has no runs.");
+    const client = (mode: "unauthorized" | "malformed"): AutoStackApiClient =>
+      createApiClient({
+        baseUrl: "",
+        getToken: () => TOKEN,
+        fetch: createMockApiServer({ fixture, failures: { [route]: mode } }).fetch
+      });
+
+    await expect(call(client("unauthorized"), run.id)).rejects.toBeInstanceOf(
+      ApiAuthenticationError
+    );
+    await expect(call(client("malformed"), run.id)).rejects.toBeInstanceOf(ApiResponseError);
+  });
+
+  it("rejects an already-aborted decision with AbortError and issues no request", async () => {
+    const fixture = seedFactoryFixture();
+    const approval = findPendingApproval(fixture);
+    const server = createMockApiServer({ fixture });
+    const sent: RecordedRequest[] = [];
+    const client = createApiClient({
+      baseUrl: "",
+      getToken: () => TOKEN,
+      fetch: recording(server.fetch, sent)
+    });
+    const controller = new AbortController();
+    controller.abort();
+
+    await expect(
+      client.decideApproval(
+        approval.runId,
+        approval.id,
+        { decision: "approved", evidenceDigest: approval.evidenceDigest, origin: "web" },
+        controller.signal
+      )
+    ).rejects.toMatchObject({ name: "AbortError" });
+
+    expect(sent).toHaveLength(0);
+  });
+
+  it("propagates an active (non-aborted) signal through every new route", async () => {
+    const fixture = seedFactoryFixture();
+    const approval = findPendingApproval(fixture);
+    const run = firstRun(fixture);
+    const server = createMockApiServer({ fixture });
+    const client = createApiClient({ baseUrl: "", getToken: () => TOKEN, fetch: server.fetch });
+    const controller = new AbortController();
+
+    await expect(
+      client.listApprovals({ status: "pending" }, controller.signal)
+    ).resolves.toBeDefined();
+    await expect(
+      client.decideApproval(
+        approval.runId,
+        approval.id,
+        { decision: "approved", evidenceDigest: approval.evidenceDigest, origin: "web" },
+        controller.signal
+      )
+    ).resolves.toBeDefined();
+    await expect(
+      client.steerRun(run.id, { instruction: "narrow the diff" }, controller.signal)
+    ).resolves.toBeDefined();
+    await expect(
+      client.cancelRun(run.id, { reason: "duplicate work" }, controller.signal)
+    ).resolves.toBeDefined();
+  });
+});
+
+describe("desktop client honesty for approvals, steer, and cancel (D1)", () => {
+  function createRecordingBridge() {
+    const calls: unknown[] = [];
+    const bridge = {
+      request: async (input: unknown) => {
+        calls.push(input);
+        throw new Error("bridge.request must never be called for an unmodelled operation.");
+      }
+    };
+    return { bridge, calls };
+  }
+
+  it("throws ApiOperationUnavailableError for listApprovals and never touches bridge.request", async () => {
+    const { bridge, calls } = createRecordingBridge();
+    const client = createDesktopApiClient({ bridge: bridge as never });
+
+    await expect(client.listApprovals()).rejects.toBeInstanceOf(ApiOperationUnavailableError);
+    expect(calls).toHaveLength(0);
+  });
+
+  it("throws ApiOperationUnavailableError for decideApproval and never touches bridge.request", async () => {
+    const { bridge, calls } = createRecordingBridge();
+    const client = createDesktopApiClient({ bridge: bridge as never });
+
+    await expect(
+      client.decideApproval("run_1", "apr_1", {
+        decision: "approved",
+        evidenceDigest: "a".repeat(64),
+        origin: "web"
+      })
+    ).rejects.toBeInstanceOf(ApiOperationUnavailableError);
+    expect(calls).toHaveLength(0);
+  });
+
+  it("throws ApiOperationUnavailableError for steerRun and never touches bridge.request", async () => {
+    const { bridge, calls } = createRecordingBridge();
+    const client = createDesktopApiClient({ bridge: bridge as never });
+
+    await expect(
+      client.steerRun("run_1", { instruction: "narrow the diff" })
+    ).rejects.toBeInstanceOf(ApiOperationUnavailableError);
+    expect(calls).toHaveLength(0);
+  });
+
+  it("throws ApiOperationUnavailableError for cancelRun and never touches bridge.request", async () => {
+    const { bridge, calls } = createRecordingBridge();
+    const client = createDesktopApiClient({ bridge: bridge as never });
+
+    await expect(client.cancelRun("run_1", { reason: "duplicate work" })).rejects.toBeInstanceOf(
+      ApiOperationUnavailableError
+    );
+    expect(calls).toHaveLength(0);
   });
 });
