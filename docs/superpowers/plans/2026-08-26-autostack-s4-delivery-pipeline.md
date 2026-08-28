@@ -130,9 +130,29 @@ Station documents ride `pipeline.evidence_recorded` — durable and replayable, 
 
 `HandlerRegistry.execute` (`handler-registry.ts:58-72`) and `SqliteDurableStore.completeJob` both require `payload.jobId === context.job.jobId` and `payload.stage === context.job.stage`. So **each station emits its own `stage.queued`, `stage.leased`, and terminal `stage.succeeded`/`stage.failed`** within its own lease, using `job.leaseOwner` and `job.attempt` for `stage.leased`.
 
-### E4 — `VerificationEvidenceSchema.status` is `literal("passed")` — **CONFIRMED**
+### E4 — `VerificationEvidenceSchema.status` — **SUPERSEDED, widened to `enum(["passed","failed"])`**
 
-A failing verify records the `VerificationReport` document and emits `stage.failed`; it never emits a verification evidence envelope. The envelope exists only for a passing run, which is why `PublicationEvidenceBundleSchema` requires it unconditionally.
+The earlier confirmation ("a failed verify records only the report") is withdrawn. The 0.12 review found that `literal("passed")` made the F5 rework edge unreachable through the event stream: no failed verify could ever be recorded as evidence, so a `verify → implement` coherence path could only fire after a **pass** — the wrong case — while spec §17.4 journey 6 had no durable representation at all.
+
+**New behaviour, landing in the 0.12 closing pass.** `status` widens to `enum(["passed","failed"])`. A failing verify **records its evidence envelope** with `status: "failed"`, binding the verification report, and then routes to implement. Coherence gates `verify → implement` rework on a **failed** verify evidence event and rejects it after a passed one. The shared-budget rule (D4) is unchanged in intent and becomes cleanly expressible.
+
+Also landing: `ReviewEvidenceSchema.reviewReportDigest` (optional), which the review station names to complete the per-station digest chain.
+
+**Escalation E8 — the widening removes an invariant that was enforced by the type.** `PublicationEvidenceBundleSchema.superRefine` (`pipeline.ts:220-352`) checks identity, every digest binding, `review.verdict !== "approved"`, and chronology — but **nothing about `verification.status`**, because `literal("passed")` made a failed verification unrepresentable. Once `status` admits `"failed"`, `admitPublicationEvidenceBundle` will accept a bundle carrying a **failed** verification whenever the digest bindings line up, which violates spec §8.2 and §18. The same closing pass must add the symmetric refinement:
+
+```ts
+if (value.verification.status !== "passed") {
+  context.addIssue({
+    code: "custom",
+    path: ["verification", "status"],
+    message: "Publication requires a passed verification."
+  });
+}
+```
+
+This also transitively protects the review binding: the bundle requires `review.verificationEvidenceDigest === verification.evidenceDigest`, so a passed-verification requirement forces the review to have read a passed verification.
+
+**Escalation E9 — `reviewReportDigest` has no canonical digest function.** `station-evidence.ts` exports `canonicalizePlanDocumentForDigest`/`digestPlanDocument` and `canonicalizeVerificationReportForDigest`/`digestVerificationReport`, but **nothing for `ReviewReport`** (grep-confirmed; `admitReviewReport` validates bindings and never produces a digest). If the field lands without `canonicalizeReviewReportForDigest` + `digestReviewReport`, S1 (producer) and S4 (which must name the digest) can compute different values over the same document — exactly the revision-2 problem the audit already solved for the other two documents. Recommended canonicalization: follow the **verification-report** precedent and cover every field including `producedAt`, since a review report is evidence of one specific review execution rather than approved content whose material identity must survive re-derivation.
 
 ### E6 — approval inbox has no durable index — **ACKNOWLEDGED**
 
@@ -551,7 +571,7 @@ Assert the station:
 - Executes exactly the plan's `verificationCommands`, in order, using Task 7's authorizations. A command absent from the plan is never executed.
 - Records a `VerificationResult` per command with the exact `command`, `exitCode`, `durationMs`, `startedAt`, and `outputDigest`, plus runner-produced `artifactIds` on the envelope (F14). An executed check without an exit code and a skipped check _with_ one are both schema-rejected.
 - **A skipped required check is a failure (spec §8.2).** One required command skipped, all others passing: `status: "passed"` is schema-rejected and the station emits `status: "failed"`.
-- **A failing required check is bounded rework to implement (F5).** No `VerificationEvidence` envelope (E4); the `VerificationReport` document is recorded; routes back through `advance("verify", "implement", attempt)` and enqueues `pipeline.implement` with `attempt + 1`. **Assert the budget is shared with review rework:** one verify failure then two review failures exhausts the run at three implement attempts.
+- **A failing required check is bounded rework to implement (F5, per the superseded E4).** The station **emits a `VerificationEvidence` envelope with `status: "failed"`** binding the verification report — this is what makes the rework edge reachable through the event stream — then routes back through `advance("verify", "implement", attempt)` and enqueues `pipeline.implement` with `attempt + 1`. Assert the coherence rule both ways: rework is admitted after a **failed** verify evidence event and **rejected** after a passed one. **Assert the budget is shared with review rework:** one verify failure then two review failures exhausts the run at three implement attempts.
 - A passing run produces a report `admitVerificationReport` accepts, a `VerificationEvidence` envelope binding `implementationEvidenceDigest`, a transition to `reviewing`, and a `pipeline.review` job.
 - **Restart-resume (F2):** `command.authorization_recorded` precedes each command start; a re-leased attempt does not re-run an already-completed command.
 - Command output never lands in an event body — only `outputDigest` and artifact references. Assert with output containing a secret-shaped literal.
@@ -582,6 +602,7 @@ Assert the station:
 - Starts a **fresh** harness session in a **separate** environment, and that the review input carries the approved plan, acceptance criteria, final diff, and verification evidence but **no implementer transcript** — assert by scripting the implementer session with a recognizable marker and asserting its absence in the review invocation.
 - Emits `ReviewEvidence` whose `implementation.*` differ from `reviewer.*` (D7); assert the schema rejects a same-session review.
 - Produces a `ReviewReport` that `admitReviewReport` accepts, with unique `findingRef`s and locations whose `endLine >= startLine`.
+- **Names `ReviewEvidenceSchema.reviewReportDigest`** (new in 0.12), computed with the contracts helper — never hand-rolled — completing the per-station digest chain so the envelope is bound to the exact report it summarizes. Assert the digest is reproducible from the report and that a mutated report no longer matches. **Blocked on E9:** if the field ships without a `digestReviewReport` helper, escalate rather than inventing a local canonicalization, which would drift from S1's.
 - `approved` with a critical or high finding is schema-rejected — the station can never silently mark itself passed.
 - `changes_requested` routes back through `advance("isolated_review", "implement", attempt)` and enqueues `pipeline.implement` with `attempt + 1`, carrying the findings.
 - **The shared budget is bounded at 3 (D4/F4).** Assert three failed reviews: attempts 1 and 2 route back; the third takes the D10 path to `failed` and enqueues nothing. Assert no fourth implement job exists in the store, and that the counter read is `PipelineJobPayloadSchema.attempt`, **not** `LeasedWorkflowJob.attempt` — prove it by re-leasing a job after a transient retry and showing the rework budget is unchanged.
@@ -776,6 +797,7 @@ git commit -m "test(workflow): prove the pipeline resumes across restarts"
 
 - Combined rework budget bounded at 3 across mixed verify and review failures; no fourth implement job.
 - Publication impossible without a passing review.
+- **Publication impossible with a failed verification** (E8) — assemble a bundle whose `verification.status` is `"failed"` with every digest binding correct, and assert `admitPublicationEvidenceBundle` rejects it. This case only became representable when E4 was superseded, and it is the negative test that proves the widening did not open a publish path.
 - Publication impossible without a fresh approval — material plan change, changed repository, changed branch, changed diff (four cases).
 - Duplicate intake delivery ID creates exactly one run.
 - Publish retry creates exactly one pull request.
