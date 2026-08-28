@@ -52,6 +52,7 @@
 - No secrets in events, artifacts, or logs. `SafeMetadataStringSchema` for any operator- or agent-authored text; command and agent output reduced to digests and artifact references at the point of construction.
 - Injected `now: () => string` and typed ID factories everywhere. Never `Date.now()`, `new Date()`, or `randomUUID()` inside domain/workflow code.
 - TDD: failing test first, observe the stated failure, minimal implementation, focused re-run, package verification, then commit. Conventional commits.
+- **Control characters in source and tests are ALWAYS written as escapes** (`"\0"`, `"\x1b"`), never as raw bytes. A raw `0x00` typed into a TypeScript file makes Git classify it as **binary**: `grep` silently returns nothing on it and `git diff` renders only `Binary files … differ`, so the entire module becomes **invisible to diff-based review, including merge review**, while its tests still pass. The blindness is total and silent. **Corollary for reviewing:** a `grep` that returns empty on a file you can see contains the symbol is a byte-level red flag — run `file <path>` before concluding the symbol is absent. Fleet hazard, second occurrence.
 - Files 200–400 lines typical, 800 hard maximum.
 - Coverage floor 80% (statements, branches, functions, lines) on every owned package.
 
@@ -873,9 +874,19 @@ Converged practice across the streams; adopt it in every verification step.
 - **Package-scoped suites during development** (`pnpm --filter <pkg> test`); reserve the full suite for task boundaries and pre-merge.
 - **A full-suite failure is suspect-until-isolated.** Re-run the failing package alone before believing it. A _different_ victim each run, all timeouts, is contention — not a regression. Only a failure that reproduces in isolation is real.
 
+**Never read turbo's exit code alone (binding).** Turbo can exit **0 over an incomplete run**. S6 observed it print `Force killed Turborepo tasks: @autostack/runner-local#test`, finish in 1m40s where that package alone needs ~7 minutes, and exit `0`. A killed task is not a passed task, and the exit status does not say so.
+
+**The rule:** every gate claim confirms the summary line `Tasks: N successful, N total` with N equal to the total, **and** shows no `Force killed` line. A report's quoted evidence must include that line. `tail -3` is _not_ sufficient — it commonly catches `Cached: … / Time: …` and misses the task line. Use an explicit filter:
+
+```bash
+pnpm check --concurrency=2 2>&1 | grep -E "Tasks:|Force killed|error"
+```
+
+This is the flag trap's silent sibling and strictly worse: the broken `--` form fails loudly and merely wastes load, whereas this one **reports success for work that never ran**.
+
 ## Completion evidence required before requesting merge
 
-- `pnpm format:check`, `pnpm check`, package-filtered `pnpm build`, `pnpm test:coverage` for `@autostack/workflow`, `@autostack/domain`, `@autostack/control-plane`, and a full `pnpm test --concurrency=2` — all green, coverage ≥80% on every owned package.
+- `pnpm format:check`, `pnpm check`, package-filtered `pnpm build`, `pnpm test:coverage` for `@autostack/workflow`, `@autostack/domain`, `@autostack/control-plane`, and a full `pnpm test --concurrency=2` — all green, coverage ≥80% on every owned package. **Every turbo-run gate quotes its `Tasks: N successful, N total` line with N equal to the total and shows no `Force killed` line** — an exit code alone is not evidence.
 - All 190 pre-existing control-plane characterization tests pass unmodified.
 - Task 7's threat analysis written before its implementation and its security-lens merge review recorded.
 - `.superpowers/sdd/progress.md` ledger complete; `.superpowers/sdd/stream-report.md` written.
