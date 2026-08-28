@@ -119,6 +119,21 @@ Instead ACP follows the same rule as the other two adapters (E-2): `permissions`
 
 Two corrections from the same review: the ACP adapter targets protocol **v1**, because v2 replaces `session/load` with `session/resume`; and D-9's ACP selection derives from the `session/new` result's modes and config options, not from `initialize`.
 
+**D-13 — The failure alphabet's acceptance check comes from contracts, not from local logic.** _(Adopted at the 2026-08-27 rebase onto `4bc06ef`.)_
+
+`normalizeWorkflowFailureCode` is now exported from `@autostack/contracts`, and the conformance suite's evidence module was re-pointed at it. The kit's taxonomy consumes the same helper rather than re-deriving the rule.
+
+This is not cosmetic. `WorkflowFailureCodeSchema` carries `.trim()`, so `" rate_limited"` **parses successfully — to a different string**. Any local check shaped like `schema.safeParse(code).success` would therefore ship trim-then-accept: a rule subtly different from the one the pipeline branches on, admitting a code the stream never carried. The shared helper enforces unchanged-acceptance by strict equality against the untrimmed input and returns `undefined` rather than coercing.
+
+Verified against the rebased base before any new work: all sixteen planned codes are admitted unchanged, and every raw provider code we must never emit is refused — `-32601`, `provider.rate_limited`, `" rate_limited"`, `Rate_Limited`, `"error_max_turns "`.
+
+**Rebase notes (base `4bc06ef`), for the tasks they touch:**
+
+- `AgentInvocationRequestSchema` gained an **optional** `workItemId`. Adapters treat it as pass-through context and must never fabricate one — the contract's own comment makes the point that untrusted model output must not supply identity for a document it authors (spec §14.1). No fixture or envelope in this stream changes; `.strict()` still accepts the invocations Task 1 mints.
+- `events.ts` gained a domain event that relays `AgentSessionStreamEvent`, asserting the relayed `sessionId` matches its `agentSessionId` and that `sequence` strictly increases per session. That is a **downstream consumer of this stream's sequencer**, and its invariants are exactly the ones Task 3 Step 1 already tests. Worth knowing that a sequencer regression now breaks a consumer, not just a unit test.
+- `OriginSchema`/`ORIGINS` are now exported from `entities.ts`; not consumed by this stream.
+- `ModelInferencePort` and its fake, the five new event types, and the station-evidence and pipeline additions are other streams' lanes and touch no surface this stream produces or consumes.
+
 **Remaining escalations:** none blocking. E-1 is resolved in favour of Option B — S2 implements the child supervisor inside `agent-adapter-kit`, modelled on but not copied from the private `packages/runner-local/src/process-runner.ts`, importing runner-local's public redaction, path-policy, and signal exports. The module is to be written so that promoting it into `runner-local` later is a clean lift. E-3's `AgentEvidenceSink` port is confirmed as S2-owned.
 
 ---
@@ -372,7 +387,7 @@ Every code maps to exactly one `retryable` value, so classification never has to
 | `harness_launch_failed`     | `true`      | transient spawn failure (resource exhaustion)                          |
 | `harness_child_exited`      | `true`      | the child exited carrying a provider error shape                       |
 
-Assert as properties over the whole table rather than row by row: every code matches `^[a-z][a-z0-9_]{0,63}$`; every code has exactly one retryable value; no code equals any message in the message table.
+Assert as properties over the whole table rather than row by row: every code is admitted **unchanged** by `normalizeWorkflowFailureCode` from `@autostack/contracts` (D-13 — never a local regex or a bare `safeParse().success`, either of which would ship trim-then-accept); every code has exactly one retryable value; no code equals any message in the message table.
 
 - [ ] **Step 5: Add failing JSON-RPC mapping tests**
 
