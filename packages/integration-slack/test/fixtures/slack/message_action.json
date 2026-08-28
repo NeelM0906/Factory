@@ -1,0 +1,18 @@
+{
+  "type": "message_action",
+  "token": "REDACTED_VERIFICATION_TOKEN",
+  "action_ts": "1700000200.111222",
+  "team": { "id": "T0AUTOSTACK1", "domain": "autostack-eng" },
+  "user": { "id": "U0HUMANMORGAN", "name": "morgan" },
+  "channel": { "id": "C0AUTOSTACKCH", "name": "eng-autostack" },
+  "callback_id": "autostack_start_from_message",
+  "trigger_id": "1700000200.111.abcdef0123456789",
+  "message_ts": "1700000199.000400",
+  "message": {
+    "type": "message",
+    "user": "U0OTHERPERSON",
+    "ts": "1700000199.000400",
+    "text": "Can AutoStack take a look at this failing deploy?"
+  },
+  "response_url": "https://hooks.slack.com/app/T0AUTOSTACK1/123/REDACTED"
+}

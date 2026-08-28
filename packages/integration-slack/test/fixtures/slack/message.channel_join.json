@@ -1,0 +1,16 @@
+{
+  "token": "REDACTED_VERIFICATION_TOKEN",
+  "team_id": "T0AUTOSTACK1",
+  "api_app_id": "A0AUTOSTACKAPP",
+  "event": {
+    "type": "message",
+    "subtype": "channel_join",
+    "channel": "C0AUTOSTACKCH",
+    "user": "U0HUMANMORGAN",
+    "text": "<@U0HUMANMORGAN> has joined the channel",
+    "ts": "1700000102.000100"
+  },
+  "type": "event_callback",
+  "event_id": "Ev0AUTOSTACK003",
+  "event_time": 1700000102
+}

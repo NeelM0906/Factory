@@ -1,0 +1,16 @@
+{
+  "token": "REDACTED_VERIFICATION_TOKEN",
+  "team_id": "T0AUTOSTACK1",
+  "api_app_id": "A0AUTOSTACKAPP",
+  "event": {
+    "type": "message",
+    "channel": "D0AUTOSTACKDM",
+    "channel_type": "im",
+    "user": "U0HUMANMORGAN",
+    "text": "Can you start a task on the billing repo?",
+    "ts": "1700000101.000100"
+  },
+  "type": "event_callback",
+  "event_id": "Ev0AUTOSTACK002",
+  "event_time": 1700000101
+}

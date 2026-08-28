@@ -1,0 +1,16 @@
+{
+  "token": "REDACTED_VERIFICATION_TOKEN",
+  "team_id": "T0AUTOSTACK1",
+  "api_app_id": "A0AUTOSTACKAPP",
+  "event": {
+    "type": "message",
+    "subtype": "bot_message",
+    "channel": "C0AUTOSTACKCH",
+    "bot_id": "B0AUTOSTACKBOT",
+    "text": "AutoStack posted a stage-progress update.",
+    "ts": "1700000103.000100"
+  },
+  "type": "event_callback",
+  "event_id": "Ev0AUTOSTACK004",
+  "event_time": 1700000103
+}

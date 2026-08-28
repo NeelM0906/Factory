@@ -1,0 +1,22 @@
+{
+  "type": "block_actions",
+  "token": "REDACTED_VERIFICATION_TOKEN",
+  "team": { "id": "T0AUTOSTACK1", "domain": "autostack-eng" },
+  "user": { "id": "U0HUMANMORGAN", "name": "morgan" },
+  "channel": { "id": "C0AUTOSTACKCH", "name": "eng-autostack" },
+  "message": {
+    "type": "message",
+    "ts": "1700000301.000500",
+    "text": "AutoStack is ready to publish the draft pull request. Approve?"
+  },
+  "actions": [
+    {
+      "action_id": "autostack_approve",
+      "block_id": "autostack_approval_block",
+      "type": "button",
+      "action_ts": "1700000301.500600",
+      "value": "{\"runId\":\"run_totally-not-a-uuid\",\"approvalId\":\"apr_11111111-2222-4333-8444-555555555555\",\"evidenceDigest\":\"a1b2c3d4a1b2c3d4a1b2c3d4a1b2c3d4a1b2c3d4a1b2c3d4a1b2c3d4a1b2c3d4\"}"
+    }
+  ],
+  "response_url": "https://hooks.slack.com/actions/T0AUTOSTACK1/456/REDACTED"
+}

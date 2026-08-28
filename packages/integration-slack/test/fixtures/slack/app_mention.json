@@ -1,0 +1,16 @@
+{
+  "token": "REDACTED_VERIFICATION_TOKEN",
+  "team_id": "T0AUTOSTACK1",
+  "api_app_id": "A0AUTOSTACKAPP",
+  "event": {
+    "type": "app_mention",
+    "user": "U0HUMANMORGAN",
+    "text": "<@U0AUTOSTACKBOT> can you look at the flaky checkout test?",
+    "ts": "1700000100.000100",
+    "channel": "C0AUTOSTACKCH",
+    "event_ts": "1700000100.000100"
+  },
+  "type": "event_callback",
+  "event_id": "Ev0AUTOSTACK001",
+  "event_time": 1700000100
+}
