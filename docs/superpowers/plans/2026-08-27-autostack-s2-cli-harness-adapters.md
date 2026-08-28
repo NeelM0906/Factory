@@ -846,10 +846,17 @@ pnpm --filter @autostack/agent-adapter-kit test:coverage
 pnpm --filter @autostack/agent-acp test:coverage
 pnpm --filter @autostack/agent-claude test:coverage
 pnpm --filter @autostack/agent-codex test:coverage
-pnpm exec turbo run test --concurrency=2
+pnpm test --concurrency=2
 ```
 
-The full suite is run under **bounded concurrency**, and the exact form matters. `pnpm test -- --concurrency=2` does not work: the root script is `turbo run test`, so it expands to `turbo run test -- --concurrency=2` and turbo forwards everything after `--` to the underlying task, handing the flag to vitest instead. `pnpm exec turbo run test --concurrency=2` gives turbo the flag directly.
+The full suite is run under **bounded concurrency**. The form above is CI's own idiom and is correct — do not "fix" it by inserting `--`. That single change is the whole trap, and the expansion pnpm prints shows why:
+
+```text
+pnpm test --concurrency=2       ->  turbo run test --concurrency=2       # turbo gets the flag
+pnpm test -- --concurrency=2    ->  turbo run test -- --concurrency=2    # turbo forwards it to vitest
+```
+
+The root script is `turbo run test`, and turbo passes everything after `--` through to the underlying task. So the bare form works, `pnpm exec turbo run test --concurrency=2` works, and only the `--` form is broken. It fails loudly rather than running silently unbounded, but the point is not to reach for it.
 
 The bound is not a preference. On 2026-08-28 an unbounded run turned `apps/control-plane` red with eight 5-second timeouts that all passed on a quiet machine — the same near-the-line profile this stream's own packages have, and the reason they carry a 15s budget. An unbounded local run reports whichever case lost the timing lottery, not what is actually broken.
 
