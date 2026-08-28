@@ -189,6 +189,62 @@ describe("discoverOpenRouterCatalog", () => {
     expect(result.pricing.has("meta/llama-3-70b")).toBe(false);
   });
 
+  it.each([
+    ["free", "free"],
+    ["empty string", ""],
+    ["negative", "-1"],
+    ["non-numeric (N/A)", "N/A"]
+  ])(
+    "drops pricing for a junk %s price string without dropping the model, leaving a valid sibling's pricing intact (C1)",
+    async (_label, junkPrice) => {
+      const payload = {
+        data: [
+          {
+            id: "vendor/junk-priced",
+            name: "Junk Priced Model",
+            architecture: { input_modalities: ["text"], output_modalities: ["text"] },
+            supported_parameters: [],
+            pricing: { prompt: junkPrice, completion: "0.000001" }
+          },
+          {
+            id: "vendor/valid-priced",
+            name: "Valid Priced Model",
+            architecture: { input_modalities: ["text"], output_modalities: ["text"] },
+            supported_parameters: [],
+            pricing: { prompt: "0.000002", completion: "0.000004" }
+          }
+        ]
+      };
+      const { fetch } = createFixtureFetch([
+        {
+          method: "GET",
+          url: OPENROUTER_MODELS_URL,
+          responses: [{ kind: "response", body: payload }]
+        }
+      ]);
+
+      const result = await discoverOpenRouterCatalog({
+        route: openRouterRoute,
+        credentials: createFakeCredentialResolver(),
+        fetch,
+        now: fixedNow
+      });
+
+      // The junk-priced entry's catalog declaration still parses -- a junk price must not
+      // silently drop the model itself, only its pricing.
+      expect(result.entries.some((entry) => entry.providerModel === "vendor/junk-priced")).toBe(
+        true
+      );
+      expect(result.pricing.has("vendor/junk-priced")).toBe(false);
+
+      // A valid sibling in the same payload keeps its pricing -- the drop is per-entry.
+      expect(result.pricing.get("vendor/valid-priced")).toEqual({
+        inputUsdPerToken: 0.000002,
+        outputUsdPerToken: 0.000004
+      });
+    }
+  );
+
   it("raises provider_error (retryable true) on a payload whose top-level shape does not parse", async () => {
     const { fetch } = createFixtureFetch([
       {

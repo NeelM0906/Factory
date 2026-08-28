@@ -34,12 +34,11 @@ const WORKSPACE_ID = WorkspaceIdSchema.parse("ws_aaaaaaaa-e89b-42d3-a456-4266141
 const RUN_ID = RunIdSchema.parse("run_aaaaaaaa-e89b-42d3-a456-426614174000");
 const STAGE_RUN_ID = StageRunIdSchema.parse("stage_aaaaaaaa-e89b-42d3-a456-426614174000");
 const fixedNow = (): string => "2026-08-27T00:00:00.000Z";
+const fixedMonotonicNowMs = (): number => 1_000;
 
 const GATEWAY_MODELS_URL = "https://ai-gateway.vercel.sh/v1/models";
 const OPENAI_MODELS_URL = "https://api.openai.com/v1/models";
 
-const noopRouteEventSink = { record: async (): Promise<void> => undefined };
-const noopUsageSink = { record: async (): Promise<void> => undefined };
 const noopExactUsageSink = { record: async (): Promise<void> => undefined };
 
 const openAiRoute = (
@@ -116,11 +115,10 @@ const buildRouter = (options: BuildRouterOptions): ModelRouterPort => {
     routes: options.routes,
     policies: options.policies,
     credentials: createFakeCredentialResolver(),
-    routeEvents: noopRouteEventSink,
-    usage: noopUsageSink,
     exactUsage: noopExactUsageSink,
     fetch: options.fetch,
     now: options.now ?? fixedNow,
+    monotonicNowMs: fixedMonotonicNowMs,
     ...(options.catalogTtlMs === undefined ? {} : { catalogTtlMs: options.catalogTtlMs }),
     ...(options.maxStaleMs === undefined ? {} : { maxStaleMs: options.maxStaleMs })
   };

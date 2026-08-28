@@ -664,6 +664,54 @@ describe("discoverXaiCatalog", () => {
     expect(result.pricing.has("grok-2-mini")).toBe(false);
   });
 
+  it.each([
+    ["free", "free"],
+    ["empty string", ""],
+    ["negative", "-1"],
+    ["non-numeric (N/A)", "N/A"]
+  ])(
+    "drops pricing for a junk %s price string without dropping the model, leaving a valid sibling's pricing intact (C1)",
+    async (_label, junkPrice) => {
+      const payload = {
+        models: [
+          {
+            id: "grok-junk-priced",
+            input_modalities: ["text"],
+            output_modalities: ["text"],
+            pricing: { prompt: junkPrice, completion: "0.000001" }
+          },
+          {
+            id: "grok-valid-priced",
+            input_modalities: ["text"],
+            output_modalities: ["text"],
+            pricing: { prompt: "0.000002", completion: "0.000004" }
+          }
+        ]
+      };
+      const { fetch } = createFixtureFetch([
+        { method: "GET", url: XAI_MODELS_URL, responses: [{ kind: "response", body: payload }] }
+      ]);
+
+      const result = await discoverXaiCatalog({
+        route: xaiRoute,
+        credentials: createFakeCredentialResolver(),
+        fetch,
+        now: fixedNow
+      });
+
+      // The junk-priced entry's catalog declaration still parses -- a junk price must not
+      // silently drop the model itself, only its pricing.
+      expect(result.entries.some((entry) => entry.providerModel === "grok-junk-priced")).toBe(true);
+      expect(result.pricing.has("grok-junk-priced")).toBe(false);
+
+      // A valid sibling in the same payload keeps its pricing -- the drop is per-entry.
+      expect(result.pricing.get("grok-valid-priced")).toEqual({
+        inputUsdPerToken: 0.000002,
+        outputUsdPerToken: 0.000004
+      });
+    }
+  );
+
   it("drops an entry whose modality strings are all unmapped, keeping its valid siblings", async () => {
     const { fetch } = createFixtureFetch([
       {
@@ -882,7 +930,8 @@ describe("endpoint convention: discovery and invocation composed against one rou
       routes: registry,
       credentials: createFakeCredentialResolver(),
       fetch,
-      now: fixedNow
+      now: fixedNow,
+      monotonicNowMs: () => 0
     });
     await inference.run(buildInferenceRequest(route, `idem-regression-${route.routeRef}`));
   };

@@ -311,12 +311,23 @@ const toXaiCatalogEntry = (
   });
 };
 
+/** Admits a price only if it is a well-formed, finite, non-negative numeric string (C1): a
+ * provider price string is untrusted input (spec §14.1), and a bare `Number()` turns junk like
+ * `"free"` or `"N/A"` into `NaN` and an empty (or whitespace-only) string into `0` — both of which
+ * would read as affordable under `maxCostMicros` instead of failing closed. */
+const parsePrice = (raw: string): number | undefined => {
+  if (raw.trim() === "") return undefined;
+  const value = Number(raw);
+  if (!Number.isFinite(value) || value < 0) return undefined;
+  return value;
+};
+
 const toXaiPricing = (entry: XaiModelEntry): RoutePricing | undefined => {
   if (entry.pricing === undefined) return undefined;
-  return {
-    inputUsdPerToken: Number(entry.pricing.prompt),
-    outputUsdPerToken: Number(entry.pricing.completion)
-  };
+  const inputUsdPerToken = parsePrice(entry.pricing.prompt);
+  const outputUsdPerToken = parsePrice(entry.pricing.completion);
+  if (inputUsdPerToken === undefined || outputUsdPerToken === undefined) return undefined;
+  return { inputUsdPerToken, outputUsdPerToken };
 };
 
 export const discoverXaiCatalog = async (

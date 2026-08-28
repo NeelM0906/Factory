@@ -159,6 +159,22 @@ describe("normalizeUsage", () => {
     expect(record.cost).toEqual({ state: "unknown" });
   });
 
+  it("C1 second-order: a route whose pricing was dropped (junk provider price) still yields cost unknown, and never throws", () => {
+    // Mirrors what the three catalog parsers now do for a junk provider-supplied price string
+    // (C1): rather than a RoutePricing carrying NaN or a coerced 0 -- which would let
+    // deriveCostFromPricing compute a NaN `micros`, which ModelUsageRecordSchema rejects,
+    // destroying a billed attempt's usage record (the DEC-4 loss) -- the parser drops pricing
+    // entirely. `pricing: undefined` here is exactly what normalizeUsage receives for such a
+    // route, even though both token counts were reported.
+    const providerUsage: ProviderReportedUsage = { inputTokens: 1_000, outputTokens: 500 };
+
+    expect(() => normalizeUsage({ ...baseInput, providerUsage })).not.toThrow();
+
+    const record = normalizeUsage({ ...baseInput, providerUsage });
+
+    expect(record.cost).toEqual({ state: "unknown" });
+  });
+
   it("carries both the requested and actual model when they differ after a fallback", () => {
     const record = normalizeUsage({
       ...baseInput,

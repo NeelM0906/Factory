@@ -55,6 +55,7 @@ const RUN_ID = RunIdSchema.parse("run_aaaaaaaa-e89b-42d3-a456-426614174000");
 const STAGE_RUN_ID = StageRunIdSchema.parse("stage_aaaaaaaa-e89b-42d3-a456-426614174000");
 
 const fixedNow = (): string => "2026-08-27T00:00:00.000Z";
+const fixedMonotonicNowMs = (): number => 1_000;
 
 interface UsageAmounts {
   readonly input: number;
@@ -301,10 +302,6 @@ interface BuildRouterOptions {
   readonly maxStaleMs?: number;
 }
 
-const noopRouteEventSink = {
-  record: async (_event: ModelRouteFallback): Promise<void> => undefined
-};
-const noopUsageSink = { record: async (_usage: ModelUsageRecord): Promise<void> => undefined };
 const noopExactUsageSink = { record: async (): Promise<void> => undefined };
 
 /** Builds a fresh composed router for one test, wired to fixture-scripted discovery (and, when
@@ -328,11 +325,10 @@ const buildRouter = (config: TransportTestConfig, options: BuildRouterOptions) =
     routes: options.routes,
     policies: options.policies,
     credentials: createFakeCredentialResolver(),
-    routeEvents: noopRouteEventSink,
-    usage: noopUsageSink,
     exactUsage: noopExactUsageSink,
     fetch: fixture.fetch,
     now: options.now ?? fixedNow,
+    monotonicNowMs: fixedMonotonicNowMs,
     ...(options.catalogTtlMs === undefined ? {} : { catalogTtlMs: options.catalogTtlMs }),
     ...(options.maxStaleMs === undefined ? {} : { maxStaleMs: options.maxStaleMs }),
     ...(config.declaredCapabilities === undefined

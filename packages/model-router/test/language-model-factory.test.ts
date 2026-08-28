@@ -19,6 +19,7 @@ import { createFakeCredentialResolver } from "./support/fake-credential-resolver
 
 const credentialRefId = CredentialRefIdSchema.parse("cred_aaaaaaaa-e89b-42d3-a456-426614174000");
 const fixedNow = (): string => "2026-08-27T00:00:00.000Z";
+const fixedMonotonicNowMs = (): number => 1_000;
 
 const noopExactUsageSink: ExactUsageSink = { record: async () => undefined };
 
@@ -228,7 +229,8 @@ describe("createLanguageModelFactory", () => {
         routes: registry,
         credentials,
         fetch: fixture.fetch,
-        now: fixedNow
+        now: fixedNow,
+        monotonicNowMs: fixedMonotonicNowMs
       });
 
       const result = await inference.run(request);
@@ -332,7 +334,8 @@ describe("createModelInference", () => {
       routes: registry,
       credentials,
       fetch: fixture.fetch,
-      now: fixedNow
+      now: fixedNow,
+      monotonicNowMs: fixedMonotonicNowMs
     });
 
     await expect(inference.run(request)).rejects.toThrow(TypeError);
@@ -358,7 +361,8 @@ describe("createModelInference", () => {
       routes: registry,
       credentials,
       fetch: fixture.fetch,
-      now: fixedNow
+      now: fixedNow,
+      monotonicNowMs: fixedMonotonicNowMs
     });
 
     const result = await inference.run(buildRequest(directOpenAiRoute, "idem-no-usage"));
@@ -411,7 +415,8 @@ describe("createModelInference", () => {
       routes: registry,
       credentials,
       fetch: fixture.fetch,
-      now: fixedNow
+      now: fixedNow,
+      monotonicNowMs: fixedMonotonicNowMs
     });
 
     const result = await inference.run(buildRequest(directOpenAiRoute, "idem-full-usage"));
@@ -451,7 +456,8 @@ describe("createModelInference", () => {
       routes: registry,
       credentials,
       fetch: fixture.fetch,
-      now: fixedNow
+      now: fixedNow,
+      monotonicNowMs: fixedMonotonicNowMs
     });
 
     const result = await inference.run(buildRequest(openRouterRoute, "idem-openrouter-cache-zero"));
@@ -482,7 +488,8 @@ describe("createModelInference", () => {
         routes: registry,
         credentials,
         fetch: fixture.fetch,
-        now: fixedNow
+        now: fixedNow,
+        monotonicNowMs: fixedMonotonicNowMs
       });
       return inference.run(buildRequest(directOpenAiRoute, `idem-finish-${finishReason}`));
     };
@@ -517,7 +524,8 @@ describe("createModelInference", () => {
         routes: registry,
         credentials,
         fetch: fixture.fetch,
-        now: fixedNow
+        now: fixedNow,
+        monotonicNowMs: fixedMonotonicNowMs
       });
       return { fixture, inference };
     };
@@ -629,7 +637,8 @@ describe("createModelInference", () => {
         routes: registry,
         credentials,
         fetch: fixture.fetch,
-        now: fixedNow
+        now: fixedNow,
+        monotonicNowMs: fixedMonotonicNowMs
       });
 
       const failure = await inference
@@ -664,11 +673,55 @@ describe("createModelInference", () => {
       routes: registry,
       credentials,
       fetch: countingFetch,
-      now: fixedNow
+      now: fixedNow,
+      monotonicNowMs: fixedMonotonicNowMs
     });
 
     await inference.run(buildRequest(directOpenAiRoute, "idem-single-call"));
     expect(callCount).toBe(1);
+  });
+
+  it("computes latencyMs from the injected monotonic clock, never from Date.now() (I4)", async () => {
+    const fixture = createFixtureFetch([
+      {
+        method: "POST",
+        url: "https://api.openai.com/v1/chat/completions",
+        responses: [{ kind: "response", body: openAiChatBody("gpt-4o-mini-fixture", "stop", true) }]
+      }
+    ]);
+    const credentials = createFakeCredentialResolver();
+    const registry = createRouteRegistry({
+      routes: [directOpenAiRoute],
+      exactUsageSink: noopExactUsageSink
+    });
+
+    // Scripted readings for the two `monotonicNowMs()` calls `run()` makes: once before
+    // `generateText`, once after. The clock advances by exactly 247ms between them, and nothing
+    // else in this test touches wall-clock time, so `latencyMs` can only equal 247 if it was
+    // derived from this injected clock rather than from `Date.now()`.
+    const clockReadings = [1_000, 1_247];
+    let clockCallCount = 0;
+    const scriptedMonotonicNowMs = (): number => {
+      const reading = clockReadings[clockCallCount];
+      clockCallCount += 1;
+      if (reading === undefined) {
+        throw new Error("scriptedMonotonicNowMs called more times than scripted.");
+      }
+      return reading;
+    };
+
+    const inference = createModelInference({
+      routes: registry,
+      credentials,
+      fetch: fixture.fetch,
+      now: fixedNow,
+      monotonicNowMs: scriptedMonotonicNowMs
+    });
+
+    const result = await inference.run(buildRequest(directOpenAiRoute, "idem-latency-clock"));
+
+    expect(result.latencyMs).toBe(247);
+    expect(clockCallCount).toBe(2);
   });
 
   it("converts every message role (system, user, assistant) into the AI SDK's own message shape", async () => {
@@ -688,7 +741,8 @@ describe("createModelInference", () => {
       routes: registry,
       credentials,
       fetch: fixture.fetch,
-      now: fixedNow
+      now: fixedNow,
+      monotonicNowMs: fixedMonotonicNowMs
     });
 
     const request = buildRequest(directOpenAiRoute, "idem-multi-role", [

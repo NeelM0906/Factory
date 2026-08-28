@@ -38,6 +38,9 @@ import type { ModelUsageSink } from "../src/usage/usage-sink.js";
 import { createFixtureFetch } from "./support/fixture-fetch.js";
 import gatewayModelsFixture from "./fixtures/gateway-models.json" with { type: "json" };
 import openAiModelsFixture from "./fixtures/openai-models.json" with { type: "json" };
+import openRouterModelsFixture from "./fixtures/openrouter-models.json" with { type: "json" };
+import anthropicModelsFixture from "./fixtures/anthropic-models.json" with { type: "json" };
+import xaiModelsFixture from "./fixtures/xai-models.json" with { type: "json" };
 
 /**
  * Deliverable 2 (Task 12c): drives a full resolve -> fallback -> invoke -> usage sequence through
@@ -45,6 +48,14 @@ import openAiModelsFixture from "./fixtures/openai-models.json" with { type: "js
  * router actually emitted for the fixture secret and for any credential-shaped substring. Table
  * driven off the exported constant itself (never a hand-picked sample), so a shape added upstream
  * gets a sweep row automatically.
+ *
+ * I3: the fallback chain now runs all FIVE transport configurations (direct/openai,
+ * vercel_ai_gateway, openrouter, direct/anthropic, direct/openai_compatible+xai) rather than just
+ * two, so the `x-api-key` header path (anthropic) and the `xai-` credential shape are actually
+ * exercised through the real header-building code path for their transport, not merely generated
+ * as an abstract secret value against an unrelated provider. This was previously narrowed to
+ * openai+gateway; DEC-8 fixed the `/v1`-endpoint defect that motivated the narrowing, so the
+ * exclusion no longer applies.
  */
 
 // ---------------------------------------------------------------------------------------------
@@ -102,23 +113,35 @@ const createTrackedCredentialResolver = (secret: string): TrackedCredentialResol
 
 const CRED_REF_A = CredentialRefIdSchema.parse("cred_aaaaaaaa-e89b-42d3-a456-426614174000");
 const CRED_REF_B = CredentialRefIdSchema.parse("cred_bbbbbbbb-e89b-42d3-a456-426614174000");
+const CRED_REF_C = CredentialRefIdSchema.parse("cred_cccccccc-e89b-42d3-a456-426614174000");
+const CRED_REF_D = CredentialRefIdSchema.parse("cred_dddddddd-e89b-42d3-a456-426614174000");
+const CRED_REF_E = CredentialRefIdSchema.parse("cred_eeeeeeee-e89b-42d3-a456-426614174000");
 const WORKSPACE_ID = WorkspaceIdSchema.parse("ws_aaaaaaaa-e89b-42d3-a456-426614174000");
 const RUN_ID = RunIdSchema.parse("run_aaaaaaaa-e89b-42d3-a456-426614174000");
 const STAGE_RUN_ID = StageRunIdSchema.parse("stage_aaaaaaaa-e89b-42d3-a456-426614174000");
 const fixedNow = (): string => "2026-08-27T00:00:00.000Z";
 const IDEMPOTENCY_KEY = "idem-credential-sweep";
 
+const OPENAI_ENDPOINT = "https://api.openai.com/v1";
+const ANTHROPIC_ENDPOINT = "https://api.anthropic.com/v1";
+const XAI_ENDPOINT = "https://api.x.ai/v1";
+
 const GATEWAY_MODELS_URL = "https://ai-gateway.vercel.sh/v1/models";
 const GATEWAY_INVOKE_URL = "https://ai-gateway.vercel.sh/v1/ai/language-model";
-const OPENAI_MODELS_URL = "https://api.openai.com/v1/models";
-const OPENAI_INVOKE_URL = "https://api.openai.com/v1/chat/completions";
+const OPENAI_MODELS_URL = `${OPENAI_ENDPOINT}/models`;
+const OPENAI_INVOKE_URL = `${OPENAI_ENDPOINT}/chat/completions`;
+const OPENROUTER_MODELS_URL = "https://openrouter.ai/api/v1/models";
+const OPENROUTER_INVOKE_URL = "https://openrouter.ai/api/v1/chat/completions";
+const ANTHROPIC_MODELS_URL = `${ANTHROPIC_ENDPOINT}/models`;
+const ANTHROPIC_INVOKE_URL = `${ANTHROPIC_ENDPOINT}/messages`;
+const XAI_MODELS_URL = `${XAI_ENDPOINT}/language-models`;
+const XAI_INVOKE_URL = `${XAI_ENDPOINT}/chat/completions`;
 
-// routeA (preferred) is direct/openai; routeB (fallback) is vercel_ai_gateway. Deliberately avoids
-// direct/anthropic and direct/openai_compatible+xai routes for the invocation leg — see the task
-// report: their discovery parsers (`discoverAnthropicCatalog`, `discoverXaiCatalog`) hardcode an
-// extra "/v1" path segment onto `transport.endpoint` while the language-model factory's AI SDK
-// `baseURL` is used verbatim, so no single `endpoint` value is simultaneously correct for both
-// catalog discovery and invocation on those two provider configurations. Not this task's to fix.
+// Five routes, one per transport configuration, forming the fallback chain in this fixed order:
+// direct/openai (preferred) -> vercel_ai_gateway -> openrouter -> direct/anthropic ->
+// direct/openai_compatible+xai. The first four are scripted to rate-limit on invocation so the
+// chain advances through every transport before the fifth (xai) succeeds -- driving discovery AND
+// invocation, and therefore both credential call sites, for all five.
 const routeA: ModelRoute = {
   schemaVersion: 1,
   routeRef: "route.sweep.openai",
@@ -127,7 +150,7 @@ const routeA: ModelRoute = {
     kind: "direct",
     protocol: "openai_compatible",
     provider: "openai",
-    endpoint: "https://api.openai.com/v1",
+    endpoint: OPENAI_ENDPOINT,
     providerModel: "gpt-4o-mini",
     credentialRefId: CRED_REF_A
   },
@@ -140,18 +163,69 @@ const routeB: ModelRoute = {
   displayName: "Sweep Gateway Fixture",
   transport: {
     kind: "vercel_ai_gateway",
-    gatewayModel: "openai/gpt-4o-mini",
+    gatewayModel: "anthropic/claude-3-5-sonnet",
     credentialRefId: CRED_REF_B
   },
   enabled: true
 };
 
+const routeC: ModelRoute = {
+  schemaVersion: 1,
+  routeRef: "route.sweep.openrouter",
+  displayName: "Sweep OpenRouter Fixture",
+  transport: {
+    kind: "openrouter",
+    openRouterModel: "openai/gpt-4o-mini",
+    credentialRefId: CRED_REF_C
+  },
+  enabled: true
+};
+
+const routeD: ModelRoute = {
+  schemaVersion: 1,
+  routeRef: "route.sweep.anthropic",
+  displayName: "Sweep Anthropic Fixture",
+  transport: {
+    kind: "direct",
+    protocol: "anthropic",
+    provider: "anthropic",
+    endpoint: ANTHROPIC_ENDPOINT,
+    providerModel: "claude-3-haiku-20240307",
+    credentialRefId: CRED_REF_D
+  },
+  enabled: true
+};
+
+const routeE: ModelRoute = {
+  schemaVersion: 1,
+  routeRef: "route.sweep.xai",
+  displayName: "Sweep xAI Fixture",
+  transport: {
+    kind: "direct",
+    protocol: "openai_compatible",
+    provider: "xai",
+    endpoint: XAI_ENDPOINT,
+    providerModel: "grok-2-mini",
+    credentialRefId: CRED_REF_E
+  },
+  enabled: true
+};
+
+const ALL_ROUTES: readonly ModelRoute[] = [routeA, routeB, routeC, routeD, routeE];
+const ALL_CRED_REFS: readonly CredentialRefId[] = [
+  CRED_REF_A,
+  CRED_REF_B,
+  CRED_REF_C,
+  CRED_REF_D,
+  CRED_REF_E
+];
+
 const buildPolicy = (): ModelPolicy => ({
   schemaVersion: 1,
   policyRef: "policy.sweep.triage",
   stage: "triage",
-  allowedRouteRefs: [routeA.routeRef, routeB.routeRef],
-  fallbackRouteRefs: [routeB.routeRef],
+  allowedRouteRefs: ALL_ROUTES.map((route) => route.routeRef),
+  fallbackRouteRefs: [routeB.routeRef, routeC.routeRef, routeD.routeRef, routeE.routeRef],
   maxInputTokens: undefined,
   maxOutputTokens: undefined,
   maxCostMicros: undefined,
@@ -227,12 +301,13 @@ interface SweepRunResult {
 
 /**
  * Drives one full resolve -> fallback -> invoke -> usage sequence through the composed router:
- * `router.resolve` picks the preferred route (stage 1-6), the preferred attempt fails with a
- * retryable `rate_limited` (HTTP 429), `runWithFallback` advances to the fallback route and records
- * one `ModelRouteFallback`, and `normalizeUsage` produces one `ModelUsageRecord` per attempt (DEC-4)
- * — a failed one for the first attempt, a succeeded one for the second. Every credential resolution
- * along the way goes through a resolver that always returns the one fixture secret shaped like
- * `spec`, so every value the router emits can be swept for it afterward.
+ * `router.resolve` picks the preferred route (stage 1-6), the preferred route and the next three
+ * fallbacks each fail invocation with a retryable `rate_limited` (HTTP 429), `runWithFallback`
+ * advances through each in turn recording one `ModelRouteFallback` per activation, and the fifth
+ * (xai) succeeds. `normalizeUsage` produces one `ModelUsageRecord` per attempt (DEC-4) -- a failed
+ * one for each of the first four attempts, a succeeded one for the fifth. Every credential
+ * resolution along the way goes through a resolver that always returns the one fixture secret
+ * shaped like `spec`, so every value the router emits can be swept for it afterward.
  */
 const runFullSequence = async (spec: KnownCredentialSpec): Promise<SweepRunResult> => {
   const secret = credentialValueForSpec(spec);
@@ -252,19 +327,46 @@ const runFullSequence = async (spec: KnownCredentialSpec): Promise<SweepRunResul
       url: GATEWAY_MODELS_URL,
       responses: [{ kind: "response", body: gatewayModelsFixture }]
     },
-    // The preferred route (routeA) is rate-limited on every invocation attempt -- retryable, so
-    // runWithFallback advances to routeB.
+    {
+      method: "GET",
+      url: OPENROUTER_MODELS_URL,
+      responses: [{ kind: "response", body: openRouterModelsFixture }]
+    },
+    {
+      method: "GET",
+      url: ANTHROPIC_MODELS_URL,
+      responses: [{ kind: "response", body: anthropicModelsFixture }]
+    },
+    {
+      method: "GET",
+      url: XAI_MODELS_URL,
+      responses: [{ kind: "response", body: xaiModelsFixture }]
+    },
+    // routeA through routeD are rate-limited on every invocation attempt -- retryable, so
+    // runWithFallback advances all the way to routeE (xai), which succeeds.
     { method: "POST", url: OPENAI_INVOKE_URL, responses: [{ kind: "response", status: 429 }] },
+    { method: "POST", url: GATEWAY_INVOKE_URL, responses: [{ kind: "response", status: 429 }] },
+    { method: "POST", url: OPENROUTER_INVOKE_URL, responses: [{ kind: "response", status: 429 }] },
+    { method: "POST", url: ANTHROPIC_INVOKE_URL, responses: [{ kind: "response", status: 429 }] },
     {
       method: "POST",
-      url: GATEWAY_INVOKE_URL,
+      url: XAI_INVOKE_URL,
       responses: [
         {
           kind: "response",
           body: {
-            content: [{ type: "text", text: "hi there" }],
-            finishReason: "stop",
-            usage: { inputTokens: 5, outputTokens: 3, totalTokens: 8 }
+            id: "chatcmpl-fixture",
+            object: "chat.completion",
+            created: 1,
+            model: "grok-2-mini",
+            choices: [
+              {
+                index: 0,
+                message: { role: "assistant", content: "hi there" },
+                finish_reason: "stop"
+              }
+            ],
+            usage: { prompt_tokens: 5, completion_tokens: 3, total_tokens: 8 }
           }
         }
       ]
@@ -272,24 +374,23 @@ const runFullSequence = async (spec: KnownCredentialSpec): Promise<SweepRunResul
   ]).fetch;
 
   const deps: ModelRouterDependencies = {
-    routes: [routeA, routeB],
+    routes: ALL_ROUTES,
     policies: [buildPolicy()],
     credentials,
-    routeEvents,
-    usage,
     exactUsage,
     fetch: fetchDouble,
-    now: fixedNow
+    now: fixedNow,
+    monotonicNowMs: () => 0
   };
   const router = createModelRouter(deps);
 
   const context = buildContext();
   const selection = await router.resolve(context);
 
-  const order: readonly ModelRouteTarget[] = [
-    { routeRef: routeA.routeRef, model: pinnedModel(routeA) },
-    { routeRef: routeB.routeRef, model: pinnedModel(routeB) }
-  ];
+  const order: readonly ModelRouteTarget[] = ALL_ROUTES.map((route) => ({
+    routeRef: route.routeRef,
+    model: pinnedModel(route)
+  }));
 
   const capturedErrors: ModelRoutingError[] = [];
 
@@ -328,7 +429,8 @@ const runFullSequence = async (spec: KnownCredentialSpec): Promise<SweepRunResul
     } catch (error: unknown) {
       if (error instanceof ModelRoutingError) {
         capturedErrors.push(error);
-        const attemptedRoute = target.routeRef === routeA.routeRef ? routeA : routeB;
+        const attemptedRoute =
+          ALL_ROUTES.find((route) => route.routeRef === target.routeRef) ?? routeA;
         await usage.record(
           normalizeUsage({
             context,
@@ -355,7 +457,7 @@ const runFullSequence = async (spec: KnownCredentialSpec): Promise<SweepRunResul
     sink: routeEvents,
     now: fixedNow
   });
-  expect(result.routeRef).toBe(routeB.routeRef);
+  expect(result.routeRef).toBe(routeE.routeRef);
 
   return { router, credentials, routeEvents, usage, selection, capturedErrors, secret };
 };
@@ -373,18 +475,26 @@ describe.each(KNOWN_CREDENTIAL_SPECS)("credential shape: $prefix", (spec) => {
 
     // Exactly two credential call sites per route: catalog discovery (stage 2, during resolve) and
     // the language-model factory (during run) -- a third site added later fails this assertion.
-    expect(credentials.countFor(CRED_REF_A)).toBe(2);
-    expect(credentials.countFor(CRED_REF_B)).toBe(2);
+    // Now asserted across all five transports (I3), not just openai+gateway.
+    for (const credRef of ALL_CRED_REFS) {
+      expect(credentials.countFor(credRef)).toBe(2);
+    }
 
-    expect(routeEvents.calls).toHaveLength(1);
-    expect(routeEvents.calls[0]?.failureCode).toBe("rate_limited");
-    expect(usage.calls).toHaveLength(2);
-    expect(usage.calls[0]?.outcome).toBe("failed");
-    expect(usage.calls[0]?.attempt).toBe(0);
-    expect(usage.calls[1]?.outcome).toBe("succeeded");
-    expect(usage.calls[1]?.attempt).toBe(1);
-    expect(capturedErrors).toHaveLength(1);
-    expect(capturedErrors[0]).toBeInstanceOf(ModelRoutingError);
+    expect(routeEvents.calls).toHaveLength(4);
+    for (const event of routeEvents.calls) {
+      expect(event.failureCode).toBe("rate_limited");
+    }
+    expect(usage.calls).toHaveLength(5);
+    for (let index = 0; index < 4; index += 1) {
+      expect(usage.calls[index]?.outcome).toBe("failed");
+      expect(usage.calls[index]?.attempt).toBe(index);
+    }
+    expect(usage.calls[4]?.outcome).toBe("succeeded");
+    expect(usage.calls[4]?.attempt).toBe(4);
+    expect(capturedErrors).toHaveLength(4);
+    for (const error of capturedErrors) {
+      expect(error).toBeInstanceOf(ModelRoutingError);
+    }
 
     // Sweep the router's REAL emissions -- not a curated sample -- for the fixture secret and for
     // any KNOWN_CREDENTIAL_SPECS-shaped substring. `containsSensitiveMaterial` checks both at once.

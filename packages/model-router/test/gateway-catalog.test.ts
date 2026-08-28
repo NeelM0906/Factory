@@ -278,6 +278,63 @@ describe("discoverGatewayCatalog", () => {
     expect((caught as TypeError).message).toContain("openrouter");
   });
 
+  it.each([
+    ["free", "free"],
+    ["empty string", ""],
+    ["negative", "-1"],
+    ["non-numeric (N/A)", "N/A"]
+  ])(
+    "drops pricing for a junk %s price string without dropping the model, leaving a valid sibling's pricing intact (C1)",
+    async (_label, junkPrice) => {
+      const payload = {
+        object: "list",
+        data: [
+          {
+            id: "vendor/junk-priced",
+            name: "Junk Priced Model",
+            modality: { input: ["text"], output: ["text"] },
+            capabilities: [],
+            pricing: { input: junkPrice, output: "0.000001" }
+          },
+          {
+            id: "vendor/valid-priced",
+            name: "Valid Priced Model",
+            modality: { input: ["text"], output: ["text"] },
+            capabilities: [],
+            pricing: { input: "0.000002", output: "0.000004" }
+          }
+        ]
+      };
+      const { fetch } = createFixtureFetch([
+        {
+          method: "GET",
+          url: GATEWAY_MODELS_URL,
+          responses: [{ kind: "response", body: payload }]
+        }
+      ]);
+
+      const result = await discoverGatewayCatalog({
+        route: gatewayRoute,
+        credentials: createFakeCredentialResolver(),
+        fetch,
+        now: fixedNow
+      });
+
+      // The junk-priced entry's catalog declaration still parses -- a junk price must not
+      // silently drop the model itself, only its pricing.
+      expect(result.entries.some((entry) => entry.providerModel === "vendor/junk-priced")).toBe(
+        true
+      );
+      expect(result.pricing.has("vendor/junk-priced")).toBe(false);
+
+      // A valid sibling in the same payload keeps its pricing -- the drop is per-entry.
+      expect(result.pricing.get("vendor/valid-priced")).toEqual({
+        inputUsdPerToken: 0.000002,
+        outputUsdPerToken: 0.000004
+      });
+    }
+  );
+
   it("drops an entry whose modality strings are all unmapped, keeping its valid siblings", async () => {
     const { fetch } = createFixtureFetch([
       {

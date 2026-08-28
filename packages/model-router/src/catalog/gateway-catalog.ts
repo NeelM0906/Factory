@@ -121,12 +121,23 @@ const toCatalogEntry = (
   });
 };
 
+/** Admits a price only if it is a well-formed, finite, non-negative numeric string (C1): a
+ * provider price string is untrusted input (spec §14.1), and a bare `Number()` turns junk like
+ * `"free"` or `"N/A"` into `NaN` and an empty (or whitespace-only) string into `0` — both of which
+ * would read as affordable under `maxCostMicros` instead of failing closed. */
+const parsePrice = (raw: string): number | undefined => {
+  if (raw.trim() === "") return undefined;
+  const value = Number(raw);
+  if (!Number.isFinite(value) || value < 0) return undefined;
+  return value;
+};
+
 const toPricing = (entry: GatewayModelEntry): RoutePricing | undefined => {
   if (entry.pricing === undefined) return undefined;
-  return {
-    inputUsdPerToken: Number(entry.pricing.input),
-    outputUsdPerToken: Number(entry.pricing.output)
-  };
+  const inputUsdPerToken = parsePrice(entry.pricing.input);
+  const outputUsdPerToken = parsePrice(entry.pricing.output);
+  if (inputUsdPerToken === undefined || outputUsdPerToken === undefined) return undefined;
+  return { inputUsdPerToken, outputUsdPerToken };
 };
 
 /**

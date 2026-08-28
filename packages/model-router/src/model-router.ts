@@ -14,13 +14,11 @@ import {
   createDeclaredCapabilities,
   type DeclaredCapabilitiesInput
 } from "./catalog/declared-capabilities.js";
-import type { ModelRouteEventSink } from "./fallback/route-event-sink.js";
 import { evaluatePolicy, type EvaluatePolicyCandidate } from "./policy/evaluate-policy.js";
 import { createPolicyRegistry } from "./policy/policy-registry.js";
 import { createRouteRegistry } from "./route-registry.js";
 import { createModelInference } from "./transport/transport-client.js";
 import type { ExactUsageSink } from "./usage/exact-usage-sink.js";
-import type { ModelUsageSink } from "./usage/usage-sink.js";
 
 /**
  * Operator-declared capability overrides (DEC-1), keyed by `providerModel`. Re-exported under this
@@ -29,15 +27,30 @@ import type { ModelUsageSink } from "./usage/usage-sink.js";
  */
 export type DeclaredCapabilityMap = DeclaredCapabilitiesInput;
 
+/**
+ * Deliberately excludes `ModelRouteEventSink` and `ModelUsageSink`. Fallback orchestration
+ * (`runWithFallback`, which records `ModelRouteFallback` activations) and per-attempt usage
+ * recording (`normalizeUsage`, which records `ModelUsageRecord`s) compose **above**
+ * `ModelInferencePort`, not inside it: the port executes one already-resolved route and owns
+ * neither policy nor orchestration (DEC-3, ESC-1). Wiring those sinks into the router's DI surface
+ * would pull that orchestration back below the port. The caller composes them directly against the
+ * exported `runWithFallback` and `normalizeUsage`, using the still-exported `ModelRouteEventSink`
+ * and `ModelUsageSink` interfaces from `src/index.ts` as its composition kit.
+ */
 export interface ModelRouterDependencies {
   readonly routes: readonly ModelRoute[];
   readonly policies: readonly ModelPolicy[];
   readonly credentials: CredentialResolver;
-  readonly routeEvents: ModelRouteEventSink;
-  readonly usage: ModelUsageSink;
   readonly exactUsage: ExactUsageSink;
   readonly fetch: typeof globalThis.fetch;
   readonly now: () => string;
+  /**
+   * A monotonic millisecond clock (I4), distinct from `now`: `now` produces ISO timestamps for
+   * `recordedAt`/`occurredAt`/`completedAt`, while `monotonicNowMs` produces the numeric
+   * milliseconds `run()` measures `latencyMs` from. No default — required, supplied by
+   * composition, never `Date.now()`.
+   */
+  readonly monotonicNowMs: () => number;
   readonly catalogTtlMs?: number;
   readonly maxStaleMs?: number;
   readonly declaredCapabilities?: DeclaredCapabilityMap;
@@ -50,10 +63,11 @@ export interface ModelRouter extends ModelRouterPort, ModelInferencePort {}
 /**
  * Composes `createModelRouter(deps)` from the already-built, already-approved stage modules —
  * route registry, policy registry, catalog cache/discovery, selection (via `evaluatePolicy`),
- * transport (`createModelInference`), and the injected sinks. Contains no logic of its own beyond
- * wiring: every rejection-pipeline decision, filter, and failure code is owned by the module that
- * implements that stage (Tasks 2–11); this file only assembles them in the order the rejection
- * pipeline (the plan's single source of truth) specifies.
+ * transport (`createModelInference`), and the injected `ExactUsageSink`. Contains no logic of its
+ * own beyond wiring: every rejection-pipeline decision, filter, and failure code is owned by the
+ * module that implements that stage (Tasks 2–11); this file only assembles them in the order the
+ * rejection pipeline (the plan's single source of truth) specifies. Fallback and per-attempt usage
+ * recording are not part of this wiring — see `ModelRouterDependencies` above.
  */
 export const createModelRouter = (deps: ModelRouterDependencies): ModelRouter => {
   const routeRegistry = createRouteRegistry({
@@ -82,7 +96,8 @@ export const createModelRouter = (deps: ModelRouterDependencies): ModelRouter =>
     credentials: deps.credentials,
     fetch: deps.fetch,
     routes: routeRegistry,
-    now: deps.now
+    now: deps.now,
+    monotonicNowMs: deps.monotonicNowMs
   });
 
   const resolve = async (context: ModelRouteContext): Promise<ModelRouteSelection> => {

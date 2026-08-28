@@ -100,6 +100,10 @@ class CredentialRefStoreImpl implements CredentialRefStore {
   }
 
   async delete(ref: CredentialRef): Promise<void> {
+    // Deliberately no `assertAvailable` call here, unlike `put`/`resolve`: removing a credential
+    // file needs no decryption or encryption, so an unavailable `SecretProtector` is not a reason
+    // to fail closed on this operation — a caller must still be able to delete a credential (e.g.
+    // during rotation cleanup or an uninstall) even when OS protection has become unavailable.
     const supported = assertSupported(ref);
     const path = credentialFilePath(this.#root, supported);
     try {

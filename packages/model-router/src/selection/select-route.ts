@@ -43,6 +43,16 @@ const assertDefined = <T>(value: T | undefined, label: string): T => {
 };
 
 /**
+ * Pipeline stage 5, the "Enabled filter": true when the candidate's route has not been
+ * administratively disabled. Shared by `selectRoute` (below) and `evaluatePolicy`
+ * (`../policy/evaluate-policy.ts`) — both filtered on `candidate.route.enabled` independently
+ * before this was factored out, which is exactly the R4-class "two modules each locally right,
+ * jointly wrong" hazard the pipeline's one-stage-one-owner rule exists to prevent.
+ */
+export const passesEnabledFilter = (candidate: { readonly route: ModelRoute }): boolean =>
+  candidate.route.enabled;
+
+/**
  * Pipeline stages 3–5 and 7 (stage 1 policy admission and stage 6 budget are Task 7's). Raises
  * `capability_unavailable` when no candidate's pinned entry satisfies every required capability
  * (naming both the missing capabilities and, separately, any routes excluded for an absent pin —
@@ -67,7 +77,7 @@ export const selectRoute = (input: SelectRouteInput): ModelRouteSelection => {
     throw capabilityUnavailable({ required, absentPins: absentPinRouteRefs });
   }
 
-  const enabled = eligible.filter((candidate) => candidate.route.enabled);
+  const enabled = eligible.filter(passesEnabledFilter);
   if (enabled.length === 0) {
     const firstCapable = assertDefined(eligible[0], "the first capability-eligible candidate");
     throw routeDisabled({ routeRef: firstCapable.route.routeRef, required });

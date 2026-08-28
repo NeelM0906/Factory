@@ -28,6 +28,15 @@ import {
 export interface CreateModelInferenceOptions extends LanguageModelFactoryOptions {
   readonly routes: RouteRegistry;
   readonly now: () => string;
+  /**
+   * A monotonic millisecond clock, injected separately from `now`: `now` produces ISO timestamps
+   * for `completedAt` (wall-clock, for attribution), while `monotonicNowMs` produces the numeric
+   * values `latencyMs` is measured from (duration arithmetic). Conflating the two would make
+   * `latencyMs` sensitive to wall-clock adjustments (leap seconds, NTP correction) that a monotonic
+   * clock is immune to. No default is supplied anywhere in production code — it is a required
+   * dependency, supplied by composition, exactly like `now` (I4).
+   */
+  readonly monotonicNowMs: () => number;
 }
 
 /**
@@ -118,7 +127,7 @@ export const createModelInference = (options: CreateModelInferenceOptions): Mode
 
     const model = await factory.build(route);
 
-    const startedAtMs = Date.now();
+    const startedAtMs = options.monotonicNowMs();
     let generated;
     try {
       generated = await generateText({
@@ -130,7 +139,7 @@ export const createModelInference = (options: CreateModelInferenceOptions): Mode
     } catch (error) {
       throw toRoutingError(routeRef, error);
     }
-    const latencyMs = Math.max(0, Date.now() - startedAtMs);
+    const latencyMs = Math.max(0, options.monotonicNowMs() - startedAtMs);
 
     const candidate = {
       schemaVersion: 1 as const,

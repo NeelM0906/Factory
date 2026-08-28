@@ -2,7 +2,11 @@ import type { ModelPolicy, ModelRouteContext, ModelRouteSelection } from "@autos
 
 import { filterByCapability, type CapabilityCandidate } from "../catalog/capability-filter.js";
 import { budgetExceeded } from "../failure/routing-failure.js";
-import { selectRoute, type SelectRouteCandidate } from "../selection/select-route.js";
+import {
+  passesEnabledFilter,
+  selectRoute,
+  type SelectRouteCandidate
+} from "../selection/select-route.js";
 import { filterByBudget, type BudgetCandidate } from "./budget.js";
 import { assertPolicyStage, type PolicyRegistry } from "./policy-registry.js";
 
@@ -95,7 +99,7 @@ export const evaluatePolicy = (input: EvaluatePolicyInput): ModelRouteSelection 
   }));
   const { eligible: capable } = filterByCapability(capabilityCandidates, requiredCapabilities);
 
-  const enabledCapable = capable.filter((candidate) => candidate.route.enabled);
+  const enabledCapable = capable.filter(passesEnabledFilter);
 
   if (capable.length === 0 || enabledCapable.length === 0) {
     // Let selectRoute raise capability_unavailable or route_disabled itself, over the identical

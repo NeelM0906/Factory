@@ -12,10 +12,8 @@ import {
   type ModelPolicy,
   type ModelRoute,
   type ModelRouteContext,
-  type ModelRouteFallback,
   type ModelRouterPort,
-  type ModelUsage,
-  type ModelUsageRecord
+  type ModelUsage
 } from "@autostack/contracts";
 
 import { createModelRouter, type ModelRouterDependencies } from "../src/model-router.js";
@@ -26,14 +24,10 @@ import openAiModelsFixture from "./fixtures/openai-models.json" with { type: "js
 
 const credentialRefId = CredentialRefIdSchema.parse("cred_aaaaaaaa-e89b-42d3-a456-426614174000");
 const fixedNow = (): string => "2026-08-27T00:00:00.000Z";
+const fixedMonotonicNowMs = (): number => 1_000;
 
 const GATEWAY_MODELS_URL = "https://ai-gateway.vercel.sh/v1/models";
 const OPENAI_MODELS_URL = "https://api.openai.com/v1/models";
-
-const noopRouteEventSink = {
-  record: async (_event: ModelRouteFallback): Promise<void> => undefined
-};
-const noopUsageSink = { record: async (_usage: ModelUsageRecord): Promise<void> => undefined };
 
 const gatewayRoute = (
   overrides: Partial<{ routeRef: string; gatewayModel: string }> = {}
@@ -107,8 +101,6 @@ const buildDependencies = (
       buildPolicy({ stage: "isolated_review", allowedRouteRefs: [highQualityRoute.routeRef] })
     ] as const),
   credentials: overrides.credentials ?? createFakeCredentialResolver(),
-  routeEvents: overrides.routeEvents ?? noopRouteEventSink,
-  usage: overrides.usage ?? noopUsageSink,
   exactUsage: overrides.exactUsage ?? {
     record: async (_usage: ModelUsage): Promise<void> => undefined
   },
@@ -122,6 +114,7 @@ const buildDependencies = (
       }
     ]).fetch,
   now: overrides.now ?? fixedNow,
+  monotonicNowMs: overrides.monotonicNowMs ?? fixedMonotonicNowMs,
   ...(overrides.catalogTtlMs === undefined ? {} : { catalogTtlMs: overrides.catalogTtlMs }),
   ...(overrides.maxStaleMs === undefined ? {} : { maxStaleMs: overrides.maxStaleMs }),
   ...(overrides.declaredCapabilities === undefined
