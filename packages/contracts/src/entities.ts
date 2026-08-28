@@ -256,11 +256,20 @@ export const EnvironmentSchema = z
   })
   .strict();
 
+/**
+ * Where an operator acted from. Declared once and reused by every surface that records one — the
+ * approval decision, the HTTP and desktop decision requests, the clarification response, and the
+ * `approval.decided` and `run.steered` events — so a channel cannot be admitted on one surface and
+ * rejected on another.
+ */
+export const ORIGINS = ["desktop", "web", "cli", "slack", "github", "api"] as const;
+export const OriginSchema = z.enum(ORIGINS);
+
 const ApprovalDecisionSchema = z
   .object({
     decision: z.enum(["approved", "rejected"]),
     actor: ActorSchema,
-    origin: z.enum(["desktop", "web", "cli", "slack", "github", "api"]),
+    origin: OriginSchema,
     decidedAt: TimestampSchema
   })
   .strict();
@@ -421,6 +430,7 @@ export type SourceRef = z.infer<typeof SourceRefSchema>;
 export type WorkItem = z.infer<typeof WorkItemSchema>;
 export type Run = z.infer<typeof RunSchema>;
 export type RunStatus = z.infer<typeof RunStatusSchema>;
+export type Origin = z.infer<typeof OriginSchema>;
 export type RunStage = z.infer<typeof RunStageSchema>;
 export type FactoryLane = z.infer<typeof FactoryLaneSchema>;
 export type StageRun = z.infer<typeof StageRunSchema>;

@@ -8,6 +8,7 @@ import {
   PIPELINE_REWORK_MAX_ATTEMPTS,
   ReviewEvidenceSchema,
   TriageEvidenceSchema,
+  VerificationEvidenceSchema,
   assertPipelineReworkTransition,
   assertPipelineTransition
 } from "../src/pipeline.js";
@@ -231,6 +232,29 @@ describe("delivery pipeline contracts", () => {
     ).toThrow();
   });
 
+  it("refuses to publish a red build even when every binding lines up", () => {
+    const evidence = publicationEvidence();
+    // Positive control: the bundle is otherwise complete and valid.
+    expect(PublicationEvidenceBundleSchema.parse(evidence).verification.status).toBe("passed");
+
+    // Nothing else changes - every digest still binds - so the only thing that can reject this is
+    // the verification status itself. Before `status` admitted "failed" this was unrepresentable and
+    // the type was the gate; now the refinement is.
+    const failedVerification = {
+      ...evidence,
+      verification: { ...evidence.verification, status: "failed" as const }
+    };
+    expect(() => PublicationEvidenceBundleSchema.parse(failedVerification)).toThrow();
+    const parsed = PublicationEvidenceBundleSchema.safeParse(failedVerification);
+    expect(parsed.success).toBe(false);
+    expect(parsed.error?.issues.map((issue) => issue.path.join("."))).toContain(
+      "verification.status"
+    );
+    expect(parsed.error?.issues.map((issue) => issue.message)).toContain(
+      "Publication requires a passed verification."
+    );
+  });
+
   it("rejects a failed or changes-requested review", () => {
     const evidence = publicationEvidence();
     expect(() =>
@@ -306,5 +330,49 @@ describe("triage evidence", () => {
       TriageEvidenceSchema.parse({ ...triageEvidence(), triageReportDigest: "not-a-digest" })
     ).toThrow();
     expect(() => TriageEvidenceSchema.parse({ ...triageEvidence(), triageReport: {} })).toThrow();
+  });
+});
+
+describe("review evidence", () => {
+  it("optionally names the review report it addresses", () => {
+    const evidence = publicationEvidence();
+    expect(
+      PublicationEvidenceBundleSchema.parse(evidence).review.reviewReportDigest
+    ).toBeUndefined();
+    expect(
+      PublicationEvidenceBundleSchema.parse({
+        ...evidence,
+        review: { ...evidence.review, reviewReportDigest: digest("8") }
+      }).review.reviewReportDigest
+    ).toBe(digest("8"));
+    expect(() =>
+      PublicationEvidenceBundleSchema.parse({
+        ...evidence,
+        review: { ...evidence.review, reviewReportDigest: "not-a-digest" }
+      })
+    ).toThrow();
+  });
+});
+
+describe("verification evidence", () => {
+  const verificationEvidence = () => ({
+    schemaVersion: 1 as const,
+    ...identity,
+    stage: "verify" as const,
+    evidenceDigest: digest("4"),
+    artifactIds: [],
+    producedAt: "2026-08-23T12:03:00.000Z",
+    implementationEvidenceDigest: digest("3"),
+    status: "passed" as const
+  });
+
+  it("records a failed verification durably, not only a passing one", () => {
+    expect(VerificationEvidenceSchema.parse(verificationEvidence()).status).toBe("passed");
+    expect(
+      VerificationEvidenceSchema.parse({ ...verificationEvidence(), status: "failed" }).status
+    ).toBe("failed");
+    expect(() =>
+      VerificationEvidenceSchema.parse({ ...verificationEvidence(), status: "errored" })
+    ).toThrow();
   });
 });

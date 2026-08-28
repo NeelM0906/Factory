@@ -221,3 +221,61 @@ describe("entity contracts", () => {
     expect(() => RunStageSchema.parse("validate")).toThrow();
   });
 });
+
+describe("origin vocabulary", () => {
+  it("is declared once and reused by every surface that records one", async () => {
+    const { ORIGINS, OriginSchema } = await import("../src/entities.js");
+    const { ApprovalDecisionRequestSchema } = await import("../src/api.js");
+    const { ClarificationResponseSchema } = await import("../src/station-evidence.js");
+
+    expect([...ORIGINS]).toEqual(["desktop", "web", "cli", "slack", "github", "api"]);
+    expect(OriginSchema.options).toEqual([...ORIGINS]);
+    // The two surfaces that used to keep their own copy now read the same options object.
+    expect(ApprovalDecisionRequestSchema.shape.origin.options).toEqual(OriginSchema.options);
+    expect(ClarificationResponseSchema.shape.origin.options).toEqual(OriginSchema.options);
+  });
+
+  it("accepts every declared origin and refuses an undeclared one at each event site", async () => {
+    const { ORIGINS } = await import("../src/entities.js");
+    const { PendingDomainEventSchema } = await import("../src/events.js");
+    const envelope = {
+      workspaceId: "ws_123e4567-e89b-42d3-a456-426614174000",
+      actor: { kind: "user", id: "local-user" },
+      correlationId: "123e4567-e89b-42d3-a456-426614174001",
+      occurredAt: "2026-08-20T12:00:00.000Z"
+    };
+    const runId = "run_123e4567-e89b-42d3-a456-426614174000";
+    const bodies = (origin: string) => [
+      {
+        type: "approval.decided",
+        payload: {
+          approvalId: "apr_123e4567-e89b-42d3-a456-426614174000",
+          runId,
+          decision: "approved",
+          evidenceDigest: "a".repeat(64),
+          origin,
+          decidedAt: "2026-08-20T12:00:00.000Z"
+        }
+      },
+      {
+        type: "run.steered",
+        payload: {
+          runId,
+          instruction: "Prefer the smaller refactor.",
+          origin,
+          actorId: "local-user",
+          acceptedAt: "2026-08-20T12:00:00.000Z"
+        }
+      }
+    ];
+
+    for (const origin of ORIGINS) {
+      for (const body of bodies(origin)) {
+        expect(PendingDomainEventSchema.parse({ ...envelope, ...body }).type).toBe(body.type);
+      }
+    }
+    for (const body of bodies("carrier-pigeon")) {
+      expect(() => PendingDomainEventSchema.parse({ ...envelope, ...body })).toThrow();
+    }
+  });
+});

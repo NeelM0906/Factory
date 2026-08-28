@@ -2,6 +2,7 @@ import { z } from "zod";
 
 import {
   ApprovalSchema,
+  OriginSchema,
   RunSchema,
   RunStageSchema,
   RunStatusSchema,
@@ -112,7 +113,6 @@ export const ApiErrorSchema = z
   .strict();
 
 const Sha256Schema = z.string().regex(/^[0-9a-f]{64}$/i);
-const ApprovalOriginSchema = z.enum(["desktop", "web", "cli", "slack", "github", "api"]);
 
 export const ApprovalSummarySchema = z
   .object({
@@ -148,7 +148,7 @@ export const ApprovalDecisionRequestSchema = z
   .object({
     decision: z.enum(["approved", "rejected"]),
     evidenceDigest: Sha256Schema,
-    origin: ApprovalOriginSchema,
+    origin: OriginSchema,
     note: SafeMetadataStringSchema.trim().min(1).max(2_000).optional()
   })
   .strict();

@@ -3,6 +3,7 @@ import { z } from "zod";
 import {
   ActorSchema,
   ApprovalSchema,
+  OriginSchema,
   RunSchema,
   RunStageSchema,
   RunStatusSchema,
@@ -62,7 +63,8 @@ import {
   ClarificationResponseSchema,
   PipelineStationDocumentSchema,
   admitPlanDocument,
-  admitTriageReport
+  admitTriageReport,
+  digestReviewReport
 } from "./station-evidence.js";
 import { WorkflowFailureSchema } from "./workflow-failure.js";
 
@@ -229,7 +231,7 @@ const DomainEventBodySchema = z.discriminatedUnion("type", [
         .object({
           runId: RunIdSchema,
           instruction: SafeMetadataStringSchema.max(20_000),
-          origin: z.enum(["desktop", "web", "cli", "slack", "github", "api"]),
+          origin: OriginSchema,
           actorId: z.string().trim().min(1).max(240),
           acceptedAt: z.iso.datetime()
         })
@@ -267,7 +269,7 @@ const DomainEventBodySchema = z.discriminatedUnion("type", [
           runId: RunIdSchema,
           decision: z.enum(["approved", "rejected"]),
           evidenceDigest: z.string().regex(/^[0-9a-f]{64}$/i),
-          origin: z.enum(["desktop", "web", "cli", "slack", "github", "api"]),
+          origin: OriginSchema,
           decidedAt: z.iso.datetime()
         })
         .strict()
@@ -568,7 +570,13 @@ export const validateRunStreamCoherence = async (
     }
   >();
   const terminalRuns = new Map<string, TerminalRunEvidence>();
-  const pipelineStages = new Map<string, PipelineStage>();
+  /**
+   * The last stage recorded per run, and whether it was a judgement that *failed*. Rework is only
+   * reachable from a failed judgement: a passed verification advances to review and an approved
+   * review advances to publish, so routing either of them back to implement would be evidence of a
+   * pipeline that ignored its own verdict.
+   */
+  const pipelineStages = new Map<string, { stage: PipelineStage; failedJudgement: boolean }>();
   const clarifications = new Map<string, boolean>();
   const agentSessionSequences = new Map<string, number>();
   const phaseDigests = new Map<string, { readonly digest: string; readonly context: string }>();
@@ -983,19 +991,29 @@ export const validateRunStreamCoherence = async (
         if (evidence.workspaceId !== event.workspaceId || evidence.runId !== event.payload.runId) {
           throw new TypeError("Pipeline evidence belongs to a different run.");
         }
-        const previousStage = pipelineStages.get(runKey);
-        if (previousStage !== undefined) {
+        const previous = pipelineStages.get(runKey);
+        if (previous !== undefined) {
           // A failed judgement routes back rather than forward; every other move advances.
           if (
             evidence.stage === "implement" &&
-            (previousStage === "verify" || previousStage === "isolated_review")
+            (previous.stage === "verify" || previous.stage === "isolated_review")
           ) {
-            assertPipelineReworkTransition(previousStage, attempt);
+            if (!previous.failedJudgement) {
+              throw new TypeError(
+                `Delivery pipeline rework may only follow a failed judgement, and ${previous.stage} did not fail.`
+              );
+            }
+            assertPipelineReworkTransition(previous.stage, attempt);
           } else {
-            assertPipelineTransition(previousStage, evidence.stage);
+            assertPipelineTransition(previous.stage, evidence.stage);
           }
         }
-        pipelineStages.set(runKey, evidence.stage);
+        pipelineStages.set(runKey, {
+          stage: evidence.stage,
+          failedJudgement:
+            (evidence.stage === "verify" && evidence.status === "failed") ||
+            (evidence.stage === "isolated_review" && evidence.verdict === "changes_requested")
+        });
 
         if (document !== undefined) {
           if (document.kind !== evidence.stage) {
@@ -1025,9 +1043,13 @@ export const validateRunStreamCoherence = async (
               throw new TypeError("Plan evidence does not name this plan document's digest.");
             }
           }
-          if (document.kind === "verify" && document.report.status !== "passed") {
+          if (
+            document.kind === "verify" &&
+            evidence.stage === "verify" &&
+            evidence.status !== document.report.status
+          ) {
             throw new TypeError(
-              "Verification evidence records a pass that its report does not support."
+              "Verification evidence and verification report disagree on the status."
             );
           }
           if (document.kind === "isolated_review" && evidence.stage === "isolated_review") {
@@ -1036,6 +1058,14 @@ export const validateRunStreamCoherence = async (
               evidence.reviewedDiffDigest !== document.report.reviewedDiffDigest
             ) {
               throw new TypeError("Review evidence and review report disagree.");
+            }
+            // `admitReviewReport` binds a review to its plan and verification *documents*, which an
+            // event does not carry. The digest is what this envelope names, so it is what is checked.
+            if (
+              evidence.reviewReportDigest !== undefined &&
+              (await digestReviewReport(document.report)) !== evidence.reviewReportDigest
+            ) {
+              throw new TypeError("Review report does not match the digest its envelope names.");
             }
           }
         }

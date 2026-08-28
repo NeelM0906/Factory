@@ -95,7 +95,14 @@ export const VerificationEvidenceSchema = z
     ...EvidenceContextShape,
     stage: z.literal("verify"),
     implementationEvidenceDigest: DigestSchema,
-    status: z.literal("passed")
+    /**
+     * Mirrors `ReviewEvidenceSchema.verdict`: a verification that failed is evidence, and spec
+     * §17.4 journey 6 requires it durable so the run can route back to implement. This was
+     * `z.literal("passed")`, which made a red build unrepresentable — and therefore silently made
+     * the *type* the publication gate. `PublicationEvidenceBundleSchema` now carries that gate
+     * explicitly; the two changes must never be separated.
+     */
+    status: z.enum(["passed", "failed"])
   })
   .strict();
 
@@ -118,6 +125,8 @@ export const ReviewEvidenceSchema = z
         environmentId: EnvironmentIdSchema
       })
       .strict(),
+    /** The `ReviewReport` this envelope addresses, by `digestReviewReport`. Optional like triage's. */
+    reviewReportDigest: DigestSchema.optional(),
     verdict: z.enum(["approved", "changes_requested"]),
     findings: z
       .array(
@@ -328,6 +337,13 @@ export const PublicationEvidenceBundleSchema = z
       ["publishApproval", "approvedEvidenceDigest"],
       "Publish approval does not approve this stable publish scope."
     );
+    if (value.verification.status !== "passed") {
+      context.addIssue({
+        code: "custom",
+        path: ["verification", "status"],
+        message: "Publication requires a passed verification."
+      });
+    }
     if (value.review.verdict !== "approved") {
       context.addIssue({
         code: "custom",

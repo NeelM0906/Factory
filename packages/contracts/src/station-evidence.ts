@@ -1,5 +1,6 @@
 import { z } from "zod";
 
+import { OriginSchema } from "./entities.js";
 import { CredentialRefIdSchema, RunIdSchema, WorkItemIdSchema, WorkspaceIdSchema } from "./ids.js";
 import { PipelineStageSchema } from "./pipeline.js";
 import { RelativeWorkspacePathSchema, digestVersionedValue } from "./runner.js";
@@ -16,7 +17,6 @@ const StableRefSchema = z
   .regex(/^[A-Za-z0-9._:/-]+$/);
 const IdempotencyKeySchema = z.string().trim().min(1).max(240);
 const SeveritySchema = z.enum(["critical", "high", "medium", "low", "info"]);
-const OriginSchema = z.enum(["desktop", "web", "cli", "slack", "github", "api"]);
 
 const StationIdentityShape = {
   schemaVersion: VersionSchema,
@@ -362,7 +362,14 @@ export const canonicalizeVerificationReportForDigest = (
   runId: report.runId,
   planDigest: report.planDigest,
   status: report.status,
-  results: report.results,
+  results: report.results.map((result) => ({
+    command: result.command,
+    status: result.status,
+    durationMs: result.durationMs,
+    startedAt: result.startedAt,
+    outputDigest: result.outputDigest,
+    ...(result.exitCode === undefined ? {} : { exitCode: result.exitCode })
+  })),
   producedAt: report.producedAt
 });
 
@@ -394,7 +401,15 @@ export const canonicalizeTriageReportForDigest = (
   complexity: report.complexity,
   actionable: report.actionable,
   rationale: report.rationale,
-  duplicates: report.duplicates,
+  // Optionals are normalized per element for the same reason they are at the top level: an
+  // explicitly-undefined key is not JSON-safe, and a caller that spreads a parsed value forward
+  // reproduces exactly that shape.
+  duplicates: report.duplicates.map((duplicate) => ({
+    kind: duplicate.kind,
+    reference: duplicate.reference,
+    confidence: duplicate.confidence,
+    ...(duplicate.url === undefined ? {} : { url: duplicate.url })
+  })),
   producedAt: report.producedAt,
   // An absent optional contributes nothing rather than a `undefined` the digest cannot serialize,
   // so a document that omits one and a document that sets it to `undefined` are the same document.
@@ -426,7 +441,13 @@ export const canonicalizeReviewReportForDigest = (
   verificationReportDigest: report.verificationReportDigest,
   verdict: report.verdict,
   summary: report.summary,
-  findings: report.findings,
+  findings: report.findings.map((finding) => ({
+    findingRef: finding.findingRef,
+    severity: finding.severity,
+    summary: finding.summary,
+    evidenceDigest: finding.evidenceDigest,
+    ...(finding.location === undefined ? {} : { location: finding.location })
+  })),
   producedAt: report.producedAt,
   ...(report.producedBy === undefined ? {} : { producedBy: report.producedBy })
 });

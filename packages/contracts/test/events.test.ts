@@ -9,7 +9,11 @@ import {
   digestTerminalRunTransition,
   validateRunStreamCoherence
 } from "../src/events.js";
-import { digestPlanDocument, digestTriageReport } from "../src/station-evidence.js";
+import {
+  digestPlanDocument,
+  digestReviewReport,
+  digestTriageReport
+} from "../src/station-evidence.js";
 import {
   digestCommandAuthorization,
   digestCommandScope,
@@ -1521,6 +1525,249 @@ describe("pipeline, clarification, steering, and agent session events", () => {
         )
       ])
     ).rejects.toThrow(/digest/i);
+  });
+
+  const implementationEvidence = {
+    ...evidenceContext,
+    stage: "implement" as const,
+    evidenceDigest: digestOf("3"),
+    planApprovalEvidenceDigest: digestOf("2"),
+    agentSessionId: AGENT_SESSION_ID,
+    environmentId: "env_123e4567-e89b-42d3-a456-426614174000",
+    sourceCommit: "a".repeat(40),
+    resultCommit: "b".repeat(40),
+    finalDiffDigest: digestOf("f")
+  };
+  const verificationEvidence = (status: "passed" | "failed") => ({
+    ...evidenceContext,
+    stage: "verify" as const,
+    evidenceDigest: digestOf("4"),
+    implementationEvidenceDigest: digestOf("3"),
+    status
+  });
+  const stageEvent = (evidence: Record<string, unknown>, attempt = 1): Record<string, unknown> =>
+    recorded({ runId: RUN_ID, jobId: JOB_ID, attempt, evidence }, "pipeline.evidence_recorded");
+  const journeyPrefix = [
+    stageEvent({
+      ...evidenceContext,
+      stage: "triage",
+      evidenceDigest: digestOf("1"),
+      summary: "Triaged."
+    }),
+    stageEvent({
+      ...evidenceContext,
+      stage: "plan",
+      evidenceDigest: digestOf("2"),
+      planDigest: digestOf("a")
+    }),
+    stageEvent({
+      ...evidenceContext,
+      stage: "plan_approval",
+      evidenceDigest: digestOf("5"),
+      approvalId: APPROVAL_ID,
+      decision: "approved",
+      approvedEvidenceDigest: digestOf("2"),
+      actorId: "local-user"
+    }),
+    stageEvent(implementationEvidence)
+  ];
+
+  it("carries spec 17.4 journey 6: a failed verification routes back and the retry passes", async () => {
+    const stream = await validateRunStreamCoherence([
+      ...journeyPrefix,
+      stageEvent(verificationEvidence("failed")),
+      stageEvent(implementationEvidence, 2),
+      stageEvent(verificationEvidence("passed"), 2),
+      stageEvent({
+        ...evidenceContext,
+        stage: "isolated_review",
+        evidenceDigest: digestOf("6"),
+        implementationEvidenceDigest: digestOf("3"),
+        verificationEvidenceDigest: digestOf("4"),
+        reviewedDiffDigest: digestOf("f"),
+        implementation: {
+          agentSessionId: AGENT_SESSION_ID,
+          environmentId: "env_123e4567-e89b-42d3-a456-426614174000"
+        },
+        reviewer: {
+          agentSessionId: "agt_123e4567-e89b-42d3-a456-426614174001",
+          environmentId: "env_123e4567-e89b-42d3-a456-426614174001"
+        },
+        verdict: "approved",
+        findings: []
+      })
+    ]);
+    expect(stream).toHaveLength(8);
+  });
+
+  it("permits rework only after a judgement that actually failed", async () => {
+    await expect(
+      validateRunStreamCoherence([
+        ...journeyPrefix,
+        stageEvent(verificationEvidence("failed")),
+        stageEvent(implementationEvidence, 2)
+      ])
+    ).resolves.toHaveLength(6);
+
+    // The case the reviewer showed coherence wrongly accepted: a verification that PASSED cannot
+    // send the implementation back. After a pass the run advances to review.
+    await expect(
+      validateRunStreamCoherence([
+        ...journeyPrefix,
+        stageEvent(verificationEvidence("passed")),
+        stageEvent(implementationEvidence, 2)
+      ])
+    ).rejects.toThrow(/failed judgement/i);
+  });
+
+  it("applies the same rule to a review that approved the implementation", async () => {
+    const reviewEvidence = (verdict: "approved" | "changes_requested") => ({
+      ...evidenceContext,
+      stage: "isolated_review" as const,
+      evidenceDigest: digestOf("6"),
+      implementationEvidenceDigest: digestOf("3"),
+      verificationEvidenceDigest: digestOf("4"),
+      reviewedDiffDigest: digestOf("f"),
+      implementation: {
+        agentSessionId: AGENT_SESSION_ID,
+        environmentId: "env_123e4567-e89b-42d3-a456-426614174000"
+      },
+      reviewer: {
+        agentSessionId: "agt_123e4567-e89b-42d3-a456-426614174001",
+        environmentId: "env_123e4567-e89b-42d3-a456-426614174001"
+      },
+      verdict,
+      findings: []
+    });
+    const upToReview = [
+      ...journeyPrefix,
+      stageEvent(verificationEvidence("passed")),
+      stageEvent(reviewEvidence("changes_requested"))
+    ];
+
+    await expect(
+      validateRunStreamCoherence([...upToReview, stageEvent(implementationEvidence, 2)])
+    ).resolves.toHaveLength(7);
+
+    await expect(
+      validateRunStreamCoherence([
+        ...journeyPrefix,
+        stageEvent(verificationEvidence("passed")),
+        stageEvent(reviewEvidence("approved")),
+        stageEvent(implementationEvidence, 2)
+      ])
+    ).rejects.toThrow(/failed judgement/i);
+  });
+
+  it("binds a review report to the digest its envelope names", async () => {
+    const reviewDocument = {
+      ...stationIdentity,
+      planDigest: digestOf("a"),
+      reviewedDiffDigest: digestOf("f"),
+      verificationReportDigest: digestOf("b"),
+      verdict: "changes_requested" as const,
+      summary: "One blocking issue.",
+      findings: [
+        {
+          findingRef: "finding.1",
+          severity: "high" as const,
+          summary: "The strict object accepts an unbounded array.",
+          evidenceDigest: digestOf("c")
+        }
+      ],
+      producedAt: NOW
+    };
+    const reviewReportDigest = await digestReviewReport(reviewDocument);
+    const envelope = (namedDigest: string) => ({
+      runId: RUN_ID,
+      jobId: JOB_ID,
+      attempt: 1,
+      evidence: {
+        ...evidenceContext,
+        stage: "isolated_review",
+        evidenceDigest: digestOf("6"),
+        implementationEvidenceDigest: digestOf("3"),
+        verificationEvidenceDigest: digestOf("4"),
+        reviewedDiffDigest: digestOf("f"),
+        reviewReportDigest: namedDigest,
+        implementation: {
+          agentSessionId: AGENT_SESSION_ID,
+          environmentId: "env_123e4567-e89b-42d3-a456-426614174000"
+        },
+        reviewer: {
+          agentSessionId: "agt_123e4567-e89b-42d3-a456-426614174001",
+          environmentId: "env_123e4567-e89b-42d3-a456-426614174001"
+        },
+        verdict: "changes_requested",
+        findings: []
+      },
+      document: { kind: "isolated_review", report: reviewDocument }
+    });
+    const prefix = [...journeyPrefix, stageEvent(verificationEvidence("passed"))];
+
+    await expect(
+      validateRunStreamCoherence([
+        ...prefix,
+        recorded(envelope(reviewReportDigest), "pipeline.evidence_recorded")
+      ])
+    ).resolves.toHaveLength(6);
+
+    await expect(
+      validateRunStreamCoherence([
+        ...prefix,
+        recorded(envelope(digestOf("9")), "pipeline.evidence_recorded")
+      ])
+    ).rejects.toThrow(/digest/i);
+  });
+
+  it("refuses a verification report that disagrees with the status its envelope records", async () => {
+    const verificationReport = {
+      ...stationIdentity,
+      planDigest: digestOf("a"),
+      status: "failed" as const,
+      results: [
+        {
+          command: verificationCommand,
+          status: "failed" as const,
+          exitCode: 1,
+          durationMs: 900,
+          startedAt: NOW,
+          outputDigest: digestOf("b")
+        }
+      ],
+      producedAt: NOW
+    };
+    await expect(
+      validateRunStreamCoherence([
+        ...journeyPrefix,
+        recorded(
+          {
+            runId: RUN_ID,
+            jobId: JOB_ID,
+            attempt: 1,
+            evidence: verificationEvidence("failed"),
+            document: { kind: "verify", report: verificationReport }
+          },
+          "pipeline.evidence_recorded"
+        )
+      ])
+    ).resolves.toHaveLength(5);
+
+    await expect(
+      validateRunStreamCoherence([
+        ...journeyPrefix,
+        recorded(
+          {
+            runId: RUN_ID,
+            jobId: JOB_ID,
+            attempt: 1,
+            evidence: verificationEvidence("passed"),
+            document: { kind: "verify", report: verificationReport }
+          },
+          "pipeline.evidence_recorded"
+        )
+      ])
+    ).rejects.toThrow(/status/i);
   });
 
   it("orders stages forward and lets a failed judgement route back to implement", async () => {

@@ -484,3 +484,43 @@ describe("triage and review report digests", () => {
     );
   });
 });
+
+describe("canonical forms with explicitly undefined optionals", () => {
+  it("digests an omitted optional and an explicit undefined identically", async () => {
+    const review = { ...reviewReport(), producedBy: provenance };
+    const withoutLocation = {
+      ...review,
+      findings: review.findings.map(({ location: _location, ...rest }) => rest)
+    };
+    const withUndefinedLocation = {
+      ...review,
+      findings: review.findings.map((finding) => ({ ...finding, location: undefined }))
+    };
+    const omitted = await digestReviewReport(withoutLocation);
+    expect(await digestReviewReport(withUndefinedLocation)).toBe(omitted);
+    expect(await digestReviewReport(review)).not.toBe(omitted);
+
+    const report = verificationReport();
+    const skipped = {
+      ...report,
+      status: "failed" as const,
+      results: report.results.map((result) => ({
+        ...result,
+        status: "skipped" as const,
+        exitCode: undefined
+      }))
+    };
+    await expect(digestVerificationReport(skipped)).resolves.toMatch(/^[0-9a-f]{64}$/);
+
+    const triage = triageReport();
+    const withoutUrl = {
+      ...triage,
+      duplicates: triage.duplicates.map(({ url: _url, ...rest }) => rest)
+    };
+    const withUndefinedUrl = {
+      ...triage,
+      duplicates: triage.duplicates.map((duplicate) => ({ ...duplicate, url: undefined }))
+    };
+    expect(await digestTriageReport(withUndefinedUrl)).toBe(await digestTriageReport(withoutUrl));
+  });
+});
