@@ -669,6 +669,8 @@ git commit -m "feat(workflow): publish an approved draft pull request idempotent
 
 ---
 
+> **Test-budget note (inherited at the next rebase).** `apps/control-plane`'s vitest suite is re-budgeted from the 5s default to **15s** on the base branch. S1 and S2 independently measured its SQLite-bound cases at 5.2-7.4s, losing a varying subset under the 23-task monorepo load. Tasks 14, 15, and 16 are this stream's control-plane test work and inherit that headroom — so a timeout there is real signal rather than contention, and should not be "fixed" by raising a local timeout.
+
 ## Task 14: Approval inbox and decision route
 
 **Blocked by:** Tasks 6, 8. _(Split from revision 1's Task 11 per F15.)_
@@ -822,7 +824,7 @@ pnpm build --filter=@autostack/workflow --filter=@autostack/domain --filter=@aut
 pnpm --filter @autostack/workflow test:coverage
 pnpm --filter @autostack/domain test:coverage
 pnpm --filter @autostack/control-plane test:coverage
-pnpm test
+npx turbo run test --concurrency=2
 git add packages/workflow/test/pipeline-negative.test.ts
 git commit -m "test(workflow): prove the pipeline's negative guarantees"
 ```
@@ -852,9 +854,18 @@ git commit -m "test(workflow): prove the pipeline's negative guarantees"
 | Session events durable at stage completion (F13)                                    | Task 10 Step 1                                    |
 | Coverage ≥80% on every owned package                                                | Task 17 Step 5                                    |
 
+## Verification etiquette on the shared machine
+
+Converged practice across the streams; adopt it in every verification step.
+
+- **Full-suite runs while sibling streams are active: `npx turbo run test --concurrency=2`.** Simultaneous unbounded verifications drove load to 31.5 on a 10-core box.
+- **`pnpm test -- --concurrency=2` does NOT do this** — verified. `pnpm` forwards everything after `--` to the script, so the flag sails past turbo into vitest, which rejects it with `Unknown option --concurrency`. The flag has to reach **turbo**, which means invoking turbo directly. Loud failure rather than a silent one, but it is not the limiter anyone intends.
+- **Package-scoped suites during development** (`pnpm --filter <pkg> test`); reserve the full suite for task boundaries and pre-merge.
+- **A full-suite failure is suspect-until-isolated.** Re-run the failing package alone before believing it. A _different_ victim each run, all timeouts, is contention — not a regression. Only a failure that reproduces in isolation is real.
+
 ## Completion evidence required before requesting merge
 
-- `pnpm format:check`, `pnpm check`, package-filtered `pnpm build`, `pnpm test:coverage` for `@autostack/workflow`, `@autostack/domain`, `@autostack/control-plane`, and full `pnpm test` — all green, coverage ≥80% on every owned package.
+- `pnpm format:check`, `pnpm check`, package-filtered `pnpm build`, `pnpm test:coverage` for `@autostack/workflow`, `@autostack/domain`, `@autostack/control-plane`, and a full `npx turbo run test --concurrency=2` — all green, coverage ≥80% on every owned package.
 - All 190 pre-existing control-plane characterization tests pass unmodified.
 - Task 7's threat analysis written before its implementation and its security-lens merge review recorded.
 - `.superpowers/sdd/progress.md` ledger complete; `.superpowers/sdd/stream-report.md` written.
