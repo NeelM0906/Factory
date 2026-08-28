@@ -159,8 +159,10 @@ export const discoverOpenAiCatalog = async (
 };
 
 // ---------------------------------------------------------------------------------------------
-// anthropic (anthropic / anthropic) — GET {endpoint}/v1/models, x-api-key header, has_more
-// pages followed via after_id up to a bounded page count.
+// anthropic (anthropic / anthropic) — GET {endpoint}/models, x-api-key header, has_more
+// pages followed via after_id up to a bounded page count. `transport.endpoint` is the versioned
+// API root (e.g. "https://api.anthropic.com/v1"), matching the AI SDK `baseURL` convention used
+// by `language-model-factory.ts` — this module appends only the resource path, never `/v1`.
 // ---------------------------------------------------------------------------------------------
 
 /**
@@ -211,8 +213,8 @@ export const discoverAnthropicCatalog = async (
   for (;;) {
     const url =
       afterId === undefined
-        ? `${transport.endpoint}/v1/models`
-        : `${transport.endpoint}/v1/models?after_id=${encodeURIComponent(afterId)}`;
+        ? `${transport.endpoint}/models`
+        : `${transport.endpoint}/models?after_id=${encodeURIComponent(afterId)}`;
     const json = await fetchCatalogJson({ routeRef: route.routeRef, url, fetch, headers });
 
     const envelope = AnthropicModelListEnvelopeSchema.safeParse(json);
@@ -249,8 +251,9 @@ export const discoverAnthropicCatalog = async (
 };
 
 // ---------------------------------------------------------------------------------------------
-// xai (openai_compatible / xai) — GET {endpoint}/v1/language-models. Modalities are read from
-// the provider rather than floored; pricing lands in RoutePricing.
+// xai (openai_compatible / xai) — GET {endpoint}/language-models. `transport.endpoint` is the
+// versioned API root (e.g. "https://api.x.ai/v1"); see the anthropic section above. Modalities
+// are read from the provider rather than floored; pricing lands in RoutePricing.
 // ---------------------------------------------------------------------------------------------
 
 const mapModalities = (values: readonly string[]): ModelModality[] => {
@@ -334,7 +337,7 @@ export const discoverXaiCatalog = async (
   const secret = await credentials.resolve(transport.credentialRefId);
   const json = await fetchCatalogJson({
     routeRef: route.routeRef,
-    url: `${transport.endpoint}/v1/language-models`,
+    url: `${transport.endpoint}/language-models`,
     fetch,
     headers: { Authorization: `Bearer ${secret}` }
   });

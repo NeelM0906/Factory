@@ -32,3 +32,9 @@ export type { CredentialResolver, RoutePricing } from "./catalog/catalog-types.j
 export type { ModelRouteEventSink } from "./fallback/route-event-sink.js";
 export type { ModelUsageSink } from "./usage/usage-sink.js";
 export type { ExactUsageSink } from "./usage/exact-usage-sink.js";
+
+export {
+  assertWithinInvocationBudget,
+  type AssertWithinInvocationBudgetInput,
+  type TokenDemand
+} from "./policy/budget.js";

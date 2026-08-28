@@ -57,6 +57,10 @@ export const createLanguageModelFactory = (options: LanguageModelFactoryOptions)
         return provider.chat(modelId) as LanguageModelHandle;
       }
       case "direct": {
+        // `transport.endpoint` is the VERSIONED API root (e.g. "https://api.anthropic.com/v1"),
+        // matching the AI SDK's own `baseURL` default for every direct provider here — do not
+        // "helpfully" append `/v1` below. Catalog discovery (`catalog/direct-catalog.ts`) relies
+        // on this same convention, appending only the resource path.
         if (transport.protocol === "anthropic") {
           const provider = createAnthropic({
             apiKey: await options.credentials.resolve(transport.credentialRefId),

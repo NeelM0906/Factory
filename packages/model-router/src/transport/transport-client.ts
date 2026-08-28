@@ -145,6 +145,13 @@ export const createModelInference = (options: CreateModelInferenceOptions): Mode
       tokens: {
         input: tokenCount(generated.usage.inputTokens),
         output: tokenCount(generated.usage.outputTokens),
+        // KNOWN LIMITATION (openrouter): the AI SDK's OpenRouter provider normalizes
+        // `cachedInputTokens` to 0 when the upstream provider reported nothing about caching at
+        // all, rather than leaving it `undefined`. `tokenCount` cannot distinguish that from a
+        // genuine "0 tokens were served from cache" — both are a reported non-negative integer —
+        // so this records `{ state: "reported", value: 0 }` where the truth is "unknown". The
+        // information is lost upstream in the SDK; see
+        // `test/language-model-factory.test.ts` ("openrouter reports cachedInputTokens as 0...").
         cachedInput: tokenCount(generated.usage.cachedInputTokens),
         reasoning: tokenCount(generated.usage.reasoningTokens)
       },

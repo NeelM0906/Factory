@@ -424,7 +424,7 @@ describe("discoverCatalog", () => {
       kind: "direct",
       protocol: "anthropic",
       provider: "anthropic",
-      endpoint: "https://api.anthropic.com",
+      endpoint: "https://api.anthropic.com/v1",
       providerModel: "claude-3-5-sonnet-20241022",
       credentialRefId: credE
     },
@@ -439,7 +439,7 @@ describe("discoverCatalog", () => {
       kind: "direct",
       protocol: "openai_compatible",
       provider: "xai",
-      endpoint: "https://api.x.ai",
+      endpoint: "https://api.x.ai/v1",
       providerModel: "grok-2-latest",
       credentialRefId: credF
     },

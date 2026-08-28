@@ -422,6 +422,46 @@ describe("createModelInference", () => {
     expect(result.tokens.reasoning).toEqual({ state: "reported", value: 2 });
   });
 
+  it("openrouter reports cachedInputTokens as 0 (not unknown) when the provider mentioned nothing about caching — a known SDK-level limitation, see the comment at the cachedInput normalization site in transport-client.ts", async () => {
+    // `@openrouter/ai-sdk-provider` normalizes `cachedInputTokens` to 0 whenever the upstream
+    // provider's response carries no `prompt_tokens_details.cached_tokens` at all — this fixture
+    // omits that field entirely, exactly as a provider that never reports caching would. `tokenCount`
+    // cannot tell that apart from a genuine "0 tokens were served from cache": both are a reported
+    // non-negative integer. This test pins that current, imperfect behavior rather than hiding it —
+    // do NOT change `normalizeUsage`/`tokenCount` to make this pass differently; the information is
+    // lost upstream, in the SDK.
+    const fixture = createFixtureFetch([
+      {
+        method: "POST",
+        url: "https://openrouter.ai/api/v1/chat/completions",
+        responses: [
+          {
+            kind: "response",
+            body: openAiChatBody("anthropic/claude-sonnet-fixture", "stop", true)
+          }
+        ]
+      }
+    ]);
+    const credentials = createFakeCredentialResolver();
+    const registry = createRouteRegistry({
+      routes: [openRouterRoute],
+      exactUsageSink: noopExactUsageSink
+    });
+    const inference = createModelInference({
+      routes: registry,
+      credentials,
+      fetch: fixture.fetch,
+      now: fixedNow
+    });
+
+    const result = await inference.run(buildRequest(openRouterRoute, "idem-openrouter-cache-zero"));
+
+    expect(result.tokens.input).toEqual({ state: "reported", value: 5 });
+    expect(result.tokens.output).toEqual({ state: "reported", value: 3 });
+    // The known limitation: reported as 0, not "unknown", even though the provider said nothing.
+    expect(result.tokens.cachedInput).toEqual({ state: "reported", value: 0 });
+  });
+
   describe("finish reason mapping (fails closed)", () => {
     const runWithFinishReason = async (finishReason: string) => {
       const fixture = createFixtureFetch([

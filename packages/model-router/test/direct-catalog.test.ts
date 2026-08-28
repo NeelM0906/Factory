@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 import {
   CredentialRefIdSchema,
   ModelCatalogEntrySchema,
+  ModelInferenceRequestSchema,
   ModelRoutingError,
   type ModelRoute
 } from "@autostack/contracts";
@@ -14,6 +15,8 @@ import {
   discoverXaiCatalog
 } from "../src/catalog/direct-catalog.js";
 import { createDeclaredCapabilities } from "../src/catalog/declared-capabilities.js";
+import { createRouteRegistry, type ExactUsageSink } from "../src/route-registry.js";
+import { createModelInference } from "../src/transport/transport-client.js";
 import { createFakeCredentialResolver } from "./support/fake-credential-resolver.js";
 import { createFixtureFetch } from "./support/fixture-fetch.js";
 import openAiModelsFixture from "./fixtures/openai-models.json" with { type: "json" };
@@ -47,7 +50,7 @@ const anthropicRoute: ModelRoute = {
     kind: "direct",
     protocol: "anthropic",
     provider: "anthropic",
-    endpoint: "https://api.anthropic.com",
+    endpoint: "https://api.anthropic.com/v1",
     providerModel: "claude-3-5-sonnet-20241022",
     credentialRefId
   },
@@ -63,7 +66,7 @@ const xaiRoute: ModelRoute = {
     kind: "direct",
     protocol: "openai_compatible",
     provider: "xai",
-    endpoint: "https://api.x.ai",
+    endpoint: "https://api.x.ai/v1",
     providerModel: "grok-2-latest",
     credentialRefId
   },
@@ -842,5 +845,208 @@ describe("discoverXaiCatalog", () => {
 
     expect(caught).toBeInstanceOf(TypeError);
     expect(caught).not.toBeInstanceOf(ModelRoutingError);
+  });
+});
+
+/**
+ * Regression coverage for the endpoint-convention defect: catalog discovery
+ * (`src/catalog/direct-catalog.ts`) and model invocation (`src/transport/language-model-factory.ts`,
+ * via `createModelInference`) used to disagree about what `transport.endpoint` means for anthropic
+ * and xai — no single endpoint value made both call sites hit the real provider URL. Each block below
+ * takes ONE route with ONE endpoint value, composes discovery AND invocation against it (through
+ * `createModelInference`, never the individual unit modules), and asserts both resulting URLs against
+ * the provider's real, correct URL — no missing `/v1`, no doubled `/v1`. A per-module test cannot
+ * catch a disagreement between modules; this can only be caught by composing both against one route.
+ */
+describe("endpoint convention: discovery and invocation composed against one route", () => {
+  const noopExactUsageSink: ExactUsageSink = { record: async () => undefined };
+
+  const buildInferenceRequest = (route: ModelRoute, idempotencyKey: string) =>
+    ModelInferenceRequestSchema.parse({
+      schemaVersion: 1,
+      idempotencyKey,
+      selection: {
+        schemaVersion: 1,
+        idempotencyKey,
+        routeRef: route.routeRef,
+        reason: "Route selected for a regression test.",
+        selectedAt: fixedNow()
+      },
+      messages: [{ role: "user", content: "Say hi in one word." }],
+      options: { maxOutputTokens: 32 }
+    });
+
+  const runInference = async (route: ModelRoute, fetch: typeof globalThis.fetch) => {
+    const registry = createRouteRegistry({ routes: [route], exactUsageSink: noopExactUsageSink });
+    const inference = createModelInference({
+      routes: registry,
+      credentials: createFakeCredentialResolver(),
+      fetch,
+      now: fixedNow
+    });
+    await inference.run(buildInferenceRequest(route, `idem-regression-${route.routeRef}`));
+  };
+
+  it("openai: discovery hits {endpoint}/models and invocation hits {endpoint}/chat/completions", async () => {
+    const invocationUrl = "https://api.openai.com/v1/chat/completions";
+    const { fetch, calls } = createFixtureFetch([
+      {
+        method: "GET",
+        url: OPENAI_MODELS_URL,
+        responses: [{ kind: "response", body: openAiModelsFixture }]
+      },
+      {
+        method: "POST",
+        url: invocationUrl,
+        responses: [
+          {
+            kind: "response",
+            body: {
+              id: "chatcmpl-fixture",
+              object: "chat.completion",
+              created: 1,
+              model: "gpt-4o",
+              choices: [
+                {
+                  index: 0,
+                  message: { role: "assistant", content: "hi there" },
+                  finish_reason: "stop"
+                }
+              ]
+            }
+          }
+        ]
+      }
+    ]);
+
+    await discoverOpenAiCatalog({
+      route: openAiRoute,
+      credentials: createFakeCredentialResolver(),
+      fetch,
+      now: fixedNow
+    });
+    await runInference(openAiRoute, fetch);
+
+    expect(calls.find((call) => call.method === "GET")?.url).toBe(OPENAI_MODELS_URL);
+    expect(calls.find((call) => call.method === "GET")?.url).toBe(
+      "https://api.openai.com/v1/models"
+    );
+    expect(calls.find((call) => call.method === "POST")?.url).toBe(invocationUrl);
+    expect(calls.find((call) => call.method === "POST")?.url).toBe(
+      "https://api.openai.com/v1/chat/completions"
+    );
+  });
+
+  it("anthropic: discovery hits {endpoint}/models and invocation hits {endpoint}/messages, from the same versioned-root endpoint", async () => {
+    const invocationUrl = "https://api.anthropic.com/v1/messages";
+    const { fetch, calls } = createFixtureFetch([
+      {
+        method: "GET",
+        url: ANTHROPIC_MODELS_URL,
+        responses: [{ kind: "response", body: anthropicModelsFixture }]
+      },
+      {
+        method: "POST",
+        url: invocationUrl,
+        responses: [
+          {
+            kind: "response",
+            body: {
+              id: "msg-fixture",
+              type: "message",
+              role: "assistant",
+              model: "claude-3-5-sonnet-20241022",
+              content: [{ type: "text", text: "hi there" }],
+              stop_reason: "end_turn",
+              stop_sequence: null,
+              usage: { input_tokens: 5, output_tokens: 3 }
+            }
+          }
+        ]
+      }
+    ]);
+
+    await discoverAnthropicCatalog({
+      route: anthropicRoute,
+      credentials: createFakeCredentialResolver(),
+      fetch,
+      now: fixedNow
+    });
+    await runInference(anthropicRoute, fetch);
+
+    // The route's single `endpoint` value ("https://api.anthropic.com/v1") is the versioned API
+    // root: discovery appends only the resource path, and invocation passes it straight through as
+    // the AI SDK's `baseURL` — neither call site adds or expects a second `/v1` segment.
+    expect(anthropicRoute.transport.kind).toBe("direct");
+    if (anthropicRoute.transport.kind === "direct") {
+      expect(anthropicRoute.transport.endpoint).toBe("https://api.anthropic.com/v1");
+    }
+    expect(calls.find((call) => call.method === "GET")?.url).toBe(ANTHROPIC_MODELS_URL);
+    expect(calls.find((call) => call.method === "GET")?.url).toBe(
+      "https://api.anthropic.com/v1/models"
+    );
+    expect(calls.find((call) => call.method === "POST")?.url).toBe(invocationUrl);
+    expect(calls.find((call) => call.method === "POST")?.url).toBe(
+      "https://api.anthropic.com/v1/messages"
+    );
+    // Neither URL carries a doubled version segment.
+    expect(calls.find((call) => call.method === "GET")?.url).not.toContain("/v1/v1");
+    expect(calls.find((call) => call.method === "POST")?.url).not.toContain("/v1/v1");
+  });
+
+  it("xai: discovery hits {endpoint}/language-models and invocation hits {endpoint}/chat/completions, from the same versioned-root endpoint", async () => {
+    const invocationUrl = "https://api.x.ai/v1/chat/completions";
+    const { fetch, calls } = createFixtureFetch([
+      {
+        method: "GET",
+        url: XAI_MODELS_URL,
+        responses: [{ kind: "response", body: xaiModelsFixture }]
+      },
+      {
+        method: "POST",
+        url: invocationUrl,
+        responses: [
+          {
+            kind: "response",
+            body: {
+              id: "chatcmpl-fixture",
+              object: "chat.completion",
+              created: 1,
+              model: "grok-2-latest",
+              choices: [
+                {
+                  index: 0,
+                  message: { role: "assistant", content: "hi there" },
+                  finish_reason: "stop"
+                }
+              ]
+            }
+          }
+        ]
+      }
+    ]);
+
+    await discoverXaiCatalog({
+      route: xaiRoute,
+      credentials: createFakeCredentialResolver(),
+      fetch,
+      now: fixedNow
+    });
+    await runInference(xaiRoute, fetch);
+
+    expect(xaiRoute.transport.kind).toBe("direct");
+    if (xaiRoute.transport.kind === "direct") {
+      expect(xaiRoute.transport.endpoint).toBe("https://api.x.ai/v1");
+    }
+    expect(calls.find((call) => call.method === "GET")?.url).toBe(XAI_MODELS_URL);
+    expect(calls.find((call) => call.method === "GET")?.url).toBe(
+      "https://api.x.ai/v1/language-models"
+    );
+    expect(calls.find((call) => call.method === "POST")?.url).toBe(invocationUrl);
+    expect(calls.find((call) => call.method === "POST")?.url).toBe(
+      "https://api.x.ai/v1/chat/completions"
+    );
+    expect(calls.find((call) => call.method === "GET")?.url).not.toContain("/v1/v1");
+    expect(calls.find((call) => call.method === "POST")?.url).not.toContain("/v1/v1");
   });
 });
