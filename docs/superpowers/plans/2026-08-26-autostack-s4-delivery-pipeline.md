@@ -349,7 +349,8 @@ git commit -m "feat(workflow): add the delivery station kernel"
 
 Drive the station with `createFakeAgentHarness` scripted to emit a structured triage result. Assert:
 
-- An actionable item produces a `TriageReport` admitted against its schema, a `TriageEvidence` envelope, `run.transitioned → planning`, and one queued `pipeline.plan` job.
+- An actionable item produces a `TriageReport` that **`admitTriageReport`** accepts (0.12 item 3), a `TriageEvidence` envelope, `run.transitioned → planning`, and one queued `pipeline.plan` job.
+- **Names `TriageEvidenceSchema.triageReportDigest`** (optional, landed in 0.12's closing commit `83113dc`), computed with the contracts **`digestTriageReport`** helper — never hand-rolled. Optional is an append-only concession for existing consumers, not licence to omit it: a station that produces a triage report binds its envelope to that exact report, completing the per-station digest chain the same way Task 12 binds `reviewReportDigest`. Assert the digest is reproducible from the report and that a mutated report no longer matches.
 - **`producedBy` passes through untouched (D12).** Assert a harness-supplied `producedBy` survives verbatim into the recorded document, that a document **without** one still admits, and that the station never synthesizes one. The triage digest **includes** `producedBy`, so assert a changed `adapterId` moves the digest.
 - A non-actionable item takes the D10 path: committed `{ stage.failed, run.transitioned → failed }`, nothing enqueued, nothing thrown.
 - An item needing clarification emits `clarification.requested` whose `clarificationRef` matches `TriageReport.clarificationRef`, transitions to `needs_clarification`, and enqueues **no** job (D2).
