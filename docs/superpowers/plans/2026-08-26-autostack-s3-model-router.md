@@ -149,6 +149,21 @@ Rulings received are marked **RULED**; the remainder are implemented as written 
 
   It stayed invisible because `test/direct-catalog.test.ts` and `test/language-model-factory.test.ts` each picked a _self-consistent but mutually incompatible_ endpoint value. **A per-module test cannot catch a disagreement between modules.** The standing requirement that follows: where two modules consume the same contract field, at least one test must exercise both against a **single** value of it. That regression test now exists per direct provider — one route, one endpoint, both call sites, both URLs asserted.
 
+- **DEC-9 (RULED 2026-08-27, merge review) — the router resolves; the caller composes. No sinks on the router's DI surface.** `ModelRouterDependencies` briefly carried `routeEvents` and `usage` sinks that the router never invoked. They are removed rather than wired, because wiring them would drag fallback orchestration and usage recording back _below_ `ModelInferencePort` and undo the boundary ESC-1 and DEC-3 establish. A silently-ignored sink is worse than an absent one: it looks wired, so a consumer supplies it and believes the events are being recorded.
+
+  **The composition recipe (for Wave 2 / I1).** The package exports a kit, not a turnkey pipeline. Wire it in this order:
+
+  1. `router.resolve(context)` → a `ModelRouteSelection` for the preferred route (pipeline stages 1–7).
+  2. Build the ordered target list from the selection plus `policy.fallbackRouteRefs`.
+  3. `runWithFallback({ order, context, attempt, sink: routeEvents, now })` where `attempt` calls `router.run(request)` — the `ModelInferencePort` call — for one target. Each activation emits a `ModelRouteFallback` to **your** `ModelRouteEventSink`.
+  4. `assertWithinInvocationBudget(...)` before each attempt (DEC-3: the port cannot self-enforce, since `ModelInferenceRequest` carries no policy reference).
+  5. `normalizeUsage({ context, routeRef, attempt, ... })` per attempt — including failed ones — into **your** `ModelUsageSink` (DEC-4: a billed failed attempt must never be dropped).
+  6. `router.recordUsage(...)` remains the separate flat `ModelUsageSchema` surface required by `ModelRouterPort`; it is not the normalized path.
+
+- **Availability characteristics recorded for Wave 2 (not defects; deliberate fail-closed trade-offs).**
+  - **A stale-catalog failure is retryable.** When a cached snapshot exceeds `maxStaleMs` the resolve raises `provider_error` with `retryable: true`, so S4's retry policy will back off and retry rather than failing the stage outright — correct, since the condition is a provider outage that may clear.
+  - **The first catalog failure aborts the whole resolve.** Stage 2 raises on a discovery failure for any surviving candidate rather than dropping that route and continuing with the rest. One unreachable provider therefore fails a resolve that a healthy sibling route could have served. This is the fail-closed reading and it is intentional for Milestone A — silently routing around a provider whose catalog we cannot read would mean selecting on stale or absent capability claims. Wave 2 should decide whether per-route degradation is wanted once live behavior is observable.
+
 ---
 
 ## Escalations
@@ -171,6 +186,9 @@ Rulings received are marked **RULED**; the remainder are implemented as written 
   - `createFakeModelInference` in `@autostack/domain/testing` is the reference double for Tasks 10 and 12.
 
 - **ESC-2 (informational) — new dependencies mutate `pnpm-lock.yaml`.** No AI SDK package exists anywhere in the repo today (`grep` over every `package.json`: zero hits for `"ai"`, `@ai-sdk/*`, `@openrouter/*`). Adding them to `packages/model-router/package.json` necessarily rewrites the root `pnpm-lock.yaml`, which the protocol lists under untouchable root config. Read as the mechanical consequence of a package I own. Resolved versions are recorded in the stream report.
+
+  **Flagged for Wave 2 — two majors of `@ai-sdk/gateway` coexist in the lockfile.** `packages/model-router` depends directly on `1.0.41`, while `ai@5.x` pulls `2.0.143` transitively. Both resolve and the gate suite is green, so this is not a blocker: our gateway transport is built from the v1 factory we import by name, and the v2 copy is internal to `ai`. But two majors of a provider package in one tree is the kind of duplication that produces a behavioral surprise only against a live endpoint — precisely what Wave 2's live smoke exists to catch. Wave 2 should either align the direct dependency to the major `ai` already carries, or confirm the split is deliberate and harmless once the live gateway route has been exercised.
+
 - **ESC-3 (informational) — provider catalog fixtures are documentation-derived, not recorded.** Wave 1 forbids live calls, so the five catalog endpoints' responses are hand-authored from each provider's published shape. Mitigation, implemented in Tasks 3–5: every parser is fail-closed — an unrecognized catalog payload produces a classified `provider_error`, never a guessed capability set — so a fixture that drifts from reality degrades to "route unavailable", not to "route silently mis-declared". Wave 2's live smoke proves the shapes; recorded payloads from the user's four credential sets replace the hand-authored fixtures verbatim if the orchestrator can supply them.
 
 ## Risks
