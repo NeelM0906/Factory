@@ -81,6 +81,23 @@ No stylesheet is loaded in any jsdom test in this repo. So **every assertion abo
 
 This also confirms the Task 10b scoping already written there: the web axe-in-Vitest gate covers structure, roles, names, and labelling — **not** colour contrast, which needs a browser that actually cascades. Contrast is Task 15b's, in both themes.
 
+### Storage globals differ between this machine and CI — always inject, never read ambient
+
+Measured in `packages/ui`'s jsdom during the Task 3 review:
+
+```
+window.localStorage    === undefined
+window.sessionStorage  === object      <- asymmetric, and the reason this went unnoticed
+globalThis.localStorage === undefined
+process.version        === v26.0.0
+```
+
+CI pins `node-version: 24` (`.github/workflows/ci.yml:26,108`); this machine runs v26. Both satisfy `engines: ">=24 <27"`, so **local and CI run different majors**, and the storage globals are exactly the kind of thing that varies across them. `sessionStorage` working while `localStorage` does not is what makes this a trap: the existing `app.tsx` token storage uses `sessionStorage` and has never complained.
+
+**Rule, binding on every task:** production code takes storage as an injected prop, and tests supply their own double. **No test may depend on an ambient `localStorage`/`sessionStorage` being present or absent** — that is a test whose result is a function of the Node major, and it will pass here and fail in CI, or worse, the reverse. `ThemeProvider`'s `storage` prop is optional precisely so a caller with no storage degrades to "no persistence" rather than throwing.
+
+Consequence for Task 10b and Task 14: `<ThemeProvider storage={window.localStorage}>` is correct in `apps/web/src/main.tsx` and the desktop renderer — real browsers and Electron both have it — but any _test_ that renders those composition roots must stub it.
+
 ### Lockfile discipline (note 13)
 
 Three tasks touch `pnpm-lock.yaml`, all unavoidably and all expected: Task 10b adds `axe-core` as a devDependency of `@autostack/web`; Task 11a creates the `packages/observability` workspace entry. `pnpm install --frozen-lockfile` is a CI gate, so the lockfile change is committed **with the task that causes it**, never separately, and no task adds a dependency it does not consume in the same commit.
