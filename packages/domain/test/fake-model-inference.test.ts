@@ -125,7 +125,6 @@ describe("fake model inference", () => {
     await inference.run(request());
 
     const view = inference.requests;
-    view.slice().pop();
     expect(inference.requests).toHaveLength(1);
     expect(inference.requests).not.toBe(view);
   });
