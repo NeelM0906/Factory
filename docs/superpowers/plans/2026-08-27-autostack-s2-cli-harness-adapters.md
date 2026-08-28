@@ -860,6 +860,17 @@ The root script is `turbo run test`, and turbo passes everything after `--` thro
 
 The bound is not a preference. On 2026-08-28 an unbounded run turned `apps/control-plane` red with eight 5-second timeouts that all passed on a quiet machine — the same near-the-line profile this stream's own packages have, and the reason they carry a 15s budget. An unbounded local run reports whichever case lost the timing lottery, not what is actually broken.
 
+**Never read turbo's exit code alone.** It can report success over an incomplete run (S6 observed `EXIT 0` alongside "Force killed Turborepo tasks"). The gate evidence must quote `Tasks: N successful, M total` and show **N == M**.
+
+The rule applies to red runs too, which is less obvious. The same 2026-08-28 run reported `21 successful, 23 total` with one failure named — 21 + 1 = 22, not 23. The missing task was `runner-local#test`: turbo cancels in-flight siblings when a task fails, and runner-local is the longest task in the graph, so it was still running and was killed mid-flight. It emitted output but never printed a `Test Files` summary, and nothing but the arithmetic said so. A red run under-reports what ran, so "red because of X" can conceal "and Y never finished".
+
+Reconcile against turbo's own task list — `M` counts `#check` dependency tasks as well as `#test` (23 = 14 test + 9 check), so it will not match the package count:
+
+```bash
+pnpm exec turbo run test --dry-run=json     # tasks[].taskId is the authoritative list
+sed 's/\x1b\[[0-9;]*m//g' <log> | grep -c "Test Files"   # must equal the #test task count
+```
+
 Coverage must be at or above 80% on statements, branches, functions, and lines for all four owned packages. The known pre-existing `runner-local` flake may be re-run once and must be noted if it trips.
 
 - [ ] **Step 2: Self-review pass**
