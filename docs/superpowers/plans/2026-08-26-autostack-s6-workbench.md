@@ -114,7 +114,13 @@ The four escalations raised at PLAN_READY have been ruled on. Each is now a **si
 
 **Decided path:** every feature is built behind `AutoStackApiClient` and lands complete on the HTTP transport. `createDesktopApiClient` implements the four methods by throwing `ApiOperationUnavailableError`, which the UI renders as a **typed, named, non-color-only unavailable state**. When the operations land in contracts 0.12, the desktop client body becomes four `bridge.request` calls and the unavailable state deletes itself. No fake data, no silent no-op, no second code path in the meantime.
 
-The operations, when added by the orchestrator, reuse the existing `IdempotencyKeySchema` (`packages/contracts/src/local-api.ts:26`) for their key field rather than declaring a new regex — this is the D2 ruling applied to the desktop surface.
+**Status after the R0 rebase: the contracts landed, the handler did not.** `DesktopApiRequestSchemaByOperation` now declares all four operations, `.extend()`-derived from the HTTP schemas so the surfaces cannot drift. Two deliberate differences from HTTP, both of which Task 14 must honour:
+
+- **No idempotency key at all** — over IPC the main process derives it, so a renderer cannot replay another window's decision by guessing one. Supplying a key throws. This matches the D2 client exactly: `decideApproval` already sends none.
+- **`origin` is narrowed to the literal `"desktop"`** — the renderer is the desktop, and a contract letting it claim to be Slack would record a lie. The desktop client must therefore set `origin` itself rather than forwarding a caller's value.
+- Note the decide operation carries `approvalId` but **no `runId`**, unlike the HTTP route. The desktop client's method signature differs from the HTTP one by transport, which is expected.
+
+**The `ApiOperationUnavailableError` path remains correct desktop behavior**, because the main-process dispatch arm is Wave 2. The contract exists ahead of its handler, so a renderer call would reach nothing. The stale code comments citing "no such member / lands in 0.12" were corrected at rebase; the tests still describe reality and still pass.
 
 ### D2 — Approval decision idempotency is **server-derived**; the client sends no key (RULED, refined after S4's question)
 
@@ -140,7 +146,35 @@ Client-side the second and third rows are indistinguishable and must be: both ar
 
 **Shape note (analysis retained, now S4's to apply).** `apr_<uuid>:approved:<64-hex>` is 40 + 1 + 8 + 1 + 64 = **114 characters**, starts with an alphanumeric, and uses only `[A-Za-z0-9._:-]` — so it satisfies `IdempotencyKeySchema` at `packages/contracts/src/local-api.ts:26` (`/^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/`, max 128), the `min(1).max(240)` variant in `agent.ts`/`model.ts`/`integration.ts`, and the control plane's `length > 200` header rejection (`apps/control-plane/src/app.ts:159`). Recorded because the ruling rests on it; no code in this stream depends on it.
 
-### D3 — Run supervision data is fixture-backed in Wave 1; Wave 2 I1 binds the transport
+### R0 rebase onto `4bc06ef` (2026-08-27) — what it changed for this stream
+
+`git diff 02e5cff..codex/milestone-a-wave0 -- packages/contracts/src/ packages/domain/src/`, enumerated. **Every inline schema quote elsewhere in this plan is a snapshot taken before this rebase; the contracts are authoritative.**
+
+`EVENT_TYPES` (`packages/contracts/src/events.ts`) gained **five** members, and three of them are transports this plan had ruled unavailable:
+
+| New event                    | Payload                                                                            | Effect here                                                                      |
+| ---------------------------- | ---------------------------------------------------------------------------------- | -------------------------------------------------------------------------------- |
+| `agent.session_event`        | `{ runId, stage, agentSessionId, sequence, event: AgentSessionStreamEventSchema }` | **Kills D3's premise.** Conversation/plan/tool/diff panes have a real transport. |
+| `pipeline.evidence_recorded` | `{ ...identity, attempt, evidence, document?: PipelineStationDocumentSchema }`     | Plan / verification / review documents have a transport.                         |
+| `clarification.requested`    | `{ runId, request: ClarificationRequestSchema }`                                   | Task 7's elicitation flow is durable.                                            |
+| `clarification.answered`     | `{ runId, response: ClarificationResponseSchema }`                                 | Same.                                                                            |
+| `run.steered`                | `{ runId, instruction, origin, actorId, acceptedAt }`                              | Steering is durable and renderable.                                              |
+
+`PipelineStationDocumentSchema` is a `kind`-discriminated union of `triage` / `plan` / `verify` / `isolated_review` carrying `TriageReport`, `PlanDocument`, `VerificationReport`, `ReviewReport` — exactly the four pane payloads.
+
+Also: `ApprovalDecisionRequestSchema.origin` now uses the exported `OriginSchema` rather than a private enum (same members, so the shape-drift guard passed — and it ran, verified by name in a verbose run). The four desktop operations landed, `.extend()`-derived from the HTTP schemas.
+
+### D3 — SUPERSEDED by the rebase: the transport exists
+
+**Original ruling (option c):** panes fixture-backed in Wave 1, transport bound in Wave 2, because no contract carried `AgentSessionStreamEvent` or the station documents.
+
+**That premise is now false.** Both ride the existing `/v1/runs/:runId/events` stream as `agent.session_event` and `pipeline.evidence_recorded`. `ListEventsResponseSchema` needed no change; the events are new members of a union it already returns.
+
+**Revised ruling:** `RunSupervisionSource` (Task 5a) keeps its shape — it is still the right seam, and the fixture implementation is still how the panes are unit-tested — but it gains a **second, real implementation** that derives its four methods from a `StoredDomainEvent[]` page rather than a fixture: filter `agent.session_event` by `agentSessionId` and order by `sequence`; take the latest `pipeline.evidence_recorded` per `document.kind`. That is a pure function over events, testable exactly like the Task 9a metrics engine, and it removes the Wave 2 handoff item entirely.
+
+Deferred, not dropped: wiring that implementation into `App` is Task 10a, where the run detail view is assembled.
+
+### D3 (original) — Run supervision data is fixture-backed in Wave 1; Wave 2 I1 binds the transport
 
 No API contract carries `AgentSessionStreamEvent` (`packages/contracts/src/agent.ts:354`) or the station evidence documents (`station-evidence.ts:90, 157, 216`): `/v1/runs/:runId/events` returns `StoredDomainEvent` and `EVENT_TYPES` has no member for either.
 
@@ -150,7 +184,13 @@ No API contract carries `AgentSessionStreamEvent` (`packages/contracts/src/agent
 
 `EVENT_TYPES` (`packages/contracts/src/events.ts:50-69`) has 18 members and none carries model usage. The contract audit defers appending to it (audit line 451), because it widens `DomainEventType` and `PendingDomainEvent` and needs `validateRunStreamCoherence` updated in the same change.
 
-**Decided path:** the dashboard derives every metric that _is_ event-derivable (Task 9a's table) and renders tokens/cost as an explicit **"Not recorded"** tile — spec §10.2's own rule that missing provider usage is recorded as unknown rather than estimated. `deriveFactoryMetrics` already takes `readonly StoredDomainEvent[]`, so if `model.usage_recorded` is appended later it is a consuming change inside one function and nothing else moves.
+**Decided path (original):** render tokens/cost as an explicit "Not recorded" tile.
+
+**SUPERSEDED by the R0 rebase.** The premise was "no event carries usage". That is no longer true — not because a `model.usage_recorded` event was added, but because `agent.session_event` carries the whole `AgentSessionStreamEventSchema` union, and that union has a `usage` member (`packages/contracts/src/agent.ts`) carrying `tokens: ModelTokenUsageSchema` and `cost: ModelCostSchema`. Usage arrives as a detail event inside the agent stream.
+
+**Revised ruling:** Task 9a derives tokens and cost by summing `agent.session_event` payloads whose inner `event.type === "usage"`. The `reported | unknown` discrimination is preserved end to end and is the whole point: a run whose provider reported nothing contributes `unknown`, and the tile shows **"Not recorded"** for that portion rather than a fabricated zero — spec §10.2 satisfied by construction rather than by omission. A dashboard where _some_ runs reported usage and others did not must show both the sum and the unknown count; a single number would imply completeness the data does not have.
+
+`deriveFactoryMetrics` still takes `readonly StoredDomainEvent[]`, so this is a change inside one function, as predicted.
 
 ### D5 — Playwright scope (exit criterion AMENDED IN WRITING by the orchestrator)
 

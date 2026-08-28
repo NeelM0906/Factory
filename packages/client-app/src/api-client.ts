@@ -167,8 +167,8 @@ export function createDesktopApiClient(options: CreateDesktopApiClientOptions): 
         idempotencyKey: createIdempotencyKey()
       });
     },
-    // D1: `DesktopApiOperationMap` (packages/contracts/src/desktop-api.ts:162-204) has no
-    // `factory.approvals.*` member — the bridge cannot reach this route until contracts 0.12.
+    // D1: the operation now exists in `DesktopApiOperationMap`, but the main-process dispatch arm
+    // that services it is Wave 2 work — the contract landed ahead of its handler.
     // No fake data, no silent no-op, no cast to smuggle an unmodelled operation through
     // `bridge.request`: this throws before the bridge is ever touched.
     async listApprovals(_query, signal) {

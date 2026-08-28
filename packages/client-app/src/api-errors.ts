@@ -35,8 +35,9 @@ export class ApiRequestValidationError extends Error {
 
 /**
  * D1: the desktop bridge cannot reach this operation. `DesktopApiOperationMap`
- * (`packages/contracts/src/desktop-api.ts:162-204`) has no `factory.approvals.*`,
- * `factory.runs.steer`, or `factory.runs.cancel` member — the operations land in contracts 0.12.
+ * now declares `factory.approvals.list`, `factory.approvals.decide`, `factory.runs.steer`, and
+ * `factory.runs.cancel`, but the main-process dispatch arm that services them is Wave 2 work. The
+ * contract exists; the handler behind it does not, so a renderer call would reach nothing.
  * Carries the operation name and nothing else: no fake data, no silent no-op.
  */
 export class ApiOperationUnavailableError extends Error {
