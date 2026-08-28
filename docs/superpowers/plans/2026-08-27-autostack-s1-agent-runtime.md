@@ -3,10 +3,13 @@
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Date:** 2026-08-27 · **Revision 3** (rebased onto the Wave 0 tip; R0 enumeration reconciled against the landed contracts)
-**Stream:** S1 (Wave 1) · **Worktree:** `/Users/zidane/factory-s1` · **Branch:** `codex/milestone-a-s1-agent-runtime` · **Base:** `4bc06ef` (`codex/milestone-a-wave0`)
+**Stream:** S1 (Wave 1) · **Worktree:** `/Users/zidane/factory-s1` · **Branch:** `codex/milestone-a-s1-agent-runtime` · **Base:** `f8982ec` (Wave 0 + Stream S3 folded)
+
 **Charter:** `docs/superpowers/plans/2026-08-26-autostack-milestone-a-parallel.md` § "Stream S1: Agent runtime and native agent"
 **Spec:** `docs/superpowers/specs/2026-08-20-autostack-design.md` §8.1, §8.2, §8.3, §9.1, §9.4, §10.2, §14.1, §14.4, §15, §16.2
 **Contract map:** `docs/development/milestone-a-contract-audit.md` items 1–5, 8–11, 21, plus Wave 0 Task 0.12
+
+> The contract enumeration below was taken against `4bc06ef`. The S3 fold to `f8982ec` added `packages/model-router` and touched no file under `packages/contracts/src/` or `packages/domain/src/` — verified, not assumed — so the enumeration still describes the base exactly.
 
 **Goal:** Deliver the two packages that make an agent teammate a supervised, normalized, evidence-producing session: `@autostack/agent-runtime` (harness registry with installed/authenticated probing, sequence-ordered session relay, interruption marking on host loss, bounded cancellation) and `@autostack/agent-native` (one `AgentHarnessPort` implementation configured into the triage, plan, and review roles, producing schema-valid station evidence from versioned prompts through `ModelRouterPort` and `ModelInferencePort`, with no provider SDK and no credential anywhere in the stream).
 
