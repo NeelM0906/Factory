@@ -576,13 +576,46 @@ describe("createSlackIntegration", () => {
 });
 
 describe("index.ts export surface", () => {
-  it("exports the Slack integration factory and its supporting composers", () => {
-    expect(typeof SlackIntegrationModule.createSlackIntegration).toBe("function");
-    expect(typeof SlackIntegrationModule.createMemoryIdempotencyRecordStore).toBe("function");
-    expect(typeof SlackIntegrationModule.composeSlackMessage).toBe("function");
-    expect(typeof SlackIntegrationModule.composeApprovalPrompt).toBe("function");
-    expect(typeof SlackIntegrationModule.assertPostable).toBe("function");
-    expect(typeof SlackIntegrationModule.buildApprovalPromptBlocks).toBe("function");
-    expect(typeof SlackIntegrationModule.createSlackChatClient).toBe("function");
+  // Set equality, not `typeof X === "function"` per name (guard-test doctrine, and the form the
+  // GitHub adapter's own comment warns against). A per-name typeof check passes for ANY superset,
+  // so an accidentally-exported internal could leak forever without a single test noticing. Set
+  // equality rejects both directions: a missing export AND an unintended extra one.
+  it("exports exactly the documented public surface, no more and no less", () => {
+    const actualExportNames = new Set(Object.keys(SlackIntegrationModule));
+
+    const expectedExportNames = new Set([
+      // errors
+      "SlackRequestError",
+      "classifySlackFailure",
+      // http
+      "verifySlackSignature",
+      // ingress
+      "SlackUnsupportedEventError",
+      "parseSlackEventDelivery",
+      "parseSlackUrlVerificationChallenge",
+      "parseSlackApprovalAction",
+      "parseSlackMessageAction",
+      // socket mode
+      "createMemoryIngressQueue",
+      "createGlobalWebSocketFactory",
+      "createSocketModeClient",
+      // message composition
+      "assertPostable",
+      "composeSlackMessage",
+      "buildApprovalPromptBlocks",
+      "composeApprovalPrompt",
+      // client + assembly
+      "createSlackChatClient",
+      "createMemoryIdempotencyRecordStore",
+      "createSlackIntegration"
+    ]);
+
+    expect(actualExportNames).toEqual(expectedExportNames);
+  });
+
+  // Pins the asymmetry the merge review flagged, now resolved in favour of NOT exporting: the
+  // dedup key is derived state, and the parser is the only supported way to obtain one.
+  it("does not export the dedup-key builder, matching the GitHub adapter", () => {
+    expect(Object.keys(SlackIntegrationModule)).not.toContain("buildSlackDeliveryDeduplicationKey");
   });
 });

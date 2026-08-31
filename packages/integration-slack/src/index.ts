@@ -7,9 +7,14 @@ export {
   type SlackRequestErrorOptions
 } from "./errors.js";
 export { verifySlackSignature, type VerifySlackSignatureInput } from "./http/signature.js";
+// `buildSlackDeliveryDeduplicationKey` is deliberately NOT exported, matching the GitHub adapter.
+// The dedup key is derived state whose per-event discriminator rules live in the parser, and the
+// parser is the only supported way to obtain one. A second public entry point invites a caller to
+// construct keys by hand, which is exactly how the two drift apart — a concrete risk, not a
+// hypothetical one: the merge review's HIGH-1 changed the GitHub key shape, and any hand-built
+// key would still be using the old collapsing form.
 export {
   SlackUnsupportedEventError,
-  buildSlackDeliveryDeduplicationKey,
   parseSlackEventDelivery,
   parseSlackUrlVerificationChallenge,
   type ParseSlackEventDeliveryInput,
