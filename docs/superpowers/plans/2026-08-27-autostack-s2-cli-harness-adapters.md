@@ -135,6 +135,32 @@ Verified against the rebased base before any new work: all sixteen planned codes
 - `OriginSchema`/`ORIGINS` are now exported from `entities.ts`; not consumed by this stream.
 - `ModelInferencePort` and its fake, the five new event types, and the station-evidence and pipeline additions are other streams' lanes and touch no surface this stream produces or consumes.
 
+**D-14 — A guard test names the wrong implementation it rejects, and its red evidence comes from that defect.** _(S6 doctrine, adopted 2026-08-31.)_
+
+"I broke it and the test went red" is satisfied by **deleting** the component, which proves only that the test observes the component's existence. S6's discovering case: a fallback test could not distinguish `||` from `=== undefined`, because both pass when the value is `undefined` — only companion assertions on `0` and `""` gave it teeth.
+
+So every guard in this stream carries a named defect list, and its red evidence must come from **that** defect rather than from removal. Two places this bites hardest, both of which the conformance suite cannot check for us:
+
+_Quiesce honesty (Task 2 Step 9) — each wrong implementation gets its own case:_
+
+| Defect             | Wrong implementation                                      | The case that must reject it                                                                                                                    |
+| ------------------ | --------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------- |
+| `lazy`             | `async () => {}` — resolves immediately                   | a frame already written by the child but not yet pulled: `isPending` must be **false**; a lazy quiesce returns before delivery and reports true |
+| `microtask-only`   | the in-process default, `for (8) await Promise.resolve()` | a child that emits on a macrotask — a microtask drain returns before the frame lands                                                            |
+| `check-phase-only` | a bare `setImmediate` loop                                | a child whose bytes arrive only on a **poll**-phase read, which the check phase can skip entirely                                               |
+| `fixed-turn`       | loop a constant number of turns, ignoring the counters    | a child that emits one turn later than the constant                                                                                             |
+| `no-floor`         | resolve as soon as counters are momentarily stable        | a live child that is between writes — stable for an instant, then writes                                                                        |
+
+_D-3 buffering (Tasks 7–8) — likewise:_
+
+| Defect             | Wrong implementation                                   | The case that must reject it                                                        |
+| ------------------ | ------------------------------------------------------ | ----------------------------------------------------------------------------------- |
+| `eager-emit`       | map `tool_use` straight to `tool_call` phase `started` | the gated fixture: no `tool_call` may appear before `permission_resolved`           |
+| `never-flush`      | buffer, but only ever release on an approval           | an **ungated** call, whose `tool_result` must still produce `started` + `completed` |
+| `unbounded-buffer` | buffer with no entry or byte ceiling                   | a provider that announces without ever resolving — must classify, not grow          |
+
+Deleting the buffer or the quiesce is **not** acceptable red evidence for any row above.
+
 **Remaining escalations:** none blocking. E-1 is resolved in favour of Option B — S2 implements the child supervisor inside `agent-adapter-kit`, modelled on but not copied from the private `packages/runner-local/src/process-runner.ts`, importing runner-local's public redaction, path-policy, and signal exports. The module is to be written so that promoting it into `runner-local` later is a clean lift. E-3's `AgentEvidenceSink` port is confirmed as S2-owned.
 
 ---

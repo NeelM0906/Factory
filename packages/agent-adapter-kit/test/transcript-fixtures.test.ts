@@ -157,6 +157,30 @@ const CODEX_GATED_ITEM_TYPES = new Set([
  * A frame the mapper would turn into a `tool_call` or a `file_change` — the events D-3 forbids
  * before the decision.
  */
+/**
+ * A frame the adapter would turn into an evidence-bearing event — content, not protocol.
+ *
+ * D-2 hinges on this distinction: signal death *after evidence* is `interrupted` (the partial
+ * evidence must be preserved), while signal death *before any* evidence is `failed`, because there
+ * is nothing partial to preserve. A guard that merely counts `emit` frames cannot tell those apart:
+ * a transcript whose only emits are `initialize`/`thread/start` handshake responses would satisfy
+ * it while describing a session that never produced anything.
+ *
+ * Named defect this rejects: a handshake-only `interrupted` transcript.
+ */
+const isEvidenceBearing = (provider: TranscriptProvider, frame: TranscriptFrame): boolean => {
+  const value = emitted(frame);
+  if (!isRecord(value)) return false;
+  switch (provider) {
+    case "claude":
+      return value["type"] === "assistant" || value["type"] === "user";
+    case "codex":
+      return typeof value["method"] === "string" && value["method"].startsWith("item/");
+    case "acp":
+      return value["method"] === "session/update";
+  }
+};
+
 const claudeContentHas = (value: Record<string, unknown>, blockType: string): boolean => {
   const content = readAt(value, "message", "content");
   if (!Array.isArray(content)) return false;
@@ -314,8 +338,13 @@ describe("checked-in transcript fixtures", () => {
       expect(last.signal).not.toBe("");
       expect(last.code).toBeNull();
 
-      const evidence = frames.filter((frame) => frame.kind === "emit");
-      expect(evidence.length).toBeGreaterThan(0);
+      // Evidence-bearing, not merely "some emit frame" — see isEvidenceBearing. A handshake-only
+      // transcript describes a session that produced nothing, which D-2 classifies as `failed`.
+      const evidence = frames.filter((frame) => isEvidenceBearing(entry.provider, frame));
+      expect(
+        evidence.length,
+        "an `interrupted` transcript must carry evidence to preserve; protocol handshakes are not evidence"
+      ).toBeGreaterThan(0);
 
       for (const frame of frames) {
         expect(isProviderErrorShape(entry.provider, frame)).toBe(false);
