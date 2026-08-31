@@ -163,4 +163,34 @@ describe("classifyStageFailure", () => {
       expectValid(failure);
     });
   });
+
+  // Found by asking the standing question: "what does the environment supply when the feature is
+  // absent, and does that value pass?" `new Error().message` is `""` — the environment's own
+  // default — so every branch that reads a message falls through to the fallback string, and until
+  // now nothing exercised that path. The wrong implementation this rejects is one that drops the
+  // fallback and lets `""` through: `WorkflowFailureSchema` requires `message` at `min(1)`, so
+  // `build()` would THROW — inside the very function whose job is to render failures survivable.
+  // That throw would escape a station's catch and reach the executor as an unhandled error.
+  describe("an error carrying no message", () => {
+    it.each([
+      ["a bare Error", new Error()],
+      ["an Error whose message is whitespace", new Error("   ")]
+    ])("still classifies %s instead of throwing", (_label, value) => {
+      const failure = classifyStageFailure(value);
+      expect(failure.message.length).toBeGreaterThan(0);
+      expectValid(failure);
+    });
+
+    it("falls back for an agent-session failure whose message is empty", () => {
+      const failure = classifyStageFailure({
+        type: "failed",
+        code: "network_timeout",
+        retryable: true,
+        message: ""
+      });
+      expect(failure.code).toBe("network_timeout");
+      expect(failure.message.length).toBeGreaterThan(0);
+      expectValid(failure);
+    });
+  });
 });
