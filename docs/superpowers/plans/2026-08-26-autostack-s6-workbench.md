@@ -106,7 +106,43 @@ Converged across streams 2026-08-28, after this machine hit load 31.5 on 10 core
   **Not** `pnpm test -- --concurrency=2` — pnpm forwards the flag past turbo into vitest, which errors (S4 verified). Not bare `pnpm test` either; that is unbounded.
 - **During development:** package-scoped runs only (`pnpm --filter <pkg> test`).
 - **A full-suite failure is suspect until isolated.** Varying victims across runs, all of them timeouts, is the contention signature — not a regression. Observed directly here: `apps/control-plane` failed one full run and then passed **210/210 in isolation**; `runner-local` was the victim on the very next run. Isolate before reporting.
-- **Turbo can exit 0 on an incomplete run.** One attempt here reported `exit=0` alongside `Force killed Turborepo tasks: @autostack/runner-local#test`, finishing in 1m40s when that suite alone takes ~7 minutes. **Never read the exit code alone.** Read the `Tasks: N successful, M total` line and confirm `N == M`. A green exit over a force-killed task is the same class of lie as a guard that never fails, and Task 16's gate evidence must quote that line rather than an exit status.
+  **Turbo misreports in both directions. The two failures are complementary, and neither is caught by the other's check.**
+
+- **The exit code lies green.** One attempt here reported `exit=0` alongside `Force killed Turborepo tasks: @autostack/runner-local#test`, finishing in 1m40s when that suite alone takes ~7 minutes. Never read the exit code alone.
+- **The task count lies red** (S2's observation). On a failure turbo cancels in-flight siblings; a cancelled task that had already emitted output _looks_ present in the log but never prints a summary. `N` alone hides it — only `N` **plus the failed list** against `M` exposes it.
+
+**The reconciliation, computed for this repo** (`pnpm exec turbo run test --dry-run=json`):
+
+```
+M = 22 total  =  13 #test  +  9 #check
+```
+
+So a valid full run must satisfy **all three**, not any one:
+
+1. `Tasks: N successful, M total` with `N == M == 22`, and no `Failed:` line.
+2. No `Force killed Turborepo tasks:` line anywhere in the output.
+3. Exactly **13** `Test Files` summary blocks — one per `#test` task. Fewer means a suite was cancelled after emitting output.
+   **Criterion 3 requires an untruncated log.** A run moved to the background by the harness has its capture file truncated to the tail — one such file here was 656 bytes — so the count reads `0` and looks like catastrophic failure when nothing of the sort happened. If the log is truncated, criterion 3 is _unavailable_, not failed. Say so rather than reporting a false red.
+
+The recurring `Cached: 9 cached` is exactly the nine `#check` tasks, which is expected.
+
+Task 16's gate evidence quotes all three, never an exit status.
+
+**The false green also occurs one layer up.** A harness-backgrounded run here ended with `[exited with code 0]` appended directly under turbo's own `ERROR run failed: command exited (1)`. The wrapper's exit code described the wrapper, not the work. Same rule: read the `Tasks:` and `Failed:` lines, never any exit code.
+
+### One suite at a time, machine-wide (standing rule, 2026-08-28)
+
+Four leads ran suites concurrently and pinned the machine; a watchdog cluster followed and a plain `prettier --write` timed out at five minutes. Before starting **any** suite:
+
+```bash
+ps aux | grep -E "vitest|turbo" | grep -v grep
+```
+
+If a sibling's suite is live, yield and re-check on a bounded interval rather than starting. **S4 has priority when contended.** Package-scoped runs during development; the full suite only when the machine is clear.
+
+Corroborating measurement: the same `runner-local` suite that takes ~427s alone took **2112.93s** during the cluster — a 5x inflation, which is the contention signature stated as a number.
+
+**Turbo's cache is shared across sibling worktrees.** Verified here: four `check` tasks in an S6 run were cache hits _replaying logs from `/Users/zidane/factory-s3`_. It is content-addressed, so a hit is legitimate — but it means a "green" gate may not have executed those tasks in this worktree at all, and a poisoned entry would propagate across streams. For the Task 16 merge gate, run the final pass with `--force` so every task actually executes here.
 
 ### Lockfile discipline (note 13)
 
