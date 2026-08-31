@@ -633,6 +633,36 @@ git commit -m "feat(ui): add the command palette and persistent composer"
 
 ---
 
+### Task 4b rulings (decided 2026-08-28)
+
+1. **The `CommandPalette` Close button stays** — but on its own merits, not the test's. A modal dialog needs a visible close affordance for operators who cannot press `Escape` (switch access, on-screen keyboards, some AT). That it also makes the focus-trap assertion non-degenerate is a welcome consequence, not the justification. Adding UI so a test has something to grip would be backwards; adding UI an accessible dialog owes its users is not.
+2. **Arrow keys clamp in the palette and wrap in the pane group.** This asymmetry is deliberate, and Task 7 must not "fix" it into parity. The principle: **wrap when the whole set is visible at once; clamp when the list scrolls.** A tablist shows all six panes simultaneously, so wrapping from last to first is visually obvious. A filtered command list scrolls, and wrapping silently jumps the viewport, costing the operator their place. ARIA permits either for both.
+3. **The `Composer` textarea stays editable while `busy`.** Only the submit control disables. The requirement is about the submit control remaining in the accessibility tree; locking the field would also discard whatever the operator was mid-way through typing.
+4. **A dead guard was removed.** `commit()` carried `if (!hasContent) return;` while its sole caller already gated on `!hasContent`. The report justified it as defense-in-depth "also called from the confirmed-cancel path" — that path passes through the same gate, so the justification did not hold and the branch was genuinely unreachable. Removed under the no-handling-for-impossible-scenarios constraint; the invariant now lives at the one boundary that can enforce it. Coverage on that file rose 92.59% → 96%.
+
+### `fireEvent.click` does not move focus in this jsdom — a third vacuous-guard vector
+
+Measured during the Task 4b review:
+
+```
+fireEvent.click(button)  ->  document.activeElement === <body>
+button.focus()           ->  document.activeElement === the button
+```
+
+A real browser focuses a clicked button; this jsdom does not. So **a "focus returns to the invoker after close" test that opens via `fireEvent.click` asserts against `<body>`** — and passes whether or not focus restoration works at all.
+
+Every focus-return test in this stream must call `.focus()` on the invoker explicitly before clicking it.
+
+This is the third distinct way a guard can be vacuous here, and the pattern is now worth naming outright:
+
+| Vector                           | Silently makes true                       |
+| -------------------------------- | ----------------------------------------- |
+| jsdom loads no CSS               | any token / contrast / duration assertion |
+| `undefined` is falsy             | `value \|\| fallback` vs `=== undefined`  |
+| `fireEvent.click` does not focus | any focus-return assertion                |
+
+The common shape: **the environment supplies a default that happens to satisfy the assertion.** When writing a guard, ask what the environment returns when the feature is absent — if that value passes, the guard is decorative.
+
 ## Task 5a: The supervision port and the conversation, plan, and terminal panes
 
 **Files:**
