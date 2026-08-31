@@ -3,13 +3,13 @@
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Date:** 2026-08-27 · **Revision 3** (rebased onto the Wave 0 tip; R0 enumeration reconciled against the landed contracts)
-**Stream:** S1 (Wave 1) · **Worktree:** `/Users/zidane/factory-s1` · **Branch:** `codex/milestone-a-s1-agent-runtime` · **Base:** `f8982ec` (Wave 0 + Stream S3 folded)
+**Stream:** S1 (Wave 1) · **Worktree:** `/Users/zidane/factory-s1` · **Branch:** `codex/milestone-a-s1-agent-runtime` · **Base:** `71249b3` (Wave 0 + Stream S3 + the control-plane suite-timeout re-budget)
 
 **Charter:** `docs/superpowers/plans/2026-08-26-autostack-milestone-a-parallel.md` § "Stream S1: Agent runtime and native agent"
 **Spec:** `docs/superpowers/specs/2026-08-20-autostack-design.md` §8.1, §8.2, §8.3, §9.1, §9.4, §10.2, §14.1, §14.4, §15, §16.2
 **Contract map:** `docs/development/milestone-a-contract-audit.md` items 1–5, 8–11, 21, plus Wave 0 Task 0.12
 
-> The contract enumeration below was taken against `4bc06ef`. The S3 fold to `f8982ec` added `packages/model-router` and touched no file under `packages/contracts/src/` or `packages/domain/src/` — verified, not assumed — so the enumeration still describes the base exactly.
+> The contract enumeration below was taken against `4bc06ef`. Neither the S3 fold to `f8982ec` (which added `packages/model-router`) nor `71249b3` (which changes only `apps/control-plane/vitest.config.ts`) touches any file under `packages/contracts/src/` or `packages/domain/src/` — verified by diff at each rebase, not assumed — so the enumeration still describes the base exactly.
 
 **Goal:** Deliver the two packages that make an agent teammate a supervised, normalized, evidence-producing session: `@autostack/agent-runtime` (harness registry with installed/authenticated probing, sequence-ordered session relay, interruption marking on host loss, bounded cancellation) and `@autostack/agent-native` (one `AgentHarnessPort` implementation configured into the triage, plan, and review roles, producing schema-valid station evidence from versioned prompts through `ModelRouterPort` and `ModelInferencePort`, with no provider SDK and no credential anywhere in the stream).
 
@@ -75,6 +75,7 @@ Rebased 2026-08-27. **This section is the R0 enumeration — it was written from
 - Files stay small and single-concern (200–400 lines typical, 800 hard max), matching `packages/runner-local/src/`.
 - TDD per step: write the failing test, run it, observe the stated failure, implement minimally, re-run focused, then run the package's full suite before the task's commit. Conventional-commit message per task.
 - Ownership: only `packages/agent-runtime/**`, `packages/agent-native/**`, and this plan file. Any other path is an escalation.
+- **Gate evidence: read the task-count line, never the exit code alone.** `turbo` can exit **0 over an incomplete run** — it prints `Force killed Turborepo tasks: …`, finishes far too fast, and still reports success. A gate is green only when the summary reads `Tasks: N successful, N total` with **N equal to M**, and every gate claim in a report, a task brief, or the ledger must **quote that line verbatim**. A bare "tests passed", an exit code, or a `| tail` that scrolled the summary off is not evidence. Expected totals on this base: **22** for `pnpm test`, **13** for `pnpm check`. A run whose total drops below those numbers is incomplete, not green — this is the silent sibling of the `--` flag trap, and strictly more dangerous because nothing fails loudly.
 - **Git: single-committer (option A of the 2026-08-27 cross-stream bulletin).** Task subagents never run a mutating git command — no `add`, `commit`, `reset`, `amend`, `stash`, `checkout`, or `restore`. They write code and tests, run the package's own verification, and report through files under `.superpowers/sdd/`; the stream lead reviews the working tree and makes every commit. This stream shares one worktree across potentially parallel implementers (T1, T4, T5, and T7 have no ordering dependency between them), and `git commit` commits the whole index however explicit the `add` was — so a pathspec-limited commit would still leave `index.lock` contention and a sibling's `reset` would still sweep staged work. Option A removes the class rather than narrowing it. The per-task "verify and commit" steps below are therefore lead actions, and the commands in them are run by the lead after review.
 
 ---
@@ -701,7 +702,9 @@ pnpm --filter @autostack/agent-native test:coverage
 pnpm test
 ```
 
-Expected: all green; coverage ≥80% on statements, branches, functions, and lines for both owned packages; the known runner-local flake re-run once and noted if it trips.
+Expected: coverage ≥80% on statements, branches, functions, and lines for both owned packages; the known runner-local flake re-run once and noted if it trips.
+
+**Do not report this gate from an exit code.** Capture and quote the summary line of each turbo-driven command and confirm the counts match: `pnpm test` must read `Tasks: 22 successful, 22 total` (24 once this stream's two packages land) and `pnpm check` must read `Tasks: 13 successful, 13 total` (15 with the new packages). If the total is lower than expected, or the output contains `Force killed Turborepo tasks`, the run was **incomplete and is not evidence of anything** — regardless of exit status. Never pipe these through `tail` alone, which is how the summary gets scrolled away; capture the full output and grep the summary out of it.
 
 - [ ] **Step 4: Self-review pass**
 
