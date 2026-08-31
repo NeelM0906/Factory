@@ -655,11 +655,14 @@ Every focus-return test in this stream must call `.focus()` on the invoker expli
 
 This is the third distinct way a guard can be vacuous here, and the pattern is now worth naming outright:
 
-| Vector                           | Silently makes true                       |
-| -------------------------------- | ----------------------------------------- |
-| jsdom loads no CSS               | any token / contrast / duration assertion |
-| `undefined` is falsy             | `value \|\| fallback` vs `=== undefined`  |
-| `fireEvent.click` does not focus | any focus-return assertion                |
+| Vector                                    | Silently makes true                             |
+| ----------------------------------------- | ----------------------------------------------- |
+| jsdom loads no CSS                        | any token / contrast / duration assertion       |
+| `undefined` is falsy                      | `value \|\| fallback` vs `=== undefined`        |
+| `fireEvent.click` does not focus          | any focus-return assertion                      |
+| React drops `undefined` children silently | any text-pattern assertion on fabricated markup |
+
+The fourth vector was caught by the Task 5b implementer against its own guard: a findings-pane implementation that always rendered the location paragraph produced `":-"` when `location` was `undefined` — React skips `undefined` children rather than printing "undefined" — so `not.toMatch(/:\d/)` passed against the exact wrong implementation it named. Text-pattern assertions cannot see fabricated-but-empty markup; assert **element absence** (`querySelector(...) === null`), not text absence.
 
 The common shape: **the environment supplies a default that happens to satisfy the assertion.** When writing a guard, ask what the environment returns when the feature is absent — if that value passes, the guard is decorative.
 
