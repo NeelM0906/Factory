@@ -1,0 +1,25 @@
+{
+  "action": "opened",
+  "number": 7,
+  "pull_request": {
+    "number": 7,
+    "title": "Fix flaky checkout test",
+    "body": "Adds an explicit wait for the confirmation modal instead of a fixed sleep.",
+    "user": {
+      "id": 500100204,
+      "login": "octocat-contributor"
+    }
+  },
+  "repository": {
+    "id": 900100100,
+    "full_name": "autostack-fixtures/checkout-service",
+    "name": "checkout-service",
+    "owner": {
+      "login": "autostack-fixtures"
+    }
+  },
+  "sender": {
+    "id": 500100204,
+    "login": "octocat-contributor"
+  }
+}

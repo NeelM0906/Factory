@@ -1,0 +1,25 @@
+{
+  "action": "deleted",
+  "issue": {
+    "number": 42,
+    "title": "Flaky checkout test fails intermittently",
+    "body": "The checkout E2E test fails about 1 in 20 runs with a timeout waiting for the confirmation modal.",
+    "user": {
+      "id": 500100201,
+      "login": "octocat-reporter"
+    },
+    "labels": []
+  },
+  "repository": {
+    "id": 900100100,
+    "full_name": "autostack-fixtures/checkout-service",
+    "name": "checkout-service",
+    "owner": {
+      "login": "autostack-fixtures"
+    }
+  },
+  "sender": {
+    "id": 500100202,
+    "login": "octocat-triager"
+  }
+}
