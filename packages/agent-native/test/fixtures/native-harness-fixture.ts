@@ -259,7 +259,16 @@ const createSubject = (
   const config: NativeHarnessConfig = {
     adapterId,
     role: "review",
-    session: { resumable: capabilities.full, steerable: capabilities.full },
+    // GREEN-phase defect fix (lead re-review): `interactive` opts into the engine's pre-model-call
+    // operator wait, separately from the `steerable` capability bit. Only the pauses scenario runs
+    // interactively — a steerable subject that always blocked for an operator could never satisfy
+    // the suite's unattended `completes` obligation, so one fixed config cannot serve both unless
+    // the capability and the wait are distinct knobs.
+    session: {
+      resumable: capabilities.full,
+      steerable: capabilities.full,
+      interactive: capabilities.full && scenario === "pauses"
+    },
     permissioned: capabilities.full,
     context: {
       paths: wiring.contextPaths,

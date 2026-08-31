@@ -25,6 +25,15 @@ export {
   type ModelRoutingClassificationEntry
 } from "./failure-classification.js";
 export {
+  createNativeHarness,
+  type NativeAgentHarness,
+  type NativeContextConfig,
+  type NativeHarnessConfig,
+  type NativeHarnessDeps,
+  type NativeRoleInput,
+  type NativeRoleInputsProvider
+} from "./native-harness.js";
+export {
   admitStructuredOutput,
   type StructuredOutputOutcome,
   type StructuredOutputPolicy,
