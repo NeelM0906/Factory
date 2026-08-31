@@ -3,7 +3,11 @@ name: CI
 on:
   push:
     branches: [main]
+  # Stream S5's live GitHub suite opens and closes draft PRs against `autostack/e2e-base-*`
+  # branches on this repository. Without this filter every one of them would start the whole
+  # matrix to test a branch that exists only as a fixture. PRs with any other base are unaffected.
   pull_request:
+    branches-ignore: ["autostack/**"]
 
 permissions:
   contents: read
