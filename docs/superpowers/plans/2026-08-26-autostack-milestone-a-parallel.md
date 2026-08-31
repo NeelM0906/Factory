@@ -177,6 +177,7 @@ Two streams in parallel, then a serial acceptance run.
 - [ ] Live model-route smoke for all four credential sets (Anthropic, OpenAI, Gateway, OpenRouter) behind `AUTOSTACK_LIVE_MODEL_SMOKE=1`.
 - [ ] Implement spec §17.4 journeys 1, 4, 5, 6, 7, 8 as Playwright tests against the built desktop bundles (journey 2 Slack and 3 GitHub run fixture-backed here, live at wiring time).
 - [ ] Extend `scripts/verify-local-execution.mjs` into `scripts/verify-milestone-a.mjs` adding pipeline restart-resume and duplicate-external-action checks (acceptance criterion 14).
+- [ ] **Ingress→intake requester mapping (S4-flagged seam, orchestrator-confirmed 2026-08-31):** the composition that converts a consumed `IngressDelivery` into `IntakeWorkItemInput` MUST map `requester.externalId` from `delivery.issue.authorId` — which for `issue_comment.created` is the **commenter**, not the issue opener, by S5's parser contract (b76b46d). S4's source-authorization check (Task 4A) authorizes whatever this field carries; a wrong mapping here authorizes the wrong person while every stream's own tests stay green. The composition test must include the commenter≠issue-author vector.
 
 ### Stream I2: Packaging and security tests
 
