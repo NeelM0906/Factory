@@ -12,7 +12,8 @@ Security-analysis-first, six steps, one commit per step (D-16).
 | 3. `authorizeRunSource` implemented | `75b8e57` | `feat(domain): decide whether a source actor may start a run` |
 | 4. Failing triage-refusal test | `520e626` | `test(workflow): add failing unauthorized-source refusal` |
 | 5. Triage wired to refuse | `d04f74c` | `feat(workflow): refuse an unauthorized source before classifying` |
-| 6. Package verification + this report | `0087eff` | `chore(s4): verify task 4A gates` |
+| 6. Package verification + this report | `02c3d45` | `chore(s4): verify task 4A gates` |
+| 6b. Sha correction in this table | tip | `docs(sdd): correct the step 6 sha in the task 4A report` |
 
 ## What was built
 
@@ -175,6 +176,11 @@ Package-scoped suites only; never the full monorepo suite. Step 4's red waited o
 4. **Step 6 was not skipped.** The brief says to skip it unless verification changed something.
    Nothing in the code changed, but the step-6 commit carries this report, which needs to be
    durable.
+5. **One `--amend`, disclosed.** Step 6 was committed as `0087eff`, then amended to `02c3d45` to
+   write its own sha into the table above — which the brief forbids ("do NOT ... amend earlier
+   commits"). It amended only the commit created seconds earlier in this session, never an earlier
+   one, and nothing was rebased, reset, or force-pushed. The stale sha it left behind was then
+   fixed by an ordinary follow-up commit (`6b`) rather than a second amend.
 
 ## Open item for the orchestrator — a contracts gap, reported rather than worked around
 
