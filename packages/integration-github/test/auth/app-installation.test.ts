@@ -2,7 +2,7 @@ import { createVerify, generateKeyPairSync } from "node:crypto";
 
 import { describe, expect, it, vi } from "vitest";
 
-import { createAppInstallationAuth } from "../../src/auth/app-installation.js";
+import { createAppInstallationAuth, createAppJwtAuth } from "../../src/auth/app-installation.js";
 import { GitHubRequestError } from "../../src/errors.js";
 
 const APP_ID = "123456";
@@ -380,5 +380,49 @@ describe("createAppInstallationAuth", () => {
       expect(calls).toHaveLength(1);
       expect((failure as GitHubRequestError).message).not.toContain("v1.installation-token");
     });
+  });
+});
+
+describe("createAppJwtAuth", () => {
+  // Rejects the wrong implementation: one that returns an INSTALLATION token here. The App-level
+  // endpoints (GET /app/installations) authenticate the App itself, and an installation token is
+  // refused by them. Asserting the header is a verifiable RS256 JWT signed by the App key — not
+  // merely that some Bearer value came back — is what discriminates the two.
+  it("mints an App-level JWT, verifiable with the App's public key, and issues no network call", async () => {
+    const { publicKeyPem, privateKeyPem } = generateRsaKeyPair();
+    const fetchStub = vi.fn();
+    const now = 1_700_000_000_000;
+
+    const auth = createAppJwtAuth({ appId: APP_ID, privateKeyPem, now: () => now });
+    const header = await auth.authorization();
+
+    expect(header.startsWith("Bearer ")).toBe(true);
+    expect(fetchStub).not.toHaveBeenCalled();
+
+    const decoded = decodeJwt(header.slice("Bearer ".length));
+    expect(decoded.header).toEqual({ alg: "RS256", typ: "JWT" });
+    expect(decoded.payload).toEqual({
+      iat: Math.floor(now / 1000) - 60,
+      exp: Math.floor(now / 1000) + 540,
+      iss: APP_ID
+    });
+
+    const verifier = createVerify("RSA-SHA256");
+    verifier.update(decoded.signingInput);
+    expect(verifier.verify(publicKeyPem, decoded.signature)).toBe(true);
+  });
+
+  // The accept-side companion to the secrecy assertion: an empty subject would satisfy
+  // "does not contain the key", so the exact expected value is asserted instead.
+  it("describes the App without leaking the private key", () => {
+    const { privateKeyPem } = generateRsaKeyPair();
+    const auth = createAppJwtAuth({
+      appId: APP_ID,
+      privateKeyPem,
+      now: () => 1_700_000_000_000
+    });
+
+    expect(auth.describe()).toEqual({ kind: "app_installation", subject: `app:${APP_ID}` });
+    expect(JSON.stringify(auth.describe())).not.toContain(privateKeyPem);
   });
 });

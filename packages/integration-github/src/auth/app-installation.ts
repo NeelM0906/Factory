@@ -46,6 +46,37 @@ const installationTokenResponseSchema = z.object({
   expires_at: z.string().min(1)
 });
 
+export interface CreateAppJwtAuthOptions {
+  readonly appId: string;
+  readonly privateKeyPem: string;
+  /** Epoch milliseconds, matching this module's clock convention. */
+  readonly now: () => number;
+}
+
+/**
+ * App-level identity: `Bearer <app JWT>`, authenticating the GitHub App **itself** rather than
+ * any one installation.
+ *
+ * Exists because `GET /app/installations` — the call that enumerates installations so a user can
+ * pick one (acceptance criterion 2) — authenticates the App, not an installation, and
+ * {@link createAppInstallationAuth} binds a single `installationId` at construction and exposes
+ * only installation tokens. Without this factory the installations client's App-level `auth`
+ * dependency has nothing that can satisfy it, which would leave the gap to be improvised at
+ * composition. Two identities, two factories, one shared JWT minter.
+ *
+ * Mints a fresh JWT per call rather than caching: the token is valid for nine minutes and minting
+ * is a local signature, so caching would add invalidation risk to save nothing that matters.
+ */
+export const createAppJwtAuth = (options: CreateAppJwtAuthOptions): GitHubAuthStrategy => ({
+  kind: "app_installation",
+  authorization: async (): Promise<string> =>
+    `Bearer ${mintAppJwt(options.appId, options.privateKeyPem, options.now)}`,
+  describe: (): GitHubAuthDescription => ({
+    kind: "app_installation",
+    subject: `app:${options.appId}`
+  })
+});
+
 export interface CreateAppInstallationAuthOptions {
   readonly appId: string;
   readonly privateKeyPem: string;

@@ -104,7 +104,18 @@ const cancelBody = async (response: Response): Promise<void> => {
   }
 };
 
-const readBoundedBody = async (
+/**
+ * Reads a response body through the stream reader with a byte counter, refusing to buffer past
+ * `maximumBytes`.
+ *
+ * Exported because `installations.ts` must issue its own header-aware GET loop (this module's
+ * `request` deliberately returns only the validated body, so it cannot surface the `Link` header
+ * pagination needs). That loop mirrors this module's security posture, and the bound is part of
+ * that posture: `response.json()` buffers whatever arrives, so a caller that skips this is
+ * trusting the provider to be well-behaved — which is exactly the assumption the bound exists to
+ * avoid. Sharing the one implementation beats duplicating it or quietly going unbounded.
+ */
+export const readBoundedBody = async (
   response: Response,
   maximumBytes: number,
   sensitiveValues: readonly string[]

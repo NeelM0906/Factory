@@ -40,6 +40,7 @@ export { createUserTokenAuth, type CreateUserTokenAuthOptions } from "./auth/use
 
 export {
   createAppInstallationAuth,
+  createAppJwtAuth,
   type CreateAppInstallationAuthOptions
 } from "./auth/app-installation.js";
 
@@ -77,3 +78,14 @@ export {
   type GitHubIntegration,
   type GitHubIntegrationDependencies
 } from "./integration.js";
+
+export {
+  GitHubUnsupportedAuthStrategyError,
+  createInstallationsClient,
+  type GitHubAccessibleRepository,
+  type GitHubAccessibleRepositoryPermissions,
+  type GitHubInstallationsClient,
+  type GitHubInstallationsClientDependencies,
+  type GitHubInstallationSummary,
+  type GitHubUnsupportedAuthStrategyErrorOptions
+} from "./client/installations.js";

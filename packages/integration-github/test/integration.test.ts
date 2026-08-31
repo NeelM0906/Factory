@@ -360,6 +360,7 @@ describe("createGitHubIntegration", () => {
         "createGitHubIntegration",
         "createUserTokenAuth",
         "createAppInstallationAuth",
+        "createAppJwtAuth",
         "verifyGitHubSignature",
         "parseGitHubDelivery",
         "createDeliveryReplayGuard",
@@ -373,7 +374,9 @@ describe("createGitHubIntegration", () => {
         "GitHubBranchConflictError",
         "DraftPullRequestBodyMismatchError",
         "GitHubSignatureError",
-        "GitHubUnsupportedEventError"
+        "GitHubUnsupportedEventError",
+        "createInstallationsClient",
+        "GitHubUnsupportedAuthStrategyError"
       ]);
 
       expect(actualExportNames).toEqual(expectedExportNames);
