@@ -9,12 +9,15 @@ import {
   TriageReportSchema,
   TriageTaskTypeSchema,
   WorkflowFailureSchema,
+  digestSourceAuthorizationPolicy,
   digestTriageReport,
   type PendingDomainEvent,
+  type SourceAuthorizationPolicy,
   type StoredDomainEvent,
-  type TriageReport
+  type TriageReport,
+  type WorkItem
 } from "@autostack/contracts";
-import { transitionRun, type LeasedWorkflowJob } from "@autostack/domain";
+import { authorizeRunSource, transitionRun, type LeasedWorkflowJob } from "@autostack/domain";
 import { z } from "zod";
 
 import type { WorkflowHandlerContext, WorkflowHandlerResult } from "../handler-registry.js";
@@ -62,21 +65,44 @@ type SessionOutcome =
   | { readonly kind: "result"; readonly value: unknown }
   | { readonly kind: "failed"; readonly event: unknown };
 
-/** The session input: the work item as data, plus every question this run has already settled. */
-const objectiveFor = (
+/**
+ * The durable work item this job names. Split out of `objectiveFor` because it is now read twice
+ * and for two different purposes: the authorization decision reads its source and requester, and
+ * only a run that survives that decision goes on to build a session objective from its text.
+ */
+const findWorkItem = (
   events: readonly StoredDomainEvent[],
   job: LeasedWorkflowJob,
-  workItemId: string,
-  clarifications: readonly PipelineClarificationState[]
-): string | undefined => {
+  workItemId: string
+): WorkItem | undefined => {
   const item = events.find(
     (event) =>
       event.type === "work_item.created" &&
       event.workspaceId === job.workspaceId &&
       event.payload.workItem.id === workItemId
   );
-  if (item?.type !== "work_item.created") return undefined;
-  const work = item.payload.workItem;
+  return item?.type === "work_item.created" ? item.payload.workItem : undefined;
+};
+
+/**
+ * How a refusal names the policy it was decided against: by `digestSourceAuthorizationPolicy`, so
+ * an auditor can check the decision against the exact policy content in force. The digest excludes
+ * `updatedAt` and sorts entries, so re-saving an unchanged policy does not move what this cites.
+ *
+ * Nothing attacker-controlled goes into the message. The refusal code is a fixed alphabet and the
+ * digest is a hash; the requester's own id stays out, because it is unbounded text the delivery
+ * chose and the work item already carries it durably for anyone auditing the refusal.
+ */
+const citedPolicy = async (policy: SourceAuthorizationPolicy | undefined): Promise<string> =>
+  policy === undefined
+    ? "no policy record is in force"
+    : `policy ${await digestSourceAuthorizationPolicy(policy)}`;
+
+/** The session input: the work item as data, plus every question this run has already settled. */
+const objectiveFor = (
+  work: WorkItem,
+  clarifications: readonly PipelineClarificationState[]
+): string => {
   const answered = clarifications.flatMap((entry) =>
     entry.response === undefined
       ? []
@@ -161,10 +187,36 @@ export const runTriageStation = async (
   };
   kernel.checkpoint();
 
-  const objective = objectiveFor(events, job, payload.workItemId, state.clarifications);
-  if (objective === undefined) {
+  const work = findWorkItem(events, job, payload.workItemId);
+  if (work === undefined) {
     return fail("invalid_input", "MissingWorkItem", `Work item ${payload.workItemId} is unknown.`);
   }
+
+  // Spec §8.2's first triage bullet, and it runs HERE — before the objective is built and before
+  // the harness is touched. A station that classified first and refused afterwards would already
+  // have sent an unauthorized stranger's title and description to a model, which is the win the
+  // attacker was after; the refusal would then only be a partial mitigation. The decision is made
+  // from durable policy and the durable work item's own source and requester, never from the
+  // delivery's text: a mention is an address, never a grant (spec §4.4, §14.1).
+  const decision = authorizeRunSource(
+    {
+      workspaceId: job.workspaceId,
+      projectId: work.projectId,
+      source: work.source,
+      requester: work.requester
+    },
+    dependencies.sourceAuthorizationPolicy
+  );
+  if (!decision.ok) {
+    const cited = await citedPolicy(dependencies.sourceAuthorizationPolicy);
+    return fail(
+      "unauthorized_source",
+      "UnauthorizedSource",
+      `This source may not start a run (${decision.code}); ${cited}.`
+    );
+  }
+
+  const objective = objectiveFor(work, state.clarifications);
 
   let outcome: SessionOutcome;
   try {
