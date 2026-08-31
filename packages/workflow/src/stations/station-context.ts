@@ -4,9 +4,11 @@ import type {
   DeliveryIntegrationPort,
   IdFactory,
   RunId,
+  SourceAuthorizationPolicy,
   StoredDomainEvent,
   WorkspaceId
 } from "@autostack/contracts";
+
 import type { RunnerProvider } from "@autostack/domain";
 
 /**
@@ -47,4 +49,12 @@ export interface StationDependencies {
   readonly readRunEvents: (runId: RunId) => Promise<readonly StoredDomainEvent[]>;
   readonly workspaceId: WorkspaceId;
   readonly actor: Actor;
+  /**
+   * Who may start a run from an external source, declared in workspace configuration and parsed at
+   * composition. Optional, and its absence is not permission: a station that consults it treats
+   * `undefined` as "no policy is in force", which refuses (spec §8.2, §14.1). It is injected rather
+   * than read from the run stream because the decision must be made against durable policy the
+   * delivery cannot influence, and because a policy is workspace state, not run state.
+   */
+  readonly sourceAuthorizationPolicy?: SourceAuthorizationPolicy | undefined;
 }
