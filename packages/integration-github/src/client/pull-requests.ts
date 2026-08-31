@@ -11,6 +11,7 @@ import {
 import { assertAutoStackBranch } from "../branch-policy.js";
 import { GitHubRequestError } from "../errors.js";
 import type { IdempotencyRecordStore } from "../idempotency.js";
+import { encodeRepositoryPath } from "./repository-path.js";
 import type { GitHubTransport } from "./transport.js";
 
 /**
@@ -72,9 +73,6 @@ const splitRepositoryFullName = (repositoryFullName: string): { owner: string; r
   };
 };
 
-const encodeRepositoryPath = (owner: string, repo: string): string =>
-  `${encodeURIComponent(owner)}/${encodeURIComponent(repo)}`;
-
 /**
  * Builds the GitHub list-pulls path used to recover from a "PR already exists" 422. `head` MUST be
  * `owner:branch` (a bare branch name silently matches nothing in GitHub's filter) and `state` MUST
@@ -82,8 +80,8 @@ const encodeRepositoryPath = (owner: string, repo: string): string =>
  * {@link createDraftPullRequestsClient} for why both matter.
  */
 const buildDuplicateLookupPath = (
+  repositoryFullName: string,
   owner: string,
-  repo: string,
   branch: string,
   base: string
 ): string => {
@@ -91,7 +89,7 @@ const buildDuplicateLookupPath = (
   query.set("head", `${owner}:${branch}`);
   query.set("state", "all");
   query.set("base", base);
-  return `/repos/${encodeRepositoryPath(owner, repo)}/pulls?${query.toString()}`;
+  return `/repos/${encodeRepositoryPath(repositoryFullName)}/pulls?${query.toString()}`;
 };
 
 interface CanonicalGitHubPullRequest {
@@ -172,7 +170,7 @@ export const createDraftPullRequestsClient = (
   ): Promise<DraftPullRequestResult> => {
     const admitted = await admitDraftPullRequestRequest(request);
     const branch = assertAutoStackBranch(admitted.head);
-    const { owner, repo } = splitRepositoryFullName(admitted.repositoryFullName);
+    const { owner } = splitRepositoryFullName(admitted.repositoryFullName);
     const key = namespacedIdempotencyKey(admitted.idempotencyKey);
 
     const replayed = await idempotencyStore.get<DraftPullRequestResult>(key);
@@ -181,7 +179,7 @@ export const createDraftPullRequestsClient = (
     try {
       const response = await transport.request({
         method: "POST",
-        path: `/repos/${encodeRepositoryPath(owner, repo)}/pulls`,
+        path: `/repos/${encodeRepositoryPath(admitted.repositoryFullName)}/pulls`,
         body: {
           title: admitted.title,
           body: admitted.body,
@@ -205,7 +203,7 @@ export const createDraftPullRequestsClient = (
       try {
         matches = await transport.request({
           method: "GET",
-          path: buildDuplicateLookupPath(owner, repo, branch, admitted.base),
+          path: buildDuplicateLookupPath(admitted.repositoryFullName, owner, branch, admitted.base),
           schema: gitHubPullRequestListResponseSchema
         });
       } catch {

@@ -1,32 +1,10 @@
 import { z } from "zod";
 
 import { assertAutoStackBranch } from "../branch-policy.js";
-import { GitHubRequestError } from "../errors.js";
+import { encodeRepositoryPath } from "./repository-path.js";
 import type { GitHubTransport } from "./transport.js";
 
-const REPOSITORY_FULL_NAME_PATTERN = /^[^/\s]+\/[^/\s]+$/;
 const FORTY_HEX_SHA_PATTERN = /^[0-9a-f]{40}$/i;
-
-/**
- * Splits `owner/repo` and URL-encodes each segment separately, exactly like `client/pull-
- * requests.ts` and `client/branch-refs.ts` do. Duplicated locally rather than imported: those
- * two modules (and `client/progress-comments.ts`, which duplicates it a second time) are on the
- * do-not-touch list for this task; consolidating this helper is a deliberate Task 9 cleanup.
- */
-const encodeRepositoryPath = (repositoryFullName: string): string => {
-  if (!REPOSITORY_FULL_NAME_PATTERN.test(repositoryFullName)) {
-    throw new GitHubRequestError(
-      `Repository full name "${repositoryFullName}" is not a valid "owner/repo" pair.`,
-      0,
-      "invalid_request",
-      false
-    );
-  }
-  const slashIndex = repositoryFullName.indexOf("/");
-  const owner = repositoryFullName.slice(0, slashIndex);
-  const repo = repositoryFullName.slice(slashIndex + 1);
-  return `${encodeURIComponent(owner)}/${encodeURIComponent(repo)}`;
-};
 
 // A branch ref may contain "/"-separated components (e.g. "autostack/issue-42"); each is
 // percent-encoded independently, matching `client/branch-refs.ts`'s `encodeRefPath`, so the

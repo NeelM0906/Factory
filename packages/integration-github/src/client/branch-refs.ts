@@ -2,32 +2,11 @@ import { z } from "zod";
 
 import { assertAutoStackBranch } from "../branch-policy.js";
 import { GitHubBranchConflictError, GitHubRequestError } from "../errors.js";
+import { encodeRepositoryPath } from "./repository-path.js";
 import type { GitHubTransport } from "./transport.js";
-
-const REPOSITORY_FULL_NAME_PATTERN = /^[^/\s]+\/[^/\s]+$/;
 
 const invalidRequestError = (message: string): GitHubRequestError =>
   new GitHubRequestError(message, 0, "invalid_request", false);
-
-/**
- * Splits and validates `owner/repo`, then URL-encodes each segment SEPARATELY
- * (`encodeURIComponent(owner)` / `encodeURIComponent(repo)`). This is deliberate: calling
- * `encodeURI` (or any encoding) on the joined string would leave a literal "/" inside a segment
- * unescaped, letting it traverse the API path. `REPOSITORY_FULL_NAME_PATTERN` already forbids a
- * "/" inside either segment, but per-segment encoding keeps the property structurally true
- * regardless of how that pattern evolves.
- */
-const encodeRepositoryPath = (repositoryFullName: string): string => {
-  if (!REPOSITORY_FULL_NAME_PATTERN.test(repositoryFullName)) {
-    throw invalidRequestError(
-      `Repository full name "${repositoryFullName}" is not a valid "owner/repo" pair.`
-    );
-  }
-  const slashIndex = repositoryFullName.indexOf("/");
-  const owner = repositoryFullName.slice(0, slashIndex);
-  const repo = repositoryFullName.slice(slashIndex + 1);
-  return `${encodeURIComponent(owner)}/${encodeURIComponent(repo)}`;
-};
 
 // A validated branch name may still contain characters an unencoded URL path segment cannot
 // carry safely (e.g. "#"), so each "/"-separated component is percent-encoded independently --

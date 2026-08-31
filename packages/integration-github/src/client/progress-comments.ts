@@ -7,38 +7,14 @@ import {
   type GitHubProgressCommentResult
 } from "@autostack/contracts";
 
-import { GitHubRequestError } from "../errors.js";
 import type { IdempotencyRecordStore } from "../idempotency.js";
+import { encodeRepositoryPath } from "./repository-path.js";
 import type { GitHubTransport } from "./transport.js";
 
 /** Keys stored under `IdempotencyRecordStore` are namespaced per operation (decision D4). */
 const IDEMPOTENCY_NAMESPACE = "github.progress-comment";
 const namespacedIdempotencyKey = (idempotencyKey: string): string =>
   `${IDEMPOTENCY_NAMESPACE}:${idempotencyKey}`;
-
-const REPOSITORY_FULL_NAME_PATTERN = /^[^/\s]+\/[^/\s]+$/;
-
-/**
- * Splits `owner/repo` and URL-encodes each segment separately, exactly like
- * `client/pull-requests.ts` and `client/branch-refs.ts` do -- a joined-string encoding would
- * leave a literal "/" inside a segment unescaped. Duplicated locally rather than imported: those
- * two modules are on the do-not-touch list for this task, and consolidating this helper is a
- * deliberate Task 9 cleanup, not something to do while tasks are landing in parallel.
- */
-const encodeRepositoryPath = (repositoryFullName: string): string => {
-  if (!REPOSITORY_FULL_NAME_PATTERN.test(repositoryFullName)) {
-    throw new GitHubRequestError(
-      `Repository full name "${repositoryFullName}" is not a valid "owner/repo" pair.`,
-      0,
-      "invalid_request",
-      false
-    );
-  }
-  const slashIndex = repositoryFullName.indexOf("/");
-  const owner = repositoryFullName.slice(0, slashIndex);
-  const repo = repositoryFullName.slice(slashIndex + 1);
-  return `${encodeURIComponent(owner)}/${encodeURIComponent(repo)}`;
-};
 
 // GitHub's issue-comment payload (create response and edit response share this shape) carries
 // many more fields than this; only the ones the result needs are modeled. Zod ignores unmodeled

@@ -15,7 +15,6 @@ export {
 export { assertAutoStackBranch } from "./branch-policy.js";
 
 export {
-  createBranchRefsClient,
   type CreateBranchRequest,
   type DeleteBranchRequest,
   type GetRefRequest,
@@ -25,10 +24,10 @@ export {
 } from "./client/branch-refs.js";
 
 export {
-  createGitHubTransport,
-  type GitHubTransport,
-  type GitHubTransportOptions
-} from "./client/transport.js";
+  type GitHubCheckRun,
+  type GitHubChecksClient,
+  type ListCheckRunsRequest
+} from "./client/checks.js";
 
 export {
   type GitHubAuthDescription,
@@ -50,3 +49,31 @@ export {
 } from "./pull-request-body/compose.js";
 
 export { renderDraftPullRequestBody } from "./pull-request-body/render.js";
+
+export { createMemoryIdempotencyStore, type IdempotencyRecordStore } from "./idempotency.js";
+
+export {
+  GitHubSignatureError,
+  verifyGitHubSignature,
+  type VerifyGitHubSignatureInput
+} from "./webhook/signature.js";
+
+export {
+  GitHubUnsupportedEventError,
+  parseGitHubDelivery,
+  type GitHubIngressDelivery,
+  type GitHubUnsupportedEventReason,
+  type ParseGitHubDeliveryInput
+} from "./webhook/delivery.js";
+
+export {
+  createDeliveryReplayGuard,
+  type CreateDeliveryReplayGuardOptions,
+  type DeliveryReplayGuard
+} from "./webhook/replay-guard.js";
+
+export {
+  createGitHubIntegration,
+  type GitHubIntegration,
+  type GitHubIntegrationDependencies
+} from "./integration.js";
