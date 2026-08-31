@@ -6,15 +6,15 @@ run read from; update it if any of these facts change.
 
 ## Verified working today
 
-| Fact | Value | Verified how |
-| --- | --- | --- |
-| Account | `NeelM0906` (user id `171834562`) | `gh auth status`, `gh api user` |
-| Token storage | macOS keyring via `gh` (never copied into AutoStack) | `gh auth status` |
-| Token scopes | `gist`, `read:org`, `repo`, `workflow` | `gh auth status` |
-| Repo access | `NeelM0906/Factory`, viewer permission **ADMIN** | `gh repo view` |
-| Default branch | `codex/autostack-foundation` | `gh api repos/…` |
-| Live API reachability | 200 on repo + labels reads | `gh api` |
-| Trigger label | `autostack` (created 2026-08-31, color `#6f42c1`) | `gh api …/labels` POST |
+| Fact                  | Value                                                | Verified how                    |
+| --------------------- | ---------------------------------------------------- | ------------------------------- |
+| Account               | `NeelM0906` (user id `171834562`)                    | `gh auth status`, `gh api user` |
+| Token storage         | macOS keyring via `gh` (never copied into AutoStack) | `gh auth status`                |
+| Token scopes          | `gist`, `read:org`, `repo`, `workflow`               | `gh auth status`                |
+| Repo access           | `NeelM0906/Factory`, viewer permission **ADMIN**     | `gh repo view`                  |
+| Default branch        | `codex/autostack-foundation`                         | `gh api repos/…`                |
+| Live API reachability | 200 on repo + labels reads                           | `gh api`                        |
+| Trigger label         | `autostack` (created 2026-08-31, color `#6f42c1`)    | `gh api …/labels` POST          |
 
 ## How AutoStack consumes this
 
