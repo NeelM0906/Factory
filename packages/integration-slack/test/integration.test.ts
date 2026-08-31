@@ -1,11 +1,14 @@
 import {
   createId,
+  SlackApprovalPromptSchema,
+  SlackProgressRequestSchema,
   type DeliveryIntegrationPort,
   type SlackApprovalIntegrationPort
 } from "@autostack/contracts";
 import { createFakeDeliveryIntegration } from "@autostack/domain/testing";
 import { describe, expect, it, vi } from "vitest";
 
+import { SlackRequestError } from "../src/errors.js";
 import { composeApprovalPrompt } from "../src/message/approval-prompt.js";
 import { composeSlackMessage } from "../src/message/compose.js";
 import {
@@ -293,6 +296,89 @@ describe("createSlackIntegration", () => {
       await integration.postApprovalPrompt(prompt);
 
       expect(deps.fetch).toHaveBeenCalledTimes(1);
+    });
+  });
+
+  describe("never-post gate at the port boundary (merge-review MEDIUM-1)", () => {
+    // Rejects the wrong implementation: one that enforces spec 13.2 only inside
+    // composeSlackMessage. These are PORT methods -- a caller holding the port can build a
+    // schema-valid request by other means and hand raw agent output straight to Slack. The
+    // request below is schema-valid (SlackProgressRequestSchema has no opinion about terminal
+    // output), so only a gate inside the port method rejects it.
+    it("rejects terminal output handed straight to postSlackProgress, with zero fetch calls", async () => {
+      const { deps } = buildDeps();
+      const integration = createSlackIntegration(deps);
+      const terminalDump = [
+        "```",
+        ...Array.from({ length: 40 }, (_, i) => `line ${i}`),
+        "```"
+      ].join("\n");
+
+      await expect(
+        integration.postSlackProgress(
+          SlackProgressRequestSchema.parse({
+            schemaVersion: 1,
+            idempotencyKey: "k-raw-1",
+            bindingRef: BINDING_REF,
+            threadTs: "1700000300.000500",
+            text: terminalDump,
+            evidenceDigest: EVIDENCE_DIGEST
+          })
+        )
+      ).rejects.toThrow(SlackRequestError);
+      expect(deps.fetch).not.toHaveBeenCalled();
+    });
+
+    // A diff, not a credential: SafeMetadataStringSchema already rejects credential-shaped text at
+    // the contract boundary, so a credential never reaches assertPostable and would prove nothing
+    // about this gate. A unified diff is schema-VALID and still must never be posted (13.2), so it
+    // is what actually discriminates "gate present in the port method" from "gate only in the
+    // composer".
+    it("rejects a diff-shaped approval summary at postApprovalPrompt, with zero fetch calls", async () => {
+      const { deps } = buildDeps();
+      const integration = createSlackIntegration(deps);
+      const diffSummary = [
+        "Proposed change:",
+        "--- a/src/index.ts",
+        "+++ b/src/index.ts",
+        "+added line",
+        "-removed line"
+      ].join("\n");
+
+      await expect(
+        integration.postApprovalPrompt(
+          SlackApprovalPromptSchema.parse({
+            schemaVersion: 1,
+            idempotencyKey: "k-raw-2",
+            bindingRef: BINDING_REF,
+            threadTs: "1700000300.000500",
+            runId: RUN_ID,
+            approvalId: APPROVAL_ID,
+            kind: "publish",
+            summary: diffSummary,
+            evidenceDigest: EVIDENCE_DIGEST
+          })
+        )
+      ).rejects.toThrow(SlackRequestError);
+      expect(deps.fetch).not.toHaveBeenCalled();
+    });
+
+    // Accept-side companion: without it, "reject every post" would satisfy both cases above.
+    it("still posts an ordinary composed message", async () => {
+      const { deps } = buildDeps();
+      const integration = createSlackIntegration(deps);
+      const request = await composeSlackMessage(
+        {
+          kind: "attention_request",
+          headline: "Needs a decision",
+          runUrl: RUN_URL,
+          evidenceDigest: EVIDENCE_DIGEST
+        },
+        { bindingRef: BINDING_REF, threadTs: "1700000300.000500" }
+      );
+
+      await expect(integration.postSlackProgress(request)).resolves.toBeUndefined();
+      expect(deps.fetch).toHaveBeenCalled();
     });
   });
 

@@ -12,6 +12,7 @@ import {
 import { createSlackChatClient, type SlackChatClient } from "./client/chat.js";
 import { SlackRequestError } from "./errors.js";
 import { buildApprovalPromptBlocks } from "./message/approval-prompt.js";
+import { assertPostable } from "./message/postable.js";
 
 /** The Slack member of the `ChannelBinding` union (spec §13.2, decision D10). */
 export type SlackChannelBinding = Extract<ChannelBinding, { provider: "slack" }>;
@@ -126,6 +127,12 @@ export const createSlackIntegration = (deps: SlackIntegrationDependencies): Slac
 
   const postSlackProgress = async (request: SlackProgressRequest): Promise<void> => {
     const validated = SlackProgressRequestSchema.parse(request);
+    // The never-post list (spec 13.2) is enforced here, not only in composeSlackMessage. The
+    // composer's typed inputs make logs/diffs/reasoning unrepresentable, but this is a PORT
+    // method: any caller holding the port can hand it a schema-valid SlackProgressRequest built
+    // by other means -- raw agent output included. This is the last exit the adapter owns, so
+    // the gate belongs here too, and that makes 13.2 unconditional rather than conventional.
+    assertPostable(validated.text);
     if (await idempotency.has(validated.idempotencyKey)) return;
 
     const binding = await resolveEnabledBinding(deps, validated.bindingRef);
@@ -141,6 +148,9 @@ export const createSlackIntegration = (deps: SlackIntegrationDependencies): Slac
 
   const postApprovalPrompt = async (prompt: SlackApprovalPrompt): Promise<void> => {
     const validated = SlackApprovalPromptSchema.parse(prompt);
+    // Same reasoning as postSlackProgress: a port method must not trust that its caller went
+    // through composeApprovalPrompt.
+    assertPostable(validated.summary);
     if (await idempotency.has(validated.idempotencyKey)) return;
 
     const binding = await resolveEnabledBinding(deps, validated.bindingRef);
