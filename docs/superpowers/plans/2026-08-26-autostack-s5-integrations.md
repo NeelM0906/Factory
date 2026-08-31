@@ -581,9 +581,23 @@ Fixtures (hand-authored, minimal, redacted): `issues.opened.json`, `issues.edite
 
 Assertions:
 
-1. Each supported event maps to a `GitHubIngressDelivery` that `IngressDeliverySchema.parse` accepts, with `deliveryId` taken verbatim from `X-GitHub-Delivery` and `deduplicationKey` derived as the **logical** key `github:{repositoryId}:{issueNumber}:{event}` — deliberately **without** `deliveryId` in it.
+1. Each supported event maps to a `GitHubIngressDelivery` that `IngressDeliverySchema.parse` accepts, with `deliveryId` taken verbatim from `X-GitHub-Delivery` and `deduplicationKey` derived as a **logical** key — deliberately **without** `deliveryId` in it.
+
+   **Revised at the merge review (HIGH-1).** The original pin was `github:{repositoryId}:{issueNumber}:{event}`, and its rationale only reasoned about _under_-collapse (folding in `deliveryId` would deduplicate nothing). It never examined _over_-collapse, and that bare key has it: every occurrence of an event kind on one issue is the same logical event forever, so a second legitimate `@autostack` comment is answered `200 replayed` by D5's durable accept — intake silently lost behind a success status. That is the worse failure of the two.
+
+   The key is therefore `github:{repositoryId}:{issueNumber}:{event}` plus a per-event discriminator chosen to distinguish genuine occurrences while staying byte-identical under redelivery:
+
+   | Event                   | Discriminator      | Why                                                                       |
+   | ----------------------- | ------------------ | ------------------------------------------------------------------------- |
+   | `issues.opened`         | none               | An issue opens exactly once; there is no second occurrence.               |
+   | `issue_comment.created` | `comment.id`       | Every comment is a distinct request.                                      |
+   | `issues.labeled`        | `issue.updated_at` | Remove-and-re-add is the natural retrigger; labelling bumps `updated_at`. |
+   | `issues.edited`         | `issue.updated_at` | Each edit changes the task; GitHub exposes no edit id.                    |
+
+   Both discriminators are **required** in their payload schemas, so a missing field is a loud `400` the provider surfaces as a failed delivery, never a quiet collapse. Known narrowness: `updated_at` has one-second granularity, so two label toggles inside one second share a key — an acceptable debounce, far safer than unbounded collapse.
    Including `deliveryId` would have made the key unique per delivery, so it would have deduplicated nothing: GitHub issues a _fresh_ delivery id when it redelivers, which is precisely the duplicate acceptance criterion 4 asks us to collapse. The two identifiers do different jobs and stay separate: `deliveryId` is transport identity (used by the edge replay guard for exact re-POSTs of the same delivery), `deduplicationKey` is logical work identity (used by `IntegrationIngressPort.accept` to recognise the same real-world event).
    Tests: the same event redelivered under a **different** `deliveryId` produces the **same** `deduplicationKey`; two different issues, two different events on one issue, and two different repositories each produce different keys; and `deliveryId` is never a substring of `deduplicationKey`.
+
 2. `issues.labeled` without the configured trigger label is rejected as not-actionable (a labelled-with-something-else event must not start a run — acceptance criterion 4 concerns _labelled_ issues).
 3. An unsupported event throws `GitHubUnsupportedEventError`; the route turns that into a `202 ignored`, never a `500`.
 4. Oversized issue bodies are rejected by the contract's `max(100_000)` rather than truncated.

@@ -86,7 +86,15 @@ const GitHubIssuePayloadSchema = z.object({
   number: z.number().int().positive(),
   title: z.string(),
   body: z.string().nullable().optional(),
-  user: GitHubUserPayloadSchema
+  user: GitHubUserPayloadSchema,
+  /**
+   * Required, not optional, because it is the dedup discriminator for `issues.edited` and
+   * `issues.labeled` (see {@link buildGitHubDeliveryDeduplicationKey}). Absent it, two distinct
+   * edits collapse to one key and the second is silently answered `200 replayed`. A missing
+   * field here is therefore a loud parse failure — a `400` the provider surfaces as a failed
+   * delivery the user can redeliver — rather than a quiet loss of intake.
+   */
+  updated_at: z.string().min(1)
 });
 
 const GitHubIssuesEventPayloadSchema = z.object({
@@ -101,6 +109,8 @@ const GitHubIssueCommentEventPayloadSchema = z.object({
   repository: GitHubRepositoryPayloadSchema,
   issue: GitHubIssuePayloadSchema,
   comment: z.object({
+    /** The dedup discriminator for `issue_comment.created`; see the key builder below. */
+    id: z.union([z.number(), z.string()]),
     body: z.string(),
     user: GitHubUserPayloadSchema
   })
@@ -109,16 +119,48 @@ const GitHubIssueCommentEventPayloadSchema = z.object({
 const ActionEnvelopeSchema = z.object({ action: z.string().min(1) });
 
 /**
- * Builds the logical dedup key shared by every GitHub ingress delivery. Deliberately excludes
- * `deliveryId`: GitHub assigns a fresh `X-GitHub-Delivery` id on every redelivery, so folding it
- * in would defeat deduplication entirely -- the key must identify the real-world event (this
- * issue, this event kind, this repository), not the delivery attempt.
+ * Builds the logical dedup key for a GitHub ingress delivery.
+ *
+ * Two failure modes pull in opposite directions, and the key has to sit between them.
+ *
+ * UNDER-collapse: folding in `deliveryId` would defeat deduplication entirely, because GitHub
+ * assigns a fresh `X-GitHub-Delivery` id on every redelivery of the *same* event. The key must
+ * identify the real-world event, not the delivery attempt.
+ *
+ * OVER-collapse: a key of only `{repo}:{issue}:{event}` makes every occurrence of an event kind
+ * on one issue the same logical event *forever*. Since D5 gives the durable
+ * `IntegrationIngressPort.accept` the dedup authority, a second occurrence is answered
+ * `200 replayed` — intake silently lost behind a success status. That is the worse failure: the
+ * user sees an acknowledged request that never runs.
+ *
+ * So each event kind carries the discriminator that distinguishes genuine occurrences while
+ * staying byte-identical under redelivery:
+ *
+ * - `issues.opened` — none. An issue opens exactly once; there is no second occurrence to tell
+ *   apart, and redelivery must collapse.
+ * - `issue_comment.created` — `comment.id`. Every comment is a distinct request. Two `@autostack`
+ *   comments on one issue are two intakes, and the second must not vanish. This is the case the
+ *   merge review caught.
+ * - `issues.labeled` — `issue.updated_at`. Remove-and-re-add of the `autostack` label is the
+ *   natural retrigger gesture; without a discriminator it works at most once per issue ever.
+ *   Labelling bumps `updated_at`, so a re-add produces a new key while a redelivered payload —
+ *   byte-identical, same `updated_at` — still collapses.
+ * - `issues.edited` — `issue.updated_at`. Each edit changes the task description, so each is a
+ *   new signal; GitHub exposes no edit id, and `updated_at` moves per edit.
+ *
+ * Known narrowness: `updated_at` has one-second granularity, so two label toggles inside the same
+ * second share a key. That debounce is acceptable — and far safer than the unbounded collapse it
+ * replaces.
  */
 export const buildGitHubDeliveryDeduplicationKey = (
   repositoryId: string,
   issueNumber: number,
-  event: string
-): string => `github:${repositoryId}:${issueNumber}:${event}`;
+  event: string,
+  discriminator?: string
+): string =>
+  discriminator === undefined
+    ? `github:${repositoryId}:${issueNumber}:${event}`
+    : `github:${repositoryId}:${issueNumber}:${event}:${discriminator}`;
 
 export interface ParseGitHubDeliveryInput {
   readonly eventHeader: string; // X-GitHub-Event, e.g. "issues" or "issue_comment"
@@ -137,6 +179,8 @@ interface DeliveryFields {
   readonly title: string;
   readonly body: string;
   readonly authorId: string;
+  /** Per-event dedup discriminator; see {@link buildGitHubDeliveryDeduplicationKey}. */
+  readonly deduplicationDiscriminator?: string;
 }
 
 const buildDelivery = (fields: DeliveryFields): GitHubIngressDelivery => {
@@ -147,7 +191,8 @@ const buildDelivery = (fields: DeliveryFields): GitHubIngressDelivery => {
     deduplicationKey: buildGitHubDeliveryDeduplicationKey(
       fields.repositoryId,
       fields.issueNumber,
-      fields.event
+      fields.event,
+      fields.deduplicationDiscriminator
     ),
     receivedAt: fields.receivedAt,
     event: fields.event,
@@ -213,7 +258,10 @@ export const parseGitHubDelivery = (input: ParseGitHubDeliveryInput): GitHubIngr
       issueNumber: commentPayload.issue.number,
       title: commentPayload.issue.title,
       body: commentPayload.comment.body,
-      authorId: String(commentPayload.comment.user.id)
+      authorId: String(commentPayload.comment.user.id),
+      // Every comment is a distinct request; without this a second @autostack comment on the
+      // same issue collapses onto the first and is answered `200 replayed`.
+      deduplicationDiscriminator: String(commentPayload.comment.id)
     });
   }
 
@@ -232,6 +280,13 @@ export const parseGitHubDelivery = (input: ParseGitHubDeliveryInput): GitHubIngr
     issueNumber: issuesPayload.issue.number,
     title: issuesPayload.issue.title,
     body: issuesPayload.issue.body ?? "",
-    authorId: String(issuesPayload.issue.user.id)
+    authorId: String(issuesPayload.issue.user.id),
+    // `issues.opened` needs none (an issue opens once). `edited` and `labeled` both recur
+    // legitimately, and `updated_at` moves on each while staying identical under redelivery.
+    // Spread rather than `: undefined` because `exactOptionalPropertyTypes` distinguishes an
+    // absent property from one explicitly set to undefined.
+    ...(event === "issues.opened"
+      ? {}
+      : { deduplicationDiscriminator: issuesPayload.issue.updated_at })
   });
 };

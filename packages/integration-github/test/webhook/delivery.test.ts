@@ -69,6 +69,80 @@ describe("parseGitHubDelivery", () => {
     });
   });
 
+  describe("deduplication key — per-event discrimination (merge-review HIGH-1)", () => {
+    const parseComment = (commentId: number, body: string): { deduplicationKey: string } => {
+      const clone = structuredClone(issueCommentCreatedFixture) as {
+        comment: { id: number; body: string };
+      };
+      clone.comment.id = commentId;
+      clone.comment.body = body;
+      return parseGitHubDelivery({
+        eventHeader: "issue_comment",
+        deliveryIdHeader: `d-${commentId}`,
+        payload: clone,
+        receivedAt: RECEIVED_AT
+      });
+    };
+
+    const parseIssues = (action: string, updatedAt: string): { deduplicationKey: string } => {
+      const source = action === "labeled" ? issuesLabeledFixture : issuesEditedFixture;
+      const clone = structuredClone(source) as { issue: { updated_at: string } };
+      clone.issue.updated_at = updatedAt;
+      return parseGitHubDelivery({
+        eventHeader: "issues",
+        deliveryIdHeader: `d-${updatedAt}`,
+        payload: clone,
+        receivedAt: RECEIVED_AT
+      });
+    };
+
+    // THE bug this fix exists for. Rejects the previous key of {repo}:{issue}:{event}, under which
+    // a second legitimate @autostack comment on one issue produced the identical key — so D5's
+    // durable accept answered `200 replayed` and the request was silently lost behind a success.
+    it("gives two distinct comments on the same issue distinct keys", () => {
+      const first = parseComment(1001, "@AutoStack please start");
+      const second = parseComment(1002, "@AutoStack actually also do this");
+      expect(second.deduplicationKey).not.toBe(first.deduplicationKey);
+    });
+
+    // The other half: the discriminator must be stable under redelivery, or it defeats dedup.
+    it("collapses a redelivery of the same comment under a different deliveryId", () => {
+      const original = parseComment(1001, "@AutoStack please start");
+      const redelivered = parseComment(1001, "@AutoStack please start");
+      expect(redelivered.deduplicationKey).toBe(original.deduplicationKey);
+    });
+
+    // Remove-and-re-add of the autostack label is the natural retrigger gesture. Under the old key
+    // it worked at most once per issue ever; labelling bumps updated_at, so a re-add is distinct.
+    it("gives a re-added label a distinct key, while a redelivery of one labelling collapses", () => {
+      const firstAdd = parseIssues("labeled", "2026-08-31T12:00:00Z");
+      const reAdd = parseIssues("labeled", "2026-08-31T12:05:00Z");
+      const redelivered = parseIssues("labeled", "2026-08-31T12:00:00Z");
+      expect(reAdd.deduplicationKey).not.toBe(firstAdd.deduplicationKey);
+      expect(redelivered.deduplicationKey).toBe(firstAdd.deduplicationKey);
+    });
+
+    it("gives two successive edits distinct keys, while a redelivery of one edit collapses", () => {
+      const firstEdit = parseIssues("edited", "2026-08-31T12:00:00Z");
+      const secondEdit = parseIssues("edited", "2026-08-31T12:05:00Z");
+      const redelivered = parseIssues("edited", "2026-08-31T12:00:00Z");
+      expect(secondEdit.deduplicationKey).not.toBe(firstEdit.deduplicationKey);
+      expect(redelivered.deduplicationKey).toBe(firstEdit.deduplicationKey);
+    });
+
+    // issues.opened deliberately carries NO discriminator: an issue opens exactly once, so there
+    // is no second occurrence to tell apart and the bare key is correct.
+    it("leaves issues.opened undiscriminated, since an issue opens exactly once", () => {
+      const opened = parseGitHubDelivery({
+        eventHeader: "issues",
+        deliveryIdHeader: "d-open",
+        payload: issuesOpenedFixture,
+        receivedAt: RECEIVED_AT
+      });
+      expect(opened.deduplicationKey).toBe("github:900100100:42:issues.opened");
+    });
+  });
+
   describe("deduplication key", () => {
     it("computes the logical key github:{repositoryId}:{issueNumber}:{event}", () => {
       const delivery = parseGitHubDelivery({

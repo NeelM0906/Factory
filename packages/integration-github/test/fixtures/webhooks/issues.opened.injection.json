@@ -8,7 +8,8 @@
       "id": 500100205,
       "login": "octocat-adversary"
     },
-    "labels": []
+    "labels": [],
+    "updated_at": "2026-08-31T12:00:00Z"
   },
   "repository": {
     "id": 900100100,
