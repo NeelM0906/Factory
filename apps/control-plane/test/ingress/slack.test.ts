@@ -196,6 +196,25 @@ describe("registerSlackIngress: /ingress/slack/events", () => {
     expect(accept).not.toHaveBeenCalled();
   });
 
+  // Rejects the wrong implementation that echoes the challenge BEFORE verifying the signature
+  // (merge-review MEDIUM-4). The code already orders these correctly, but nothing pinned it: the
+  // happy-path test above sends a validly-signed challenge, so it passes either way. An unsigned
+  // challenge is the only input that tells the two orderings apart. Without this, url_verification
+  // would be an unauthenticated echo endpoint — anyone could bounce arbitrary strings off it, and
+  // a regression reordering the checks would ship green.
+  it("rejects an UNSIGNED url_verification with 401 rather than echoing the challenge", async () => {
+    const { app, accept } = makeHarness();
+    const response = await app.request("/ingress/slack/events", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ type: "url_verification", challenge: "abc123" })
+    });
+
+    expect(response.status).toBe(401);
+    expect(await response.text()).not.toContain("abc123");
+    expect(accept).not.toHaveBeenCalled();
+  });
+
   it("rejects a stale timestamp as a replay, via an injected clock", async () => {
     // The request's own timestamp header is "now"; the verifier's clock is deliberately set ten
     // minutes ahead of it, past the five-minute tolerance. Only the injected clock changes here.
