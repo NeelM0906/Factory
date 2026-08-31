@@ -198,6 +198,7 @@ export const runTriageStation = async (
   // attacker was after; the refusal would then only be a partial mitigation. The decision is made
   // from durable policy and the durable work item's own source and requester, never from the
   // delivery's text: a mention is an address, never a grant (spec §4.4, §14.1).
+  const authorizationPolicy = dependencies.sourceAuthorizationPolicy;
   const decision = authorizeRunSource(
     {
       workspaceId: job.workspaceId,
@@ -205,16 +206,34 @@ export const runTriageStation = async (
       source: work.source,
       requester: work.requester
     },
-    dependencies.sourceAuthorizationPolicy
+    authorizationPolicy
   );
   if (!decision.ok) {
-    const cited = await citedPolicy(dependencies.sourceAuthorizationPolicy);
+    const cited = await citedPolicy(authorizationPolicy);
     return fail(
       "unauthorized_source",
       "UnauthorizedSource",
       `This source may not start a run (${decision.code}); ${cited}.`
     );
   }
+  // The allowed path must name the policy that granted it (E12). Refusal already cites the policy
+  // in its durable failure message; the allowed path is the one that *grants*, so it is the one an
+  // audit most needs to reconstruct (spec §14.1). `sourceAuthorizationPolicyDigest` is optional on
+  // the schema only so pre-authorization evidence stays valid, which means absence parses cleanly
+  // and the schema cannot enforce this — the guard has to live here, where the policy is in hand.
+  //
+  // `authorizeRunSource` refuses when no policy is in force, so an allowed decision implies one
+  // exists. Narrowing rather than asserting keeps that implication checkable: if the two ever drift
+  // apart, this fails closed instead of emitting evidence that cannot say what allowed the run.
+  if (authorizationPolicy === undefined) {
+    return fail(
+      "unauthorized_source",
+      "UnauthorizedSource",
+      "This source was allowed without a policy in force; refusing to record uncitable evidence."
+    );
+  }
+  const sourceAuthorizationPolicyDigest =
+    await digestSourceAuthorizationPolicy(authorizationPolicy);
 
   const objective = objectiveFor(work, state.clarifications);
 
@@ -269,7 +288,8 @@ export const runTriageStation = async (
     stage: "triage",
     artifactIds: [],
     summary: report.rationale,
-    triageReportDigest: await digestTriageReport(report)
+    triageReportDigest: await digestTriageReport(report),
+    sourceAuthorizationPolicyDigest
   });
   const occurredAt = dependencies.now();
   // Every event of one run shares that run's correlation id, derived the way the kernel derives it

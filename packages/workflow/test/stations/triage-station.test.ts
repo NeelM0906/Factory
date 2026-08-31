@@ -889,3 +889,46 @@ describe("the triage station on failure and abandonment", () => {
     ]);
   });
 });
+
+describe("the triage station citing the policy that allowed a run", () => {
+  // E12. `sourceAuthorizationPolicyDigest` is optional on `TriageEvidenceSchema` only so
+  // pre-authorization evidence stays valid, which means its ABSENCE PARSES CLEANLY — the standing
+  // question exactly: what does the environment supply when the citation is missing? A valid
+  // envelope. So the schema cannot enforce this and the guard lives in the station.
+  //
+  // The wrong implementation this rejects is one that omits the field on the allowed path — the
+  // asymmetry that matters, because refusal already cites the policy in its durable failure
+  // message while the allowed path is the one that grants. Drop the field from `buildEvidence` and
+  // this goes red; nothing else in the suite does.
+  it("names the policy digest on the allowed path", async () => {
+    const result = await triage({ harness: harnessFor() });
+
+    expect(evidenceOf(result).sourceAuthorizationPolicyDigest).toBe(
+      await digestSourceAuthorizationPolicy(AUTHORIZED_POLICY)
+    );
+  });
+
+  // Boundary companion: without it, an implementation citing a CONSTANT digest also passes the
+  // test above. The citation has to track policy content, or it proves nothing about which policy
+  // was in force.
+  it("cites a different digest when a different policy grants the run", async () => {
+    const otherPolicy = policyFor([
+      { source: "manual", externalId: "octocat" },
+      { source: "slack", externalId: "hubot" }
+    ]);
+
+    const allowed = await triage({ harness: harnessFor() });
+    const allowedByOther = await triage({
+      harness: harnessFor(),
+      sourceAuthorizationPolicy: otherPolicy
+    });
+
+    expect(allowedByOther.appends.length).toBeGreaterThan(0);
+    expect(evidenceOf(allowedByOther).sourceAuthorizationPolicyDigest).toBe(
+      await digestSourceAuthorizationPolicy(otherPolicy)
+    );
+    expect(evidenceOf(allowedByOther).sourceAuthorizationPolicyDigest).not.toBe(
+      evidenceOf(allowed).sourceAuthorizationPolicyDigest
+    );
+  });
+});
