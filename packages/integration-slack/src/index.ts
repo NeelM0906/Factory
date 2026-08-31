@@ -40,3 +40,30 @@ export {
   type SocketModeClient,
   type SocketModeDependencies
 } from "./socket-mode/client.js";
+export { assertPostable, type SlackMessageComposition } from "./message/postable.js";
+export { composeSlackMessage, type SlackMessageEnvelope } from "./message/compose.js";
+export {
+  buildApprovalPromptBlocks,
+  composeApprovalPrompt,
+  type ComposeApprovalPromptInput,
+  type SlackActionsBlock,
+  type SlackBlock,
+  type SlackBlockText,
+  type SlackButtonElement,
+  type SlackSectionBlock
+} from "./message/approval-prompt.js";
+export {
+  createSlackChatClient,
+  type SlackChatClient,
+  type SlackChatDependencies,
+  type SlackPostMessageRequest,
+  type SlackPostMessageResult
+} from "./client/chat.js";
+export {
+  createMemoryIdempotencyRecordStore,
+  createSlackIntegration,
+  type IdempotencyRecordStore,
+  type SlackChannelBinding,
+  type SlackIntegration,
+  type SlackIntegrationDependencies
+} from "./integration.js";
