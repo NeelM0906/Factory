@@ -20,3 +20,4 @@ export {
   type CreateIdempotencyKeyFactoryOptions
 } from "./idempotency.js";
 export { useFactory, type FactoryState } from "./use-factory.js";
+export type { RunSupervisionSource } from "./run-supervision-source.js";

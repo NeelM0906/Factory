@@ -12,3 +12,7 @@ export {
   type MockApiServerFailures,
   type MockApiServerOptions
 } from "./mock-api-server.js";
+export {
+  createFixtureRunSupervisionSource,
+  type RunSupervisionFixtureData
+} from "./fixture-run-supervision-source.js";
