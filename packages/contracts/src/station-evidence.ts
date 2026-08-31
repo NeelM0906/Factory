@@ -1,6 +1,10 @@
 import { z } from "zod";
 
-import { OriginSchema } from "./entities.js";
+import {
+  OriginSchema,
+  SourceAuthorizationPolicySchema,
+  type SourceAuthorizationPolicy
+} from "./entities.js";
 import { CredentialRefIdSchema, RunIdSchema, WorkItemIdSchema, WorkspaceIdSchema } from "./ids.js";
 import { PipelineStageSchema } from "./pipeline.js";
 import { RelativeWorkspacePathSchema, digestVersionedValue } from "./runner.js";
@@ -457,6 +461,37 @@ export const digestReviewReport = async (
 ): Promise<string> => {
   const report = ReviewReportSchema.parse(input);
   return digestVersionedValue("autostack.review-report", canonicalizeReviewReportForDigest(report));
+};
+
+/**
+ * The policy's canonical form covers its CONTENT — who may start runs, and for what scope.
+ * `updatedAt` is excluded for the same reason `producedBy` stays out of the plan digest: it is
+ * metadata about the record, not part of what the authorization decision was made against, and
+ * re-saving an unchanged policy must not change what triage evidence cites. Entries are sorted
+ * so semantically equal policies share a digest regardless of authoring order.
+ */
+export const canonicalizeSourceAuthorizationPolicyForDigest = (
+  policy: SourceAuthorizationPolicy
+): Readonly<Record<string, unknown>> => ({
+  schemaVersion: policy.schemaVersion,
+  workspaceId: policy.workspaceId,
+  ...(policy.projectId === undefined ? {} : { projectId: policy.projectId }),
+  authorizedRequesters: [...policy.authorizedRequesters]
+    .sort(
+      (left, right) =>
+        left.source.localeCompare(right.source) || left.externalId.localeCompare(right.externalId)
+    )
+    .map((requester) => ({ source: requester.source, externalId: requester.externalId }))
+});
+
+export const digestSourceAuthorizationPolicy = async (
+  input: z.input<typeof SourceAuthorizationPolicySchema>
+): Promise<string> => {
+  const policy = SourceAuthorizationPolicySchema.parse(input);
+  return digestVersionedValue(
+    "autostack.source-authorization-policy",
+    canonicalizeSourceAuthorizationPolicyForDigest(policy)
+  );
 };
 
 interface StationIdentity {

@@ -141,6 +141,47 @@ export const SourceRefSchema = z.discriminatedUnion("kind", [
     .strict()
 ]);
 
+/**
+ * Every `SourceRefSchema` kind. `satisfies` proves each entry is a real kind; the completeness
+ * direction (a new kind must be added here) is asserted at type level in the entities test.
+ */
+export const SOURCE_REF_KINDS = ["manual", "github", "slack", "api"] as const satisfies readonly {
+  [K in z.infer<typeof SourceRefSchema>["kind"]]: K;
+}[z.infer<typeof SourceRefSchema>["kind"]][];
+
+/**
+ * Who may start a run from an external source (spec §8.2's first triage bullet, the
+ * "authorized" half of §4.4). A mention or label is an address, never a grant: the triage
+ * station decides authorization by looking the requesting actor up HERE — never by reading
+ * anything out of the delivery itself (§14.1). Fail closed: no policy record, no matching
+ * entry, or a missing actor id all mean refusal.
+ *
+ * Milestone A persistence: declared in workspace configuration, parsed into this shape at
+ * composition, and cited in triage evidence by content digest
+ * (`digestSourceAuthorizationPolicy`) — the policy content is what the digest names, so the
+ * decision is auditable without the policy living on the event stream.
+ */
+export const SourceAuthorizationPolicySchema = z
+  .object({
+    schemaVersion: VersionSchema,
+    workspaceId: WorkspaceIdSchema,
+    /** Absent = the policy applies workspace-wide rather than to one project. */
+    projectId: ProjectIdSchema.optional(),
+    authorizedRequesters: z
+      .array(
+        z
+          .object({
+            source: z.enum(SOURCE_REF_KINDS),
+            /** Matches `WorkItemSchema.requester.externalId` for deliveries of that source kind. */
+            externalId: z.string().min(1).max(200)
+          })
+          .strict()
+      )
+      .max(200),
+    updatedAt: TimestampSchema
+  })
+  .strict();
+
 export const WorkItemSchema = z
   .object({
     schemaVersion: VersionSchema,
@@ -427,6 +468,7 @@ export type Actor = z.infer<typeof ActorSchema>;
 export type Workspace = z.infer<typeof WorkspaceSchema>;
 export type Project = z.infer<typeof ProjectSchema>;
 export type SourceRef = z.infer<typeof SourceRefSchema>;
+export type SourceAuthorizationPolicy = z.infer<typeof SourceAuthorizationPolicySchema>;
 export type WorkItem = z.infer<typeof WorkItemSchema>;
 export type Run = z.infer<typeof RunSchema>;
 export type RunStatus = z.infer<typeof RunStatusSchema>;

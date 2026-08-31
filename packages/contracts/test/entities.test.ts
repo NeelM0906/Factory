@@ -10,10 +10,14 @@ import {
   RUN_STATUSES,
   RunSchema,
   RunStageSchema,
+  SOURCE_REF_KINDS,
+  SourceAuthorizationPolicySchema,
   StageRunSchema,
   WorkItemSchema,
-  WorkspaceSchema
+  WorkspaceSchema,
+  type SourceRef
 } from "../src/entities.js";
+import { digestSourceAuthorizationPolicy } from "../src/station-evidence.js";
 
 const IDS = {
   approval: "apr_123e4567-e89b-42d3-a456-426614174000",
@@ -277,5 +281,73 @@ describe("origin vocabulary", () => {
     for (const body of bodies("carrier-pigeon")) {
       expect(() => PendingDomainEventSchema.parse({ ...envelope, ...body })).toThrow();
     }
+  });
+});
+
+describe("source authorization policy", () => {
+  // Completeness half of the SOURCE_REF_KINDS bind: a fifth SourceRef kind that is missing from
+  // the list makes this alias `never`, and the assignment below stops compiling.
+  type MissingKinds = Exclude<SourceRef["kind"], (typeof SOURCE_REF_KINDS)[number]>;
+  const noSourceRefKindIsMissing: MissingKinds extends never ? true : never = true;
+
+  const policy = {
+    schemaVersion: 1 as const,
+    workspaceId: IDS.workspace,
+    authorizedRequesters: [
+      { source: "github" as const, externalId: "octocat" },
+      { source: "manual" as const, externalId: "workspace-owner" }
+    ],
+    updatedAt: NOW
+  };
+
+  it("scopes workspace-wide when projectId is absent, per-project when present", () => {
+    expect(noSourceRefKindIsMissing).toBe(true);
+    expect(SourceAuthorizationPolicySchema.parse(policy).projectId).toBeUndefined();
+    expect(
+      SourceAuthorizationPolicySchema.parse({ ...policy, projectId: IDS.project }).projectId
+    ).toBe(IDS.project);
+  });
+
+  it("accepts a deny-all empty policy and rejects source kinds outside the SourceRef alphabet", () => {
+    expect(
+      SourceAuthorizationPolicySchema.parse({ ...policy, authorizedRequesters: [] })
+        .authorizedRequesters
+    ).toEqual([]);
+    // "local" is a real value in the ADJACENT ExecutionSource alphabet (where execution runs) —
+    // the exact confusion this schema exists to prevent, not an arbitrary junk string.
+    expect(() =>
+      SourceAuthorizationPolicySchema.parse({
+        ...policy,
+        authorizedRequesters: [{ source: "local", externalId: "octocat" }]
+      })
+    ).toThrow();
+    expect(() =>
+      SourceAuthorizationPolicySchema.parse({
+        ...policy,
+        authorizedRequesters: [{ source: "github", externalId: "" }]
+      })
+    ).toThrow();
+  });
+
+  it("digests policy content: order- and updatedAt-insensitive, entry-sensitive", async () => {
+    const digest = await digestSourceAuthorizationPolicy(policy);
+    const reordered = {
+      ...policy,
+      authorizedRequesters: [...policy.authorizedRequesters].reverse(),
+      updatedAt: "2026-08-21T12:00:00.000Z"
+    };
+    expect(await digestSourceAuthorizationPolicy(reordered)).toBe(digest);
+    expect(
+      await digestSourceAuthorizationPolicy({
+        ...policy,
+        authorizedRequesters: [
+          ...policy.authorizedRequesters,
+          { source: "slack", externalId: "U12345678" }
+        ]
+      })
+    ).not.toBe(digest);
+    expect(await digestSourceAuthorizationPolicy({ ...policy, projectId: IDS.project })).not.toBe(
+      digest
+    );
   });
 });
