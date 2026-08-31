@@ -575,6 +575,10 @@ git commit -m "feat(domain): gate out-of-envelope actions on a permission approv
 
 ---
 
+> **Carry-forward from Task 6 review — prove the scope derivation is byte-identical across packages.** Task 6's domain tests **restate** `executionEnvironmentForRun` and `buildExecutionScope` locally, so the digest they reproduce is their own copy's, not `packages/workflow`'s. The whole approval chain rests on those two derivations agreeing, and nothing currently proves they do. **This task (or composition, Task 16) must assert the workflow implementation and the approval decision produce the same `digestExecutionScope` for the same inputs** — one test, importing both, comparing digests. Without it a divergence surfaces as `admitPrepareEnvironment` refusing a valid approval, which is the least diagnosable failure in this pipeline.
+
+> **Also set `authorizationTtlMs` explicitly at composition** rather than inheriting `ENVIRONMENT_AUTHORIZATION_TTL_MS`. A window nobody chose is still a window, and exceeding it fails provisioning on a valid approval.
+
 ## Task 9: Implement station core — provisioning, session, commit
 
 **Blocked by:** Tasks 6–8. _(Split from revision 1's Task 7 per F15.)_
