@@ -54,7 +54,16 @@ export const TriageEvidenceSchema = z
      * document to the envelope — without it triage is the one station whose evidence can only be
      * checked for run identity, while plan, verify, and review all bind their documents.
      */
-    triageReportDigest: DigestSchema.optional()
+    triageReportDigest: DigestSchema.optional(),
+    /**
+     * The `SourceAuthorizationPolicy` the triage decision was evaluated against, by
+     * `digestSourceAuthorizationPolicy`. Optional so evidence recorded before source
+     * authorization existed stays valid — but a triage that ALLOWED a run must cite it: the
+     * refusal path already names the policy in its durable failure message, and the allowed
+     * path is the one that grants, so it is the one an audit most needs to reconstruct
+     * (spec §14.1). Enforcement that stations supply it lives with the triage station.
+     */
+    sourceAuthorizationPolicyDigest: DigestSchema.optional()
   })
   .strict();
 

@@ -331,6 +331,24 @@ describe("triage evidence", () => {
     ).toThrow();
     expect(() => TriageEvidenceSchema.parse({ ...triageEvidence(), triageReport: {} })).toThrow();
   });
+
+  it("optionally cites the source authorization policy the decision evaluated", () => {
+    expect(
+      TriageEvidenceSchema.parse(triageEvidence()).sourceAuthorizationPolicyDigest
+    ).toBeUndefined();
+    expect(
+      TriageEvidenceSchema.parse({
+        ...triageEvidence(),
+        sourceAuthorizationPolicyDigest: digest("9")
+      }).sourceAuthorizationPolicyDigest
+    ).toBe(digest("9"));
+    expect(() =>
+      TriageEvidenceSchema.parse({
+        ...triageEvidence(),
+        sourceAuthorizationPolicyDigest: "not-a-digest"
+      })
+    ).toThrow();
+  });
 });
 
 describe("review evidence", () => {
