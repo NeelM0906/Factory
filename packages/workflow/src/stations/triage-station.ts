@@ -118,7 +118,9 @@ const runSession = async (
     workItemId: payload.workItemId,
     stageRunId: dependencies.ids.stageRun(),
     agentSessionId,
-    environmentId: dependencies.ids.environment(),
+    // No `environmentId`: triage runs before provisioning, so no environment exists. The field is
+    // optional for exactly this case (E10), and minting one to satisfy it would be fabricated
+    // identity — an id handed to an adapter that reaches no durable event.
     adapterId: dependencies.harness.descriptor.adapterId,
     objective,
     cwd: ".",
