@@ -9,6 +9,7 @@ import {
   PipelineEvidenceSchema,
   PlanDocumentSchema,
   RunSchema,
+  digestEnvironmentAuthorization,
   digestExecutionScope,
   digestPlanDocument,
   digestVersionedValue,
@@ -241,6 +242,12 @@ describe("plan approval decisions", () => {
     expect(authorization.approvalEvidenceDigest).toBe(await digestExecutionScope(approvedScope));
     expect(authorization.scope.environmentId).toBe(environmentFor(RUN_ID));
     expect(authorization.scope.branch).toBe(branchFor(RUN_ID));
+    // The two equalities `admitPrepareEnvironment` recomputes. Without them the recorded scope and
+    // the digest recorded beside it could drift apart and every assertion above would still hold.
+    expect(await digestExecutionScope(authorization.scope)).toBe(
+      authorization.approvalEvidenceDigest
+    );
+    expect(await digestEnvironmentAuthorization(authorization)).toBe(authorization.digest);
   });
 
   // The companion that pins the boundary the assertion above sits on: the two derivations agree
@@ -453,5 +460,55 @@ describe("plan approval staleness", () => {
     expect(decision.replayed).toBe(false);
     expect(decision.jobs).toHaveLength(1);
     expect(decision.run.status).toBe("provisioning");
+  });
+});
+
+describe("plan approval identity", () => {
+  // Identity comes from the durable records, never from the request that carried them (plan D13).
+  // Each of these is well-formed and internally consistent — only the run or the kind is wrong —
+  // so a decision that trusted the request body would happily act on all three.
+  const OTHER_RUN_ID = "run_123e4567-e89b-42d3-a456-4266141740bb";
+
+  it("refuses an approval that is not a plan approval", async () => {
+    const scope = deriveScope(scopeInput());
+    const approval = ApprovalSchema.parse({
+      schemaVersion: 1,
+      id: APPROVAL_ID,
+      workspaceId: WORKSPACE_ID,
+      runId: RUN_ID,
+      kind: "publish",
+      status: "pending",
+      evidenceDigest: await digestExecutionScope(scope),
+      eligibleApproverIds: [ACTOR.id],
+      createdAt: NOW,
+      updatedAt: NOW
+    });
+
+    await expect(decide({ approval })).rejects.toThrow(/plan approval/);
+  });
+
+  it("refuses an approval recorded against another run", async () => {
+    const scope = deriveScope(scopeInput());
+    const approval = ApprovalSchema.parse({
+      schemaVersion: 1,
+      id: APPROVAL_ID,
+      workspaceId: WORKSPACE_ID,
+      runId: OTHER_RUN_ID,
+      kind: "plan",
+      status: "pending",
+      evidenceDigest: await digestExecutionScope(scope),
+      eligibleApproverIds: [ACTOR.id],
+      createdAt: NOW,
+      updatedAt: NOW
+    });
+
+    await expect(decide({ approval })).rejects.toThrow(/different run/);
+  });
+
+  it("refuses a plan document written for another run", async () => {
+    const document = await planDocumentFor();
+    const foreign = PlanDocumentSchema.parse({ ...document, runId: OTHER_RUN_ID });
+
+    await expect(decide({ planDocument: foreign })).rejects.toThrow(/different run/);
   });
 });

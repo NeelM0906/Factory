@@ -1,15 +1,11 @@
 import {
-  EnvironmentAuthorizationSchema,
   PIPELINE_REWORK_MAX_ATTEMPTS,
   PendingDomainEventSchema,
-  PlanApprovalEvidenceSchema,
-  digestEnvironmentAuthorization,
   digestExecutionScope,
   digestLocalExecutionPhase,
-  digestVersionedValue,
+  digestPlanDocument,
   type Actor,
   type Approval,
-  type EnvironmentAuthorization,
   type ExecutionScope,
   type IdFactory,
   type Origin,
@@ -20,40 +16,14 @@ import {
 } from "@autostack/contracts";
 
 import { decideApproval } from "./approval.js";
+import { StaleApprovalEvidenceError } from "./errors.js";
+import { authorizeEnvironment, sealPlanApprovalEvidence } from "./pipeline-approval-records.js";
 import type { NewWorkflowJob, StreamAppend } from "./ports/durable-store.js";
 import { transitionRun } from "./run-machine.js";
-
-/**
- * The digest domain a `PipelineEvidence` envelope is sealed under. It must be the string
- * `createStationKernel` uses (`packages/workflow/src/stations/station-kernel.ts`), because the
- * publication bundle chains implement evidence to *this* envelope's digest, and a station that
- * sealed the same envelope differently would produce a second, unequal name for one decision.
- * Workflow depends on domain, so the intended end state is that the kernel imports this constant;
- * that edit belongs to the workflow package and is out of this module's scope.
- */
-const EVIDENCE_DIGEST_DOMAIN = "autostack.pipeline-evidence";
-
-/**
- * `digestEnvironmentAuthorization` parses its input under the *full* authorization schema — which
- * is `.strict()` and requires `digest` — before dropping the field it is about to recompute. A
- * well-formed placeholder is therefore required to compute the real one, and it cannot influence
- * the result it helps produce.
- */
-const PLACEHOLDER_DIGEST = "0".repeat(64);
-
-/**
- * How long the recorded environment authorization stays admissible. It bounds the window between a
- * human's decision and the provisioning that decision authorizes: `admitPrepareEnvironment` refuses
- * an expired authorization, so a run whose implement job never ran must be decided again rather
- * than provisioned days later against a repository that has moved on.
- */
-const ENVIRONMENT_AUTHORIZATION_TTL_MS = 24 * 60 * 60 * 1_000;
 
 const IMPLEMENT_HANDLER = "pipeline.implement";
 const APPROVED_REASON = "A human approved the plan and its execution scope.";
 const REJECTED_REASON = "A human rejected the plan.";
-
-type PlanApprovalEvidence = Extract<PipelineEvidence, { stage: "plan_approval" }>;
 
 export interface PipelineApprovalDecisionCommand {
   /** The durable approval record. Never a shape reconstructed from a request body. */
@@ -110,59 +80,33 @@ const idempotencyFor = (
   key: `${approval.id}:${decision}:${approval.evidenceDigest}`
 });
 
-const futureTimestamp = (from: string, milliseconds: number): string => {
-  const parsed = Date.parse(from);
-  if (Number.isNaN(parsed)) throw new TypeError("A decision needs a parseable timestamp.");
-  return new Date(parsed + milliseconds).toISOString();
-};
-
-const sealPlanApprovalEvidence = async (
+/**
+ * The two-sided freshness gate (spec §14.2, plan D1). Both halves refuse rather than pass when the
+ * value they need is missing: an approval is a judgement over specific bytes, and a comparison that
+ * cannot find those bytes has not established anything.
+ *
+ * The plan side is checked through the envelope's discriminant rather than through its digest
+ * field. `PipelineEvidence` is a union, and every stage other than `plan` simply has no
+ * `planDigest`; a guard shaped `recorded !== undefined && recorded !== computed` would read that
+ * absence as "nothing to compare" and let a decision through over evidence that never named a plan.
+ */
+const assertFreshEvidence = async (
   command: PipelineApprovalDecisionCommand,
-  producedAt: string
-): Promise<PlanApprovalEvidence> => {
-  const { run } = command;
-  const envelope = {
-    schemaVersion: 1,
-    workspaceId: run.workspaceId,
-    workItemId: run.workItemId,
-    runId: run.id,
-    stage: "plan_approval",
-    artifactIds: [],
-    approvalId: command.approval.id,
-    decision: "approved",
-    // The binding that makes the approval specific: the envelope names the plan evidence it was
-    // taken over, so a later stage can prove which plan a human saw.
-    approvedEvidenceDigest: command.planEvidence.evidenceDigest,
-    actorId: command.actor.id,
-    producedAt
-  };
-  const evidenceDigest = await digestVersionedValue(EVIDENCE_DIGEST_DOMAIN, envelope);
-  return PlanApprovalEvidenceSchema.parse({ ...envelope, evidenceDigest });
-};
-
-const authorizeEnvironment = async (
-  command: PipelineApprovalDecisionCommand,
-  dependencies: PipelineApprovalDecisionDependencies,
-  scopeDigest: string,
-  createdAt: string
-): Promise<EnvironmentAuthorization> => {
-  const draft = {
-    id: dependencies.ids.environmentAuthorization(),
-    approvalId: command.approval.id,
-    approvalEvidenceDigest: scopeDigest,
-    scope: command.executionScope,
-    createdAt,
-    expiresAt: futureTimestamp(createdAt, ENVIRONMENT_AUTHORIZATION_TTL_MS),
-    digest: PLACEHOLDER_DIGEST
-  };
-  return EnvironmentAuthorizationSchema.parse({
-    ...draft,
-    digest: await digestEnvironmentAuthorization(draft)
-  });
+  scopeDigest: string
+): Promise<void> => {
+  // The scope side. `decideApproval` also compares the evidence it is handed, but the equality that
+  // matters downstream is this one: `admitPrepareEnvironment` recomputes `digestExecutionScope` and
+  // holds it against the approval, so the digest recorded on the authorization has to be checked
+  // under the same function the environment boundary will use.
+  if (scopeDigest !== command.approval.evidenceDigest) throw new StaleApprovalEvidenceError();
+  if (command.planEvidence.stage !== "plan") throw new StaleApprovalEvidenceError();
+  if ((await digestPlanDocument(command.planDocument)) !== command.planEvidence.planDigest) {
+    throw new StaleApprovalEvidenceError();
+  }
 };
 
 /**
- * Decides a plan approval and commits everything that decision implies (spec §14.2, plan D1).
+ * Decides a plan approval and produces everything that decision implies (spec §14.2, plan D1).
  *
  * An approval says a human accepted one plan *and* the execution scope that plan implies. The plan
  * station only ever recorded the digest of that scope, so this function is handed the scope
@@ -172,7 +116,8 @@ const authorizeEnvironment = async (
  * minted environment id fails a perfectly valid approval.
  *
  * Nothing here writes: the caller commits the returned appends and jobs under the returned
- * idempotency descriptor, so a refusal necessarily precedes any durable record.
+ * idempotency descriptor, so a refusal necessarily precedes any durable record — including the
+ * idempotency record, which is why a refused submission never poisons the corrected one.
  */
 export async function decidePipelineApproval(
   command: PipelineApprovalDecisionCommand,
@@ -192,9 +137,12 @@ export async function decidePipelineApproval(
 
   const idempotency = idempotencyFor(approval, command.decision);
   const scopeDigest = await digestExecutionScope(executionScope);
+  await assertFreshEvidence(command, scopeDigest);
+
   const occurredAt = dependencies.now();
-  // `decideApproval` owns eligibility, conflict and evidence matching. Passing the re-derived scope
-  // as the evidence is what makes it check the scope side of freshness for us.
+  // `decideApproval` owns eligibility and conflict. An identical re-decision comes back from it
+  // with no events, which is the replay: the approval already carries the decision and the instant
+  // it was taken, and both are returned unchanged rather than recomputed.
   const decided = decideApproval({
     approval,
     decision: command.decision,
@@ -207,6 +155,17 @@ export async function decidePipelineApproval(
   const decidedAt = decided.approval.decision?.decidedAt;
   if (decidedAt === undefined) {
     throw new TypeError("A decided approval must record when it was decided.");
+  }
+  if (decided.events.length === 0) {
+    return {
+      approval: decided.approval,
+      run,
+      decidedAt,
+      appends: [],
+      jobs: [],
+      idempotency,
+      replayed: true
+    };
   }
 
   const event = (type: string, payload: unknown): PendingDomainEvent =>
@@ -248,8 +207,22 @@ export async function decidePipelineApproval(
   // decision is not itself a leased stage, and borrowing the plan station's job id would attribute
   // the approval to work that has already closed.
   const jobId = dependencies.ids.job();
-  const evidence = await sealPlanApprovalEvidence(command, occurredAt);
-  const authorization = await authorizeEnvironment(command, dependencies, scopeDigest, occurredAt);
+  const evidence = await sealPlanApprovalEvidence({
+    workspaceId: run.workspaceId,
+    workItemId: run.workItemId,
+    runId: run.id,
+    approvalId: approval.id,
+    approvedEvidenceDigest: command.planEvidence.evidenceDigest,
+    actorId: command.actor.id,
+    producedAt: occurredAt
+  });
+  const authorization = await authorizeEnvironment({
+    id: dependencies.ids.environmentAuthorization(),
+    approvalId: approval.id,
+    approvalEvidenceDigest: scopeDigest,
+    scope: executionScope,
+    createdAt: occurredAt
+  });
   const phasePayload = {
     runId: run.id,
     environmentId: executionScope.environmentId,
@@ -275,12 +248,7 @@ export async function decidePipelineApproval(
     // approved in the fold.
     appends: appendOf([
       ...decided.events,
-      event("pipeline.evidence_recorded", {
-        runId: run.id,
-        jobId,
-        attempt: 1,
-        evidence
-      }),
+      event("pipeline.evidence_recorded", { runId: run.id, jobId, attempt: 1, evidence }),
       event("environment.authorization_recorded", {
         ...phasePayload,
         phaseDigest: await digestLocalExecutionPhase(
