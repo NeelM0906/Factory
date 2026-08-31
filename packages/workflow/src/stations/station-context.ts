@@ -13,11 +13,16 @@ import type { RunnerProvider } from "@autostack/domain";
  * The single injected dependency object every delivery station receives — ports and clocks only,
  * no durable store and no station state. A station is a decision function over what it is given.
  *
- * Two omissions are deliberate (plan F20). There is no `ModelRouterPort`: no station resolves a
- * model route, because routing happens inside the harness implementation and a station that could
- * choose a route could choose a different one from the one its evidence claims. And `ids` omits
- * `stageRun`: stations address agent work by `AgentSessionId`, and a `StageRunId` minted here would
- * be an identifier nothing in the pipeline reads.
+ * One omission is deliberate (plan F20). There is no `ModelRouterPort`: no station resolves a model
+ * route, because routing happens inside the harness implementation and a station that could choose
+ * a route could choose a different one from the one its evidence claims.
+ *
+ * `stageRun` was removed under the same rule and is now restored, because F20's test was "drop it
+ * unless exercised" and it *is* exercised: `AgentInvocationRequestSchema` requires a `stageRunId` on
+ * every invocation. Without the factory a station has to fabricate one, and the only material at
+ * hand is another entity's uuid — which yields a `StageRunId` and an `AgentSessionId` sharing a
+ * uuid. That is identifier aliasing: it looks minted, is not traceable to the factory, and collides
+ * two distinct entities for anything that ever correlates by uuid.
  */
 export interface StationDependencies {
   readonly now: () => string;
@@ -34,6 +39,7 @@ export interface StationDependencies {
     | "commandAuthorization"
     | "artifact"
     | "job"
+    | "stageRun"
   >;
   readonly harness: AgentHarnessPort;
   readonly runner: RunnerProvider;

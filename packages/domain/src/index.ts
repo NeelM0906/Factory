@@ -1,5 +1,6 @@
 export * from "./approval.js";
 export * from "./canonical-json.js";
+export * from "./clarification.js";
 export * from "./create-run.js";
 export * from "./errors.js";
 export * from "./intake-work-item.js";
