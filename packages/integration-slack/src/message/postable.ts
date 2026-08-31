@@ -7,10 +7,10 @@ import {
 import { SlackRequestError } from "../errors.js";
 
 /**
- * The five things AutoStack posts into a Slack thread (spec §4.3), modeled as an explicit
+ * The five things AutoStack posts into a Slack thread (spec section 4.3), modeled as an explicit
  * discriminated union rather than one generic "progress" shape (decision D7). Every variant is
  * derived from typed pipeline values S4 emits (`TriageReport`, `ClarificationRequest`,
- * `PipelineStage`, `DraftPullRequestResult`) — S5 owns the composer, S4 owns the data. No variant
+ * `PipelineStage`, `DraftPullRequestResult`) - S5 owns the composer, S4 owns the data. No variant
  * has, or can be given, a field capable of carrying terminal output, a diff, hidden reasoning, or
  * a credential: the never-post list is unrepresentable, not merely unwritten.
  */
@@ -19,7 +19,7 @@ export type SlackMessageComposition =
       readonly kind: "task_summary";
       readonly summary: string; // <= 1000 chars, from TriageReport.rationale
       readonly taskType: TriageTaskType;
-      readonly detectedRepository: string; // "owner/name", the §4.3 "detected repository"
+      readonly detectedRepository: string; // "owner/name", the section 4.3 "detected repository"
       readonly runUrl: string;
     }
   | {
@@ -55,15 +55,16 @@ export type SlackMessageComposition =
 const POSTABLE_BYTE_BUDGET = 3_000;
 const FENCED_BLOCK_LINE_LIMIT = 10;
 
-// Unified-diff signature (spec §13.2): an explicit `--- a/`/`+++ b/` header, or a run of change
-// lines long enough to be a real diff rather than a couple of markdown bullets.
+// Unified-diff signature (spec section 13.2): an explicit `--- a/`/`+++ b/` header, or a run of
+// change lines long enough to be a real diff rather than a couple of markdown bullets.
 const DIFF_HEADER_PATTERN = /\n--- a\/|\n\+\+\+ b\//;
 const DIFF_CHANGE_LINE_COUNT_THRESHOLD = 20;
 
-// A CSI-style ANSI escape sequence: the ESC control character (written as "", never as an
-// embedded control byte) followed by a bracket, optional parameter digits/semicolons, and a
-// terminating letter — for example a color code.
-const ANSI_ESCAPE_PATTERN = /\[[0-9;]*[A-Za-z]/;
+// A CSI-style ANSI escape sequence: the ESC control character (code point 27), built here via
+// String.fromCharCode rather than a literal control byte in source, followed by a bracket,
+// optional parameter digits/semicolons, and a terminating letter (for example a color code).
+const ESCAPE_CONTROL_CHARACTER: string = String.fromCharCode(27);
+const ANSI_ESCAPE_PATTERN: RegExp = new RegExp(`${ESCAPE_CONTROL_CHARACTER}\\[[0-9;]*[A-Za-z]`);
 const FENCED_BLOCK_PATTERN = /```[\s\S]*?```/g;
 
 const HIDDEN_REASONING_PATTERN = /<thinking>|<reasoning>/i;
@@ -88,9 +89,9 @@ const hasTerminalArtifacts = (text: string): boolean =>
   hasOversizedFencedBlock(text) || ANSI_ESCAPE_PATTERN.test(text) || text.includes("\r");
 
 /**
- * The runtime half of the never-post gate (spec §13.2), sitting under the type-level narrowing of
- * {@link SlackMessageComposition}. Rejects text carrying sensitive material, an over-budget
- * payload, a diff, terminal artefacts, or a hidden-reasoning marker.
+ * The runtime half of the never-post gate (spec section 13.2), sitting under the type-level
+ * narrowing of {@link SlackMessageComposition}. Rejects text carrying sensitive material, an
+ * over-budget payload, a diff, terminal artefacts, or a hidden-reasoning marker.
  *
  * Never truncates: every rejection throws rather than shortening the text, because truncating
  * across a redaction boundary is how secrets leak.

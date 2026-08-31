@@ -36,7 +36,7 @@ describe("assertAutoStackBranch", () => {
       "autostack/x\\y",
       "autostack/.hidden", // a segment starting with "."
       "autostack/build.lock", // a segment ending with ".lock"
-      "autostack/xy" // ASCII control character (BEL)
+      "autostack/x\u0007y" // ASCII control character (BEL)
     ];
 
     it.each(rejectedRefs)("rejects %j", (ref) => {

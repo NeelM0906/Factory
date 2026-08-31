@@ -78,7 +78,8 @@ describe("assertPostable", () => {
   });
 
   it("throws not_postable for text containing ANSI escape sequences", () => {
-    const text = `Build [31mfailed[0m — see <${RUN_URL}|the run>`;
+    const esc = String.fromCharCode(27);
+    const text = `Build ${esc}[31mfailed${esc}[0m — see <${RUN_URL}|the run>`;
     expect(() => assertPostable(text)).toThrow(SlackRequestError);
   });
 
