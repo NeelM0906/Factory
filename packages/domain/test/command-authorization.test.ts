@@ -4,6 +4,7 @@ import {
   CommandAuthorizationIdSchema,
   CommandIdSchema,
   CredentialRefIdSchema,
+  EnvironmentAuthorizationIdSchema,
   ExecutionScopeSchema,
   PipelineEvidenceSchema,
   PlanDocumentSchema,
@@ -54,7 +55,7 @@ const REPOSITORY = "github.com/autostack/factory";
 const SOURCE_COMMIT = "a".repeat(40);
 const PLACEHOLDER_DIGEST = "0".repeat(64);
 const HUMAN: Actor = { kind: "user", id: "local-user", displayName: "Local User" };
-const STATION: Actor = { kind: "system", id: "pipeline.verify", displayName: "Verify station" };
+const STATION: Actor = { kind: "system", id: "pipeline.verify" };
 
 /**
  * The command a human approved. Three arguments, so "reordered", "one extra" and "one removed" are
@@ -139,7 +140,7 @@ const environmentAuthorizationFor = async (
   ttlMs?: number
 ): Promise<EnvironmentAuthorization> =>
   authorizeEnvironment({
-    id: ENVIRONMENT_AUTHORIZATION_ID,
+    id: EnvironmentAuthorizationIdSchema.parse(ENVIRONMENT_AUTHORIZATION_ID),
     approvalId: ApprovalIdSchema.parse(PLAN_APPROVAL_ID),
     approvalEvidenceDigest: await digestExecutionScope(scope),
     scope,
@@ -506,7 +507,7 @@ describe("plan-named command authorizations", () => {
     // wrong implementation this rejects is one that trusts a well-formed record's provenance.
     const scope = scopeFor();
     const foreign = await authorizeEnvironment({
-      id: ENVIRONMENT_AUTHORIZATION_ID,
+      id: EnvironmentAuthorizationIdSchema.parse(ENVIRONMENT_AUTHORIZATION_ID),
       approvalId: ApprovalIdSchema.parse(PERMISSION_APPROVAL_ID),
       approvalEvidenceDigest: await digestExecutionScope(scope),
       scope,
