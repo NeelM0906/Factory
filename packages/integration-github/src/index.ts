@@ -1,8 +1,10 @@
 export {
+  DraftPullRequestBodyMismatchError,
   GitHubBranchConflictError,
   GitHubBranchPolicyError,
   GitHubRequestError,
   classifyGitHubFailure,
+  type DraftPullRequestBodyMismatchErrorOptions,
   type GitHubBranchConflictErrorOptions,
   type GitHubBranchPolicyErrorOptions,
   type GitHubFailureClassification,
@@ -41,3 +43,10 @@ export {
   createAppInstallationAuth,
   type CreateAppInstallationAuthOptions
 } from "./auth/app-installation.js";
+
+export {
+  composeDraftPullRequestBody,
+  type DraftPullRequestBodyInput
+} from "./pull-request-body/compose.js";
+
+export { renderDraftPullRequestBody } from "./pull-request-body/render.js";

@@ -165,3 +165,32 @@ export class GitHubBranchConflictError extends Error {
     Object.freeze(this);
   }
 }
+
+export interface DraftPullRequestBodyMismatchErrorOptions {
+  readonly cause?: unknown;
+  readonly sensitiveValues?: readonly string[];
+}
+
+/**
+ * Thrown when composing a draft pull-request body (spec §4.4) finds two inputs disagree on a link
+ * the contracts' own schemas do not already enforce -- e.g. a station report's digest does not match
+ * the one recorded in the publication evidence bundle. `link` names the specific binding that broke.
+ */
+export class DraftPullRequestBodyMismatchError extends Error {
+  readonly link: string;
+  readonly retryable = false;
+
+  constructor(link: string, options: DraftPullRequestBodyMismatchErrorOptions = {}) {
+    const sensitiveValues = options.sensitiveValues ?? [];
+    super(
+      redactSensitiveText(
+        `Draft pull request body composition failed: "${link}" does not match.`,
+        sensitiveValues
+      )
+    );
+    this.name = "DraftPullRequestBodyMismatchError";
+    this.link = redactSensitiveText(link, sensitiveValues);
+    attachNonEnumerableCause(this, options.cause);
+    Object.freeze(this);
+  }
+}
