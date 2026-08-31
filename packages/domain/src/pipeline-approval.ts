@@ -51,6 +51,12 @@ export interface PipelineApprovalDecisionCommand {
 
 export interface PipelineApprovalDecisionDependencies {
   readonly now: () => string;
+  /**
+   * How long the recorded environment authorization stays usable. Optional so existing callers keep
+   * `ENVIRONMENT_AUTHORIZATION_TTL_MS`, but composition should pass it explicitly: a window nobody
+   * chose is still a window, and running past it fails provisioning on a valid approval.
+   */
+  readonly authorizationTtlMs?: number;
   readonly ids: Pick<IdFactory, "job" | "environmentAuthorization">;
 }
 
@@ -221,7 +227,10 @@ export async function decidePipelineApproval(
     approvalId: approval.id,
     approvalEvidenceDigest: scopeDigest,
     scope: executionScope,
-    createdAt: occurredAt
+    createdAt: occurredAt,
+    ...(dependencies.authorizationTtlMs === undefined
+      ? {}
+      : { ttlMs: dependencies.authorizationTtlMs })
   });
   const phasePayload = {
     runId: run.id,
@@ -282,3 +291,5 @@ export async function decidePipelineApproval(
     replayed: false
   };
 }
+
+export { PIPELINE_EVIDENCE_DIGEST_DOMAIN } from "./pipeline-approval-records.js";

@@ -25,6 +25,7 @@ import { describe, expect, it } from "vitest";
 
 import { ApprovalDecisionConflictError, StaleApprovalEvidenceError } from "../src/errors.js";
 import {
+  PIPELINE_EVIDENCE_DIGEST_DOMAIN,
   decidePipelineApproval,
   type PipelineApprovalDecision,
   type PipelineApprovalDecisionCommand,
@@ -132,7 +133,7 @@ const sealEvidence = async (
     runId: RUN_ID,
     producedAt: NOW
   };
-  const evidenceDigest = await digestVersionedValue("autostack.pipeline-evidence", envelope);
+  const evidenceDigest = await digestVersionedValue(PIPELINE_EVIDENCE_DIGEST_DOMAIN, envelope);
   return PipelineEvidenceSchema.parse({ ...envelope, evidenceDigest });
 };
 

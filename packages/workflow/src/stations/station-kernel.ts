@@ -11,7 +11,12 @@ import {
   type RunId,
   type WorkflowFailure
 } from "@autostack/contracts";
-import { transitionRun, type LeasedWorkflowJob, type StreamAppend } from "@autostack/domain";
+import {
+  PIPELINE_EVIDENCE_DIGEST_DOMAIN,
+  transitionRun,
+  type LeasedWorkflowJob,
+  type StreamAppend
+} from "@autostack/domain";
 
 import { RetryableJobError } from "../errors.js";
 import type { WorkflowHandlerResult } from "../handler-registry.js";
@@ -69,14 +74,6 @@ export interface StationKernel {
   checkpoint(): void;
   appendFor(streamVersion: number, events: readonly PendingDomainEvent[]): StreamAppend;
 }
-
-/**
- * The digest domain for a `PipelineEvidence` envelope. Contracts ships digest helpers for every
- * station *document* and for the publish scope, but none for the envelope, so this module is the
- * single authority for it: `implementationEvidenceDigest`, `verificationEvidenceDigest`, and the
- * whole `PublicationEvidenceBundle` chain only line up because every envelope is sealed here.
- */
-const EVIDENCE_DIGEST_DOMAIN = "autostack.pipeline-evidence";
 
 const withoutUndefined = (value: Readonly<Record<string, unknown>>): Record<string, unknown> =>
   Object.fromEntries(Object.entries(value).filter(([, entry]) => entry !== undefined));
@@ -155,7 +152,7 @@ export const createStationKernel = (
         runId: job.runId,
         producedAt: dependencies.now()
       });
-      const evidenceDigest = await digestVersionedValue(EVIDENCE_DIGEST_DOMAIN, envelope);
+      const evidenceDigest = await digestVersionedValue(PIPELINE_EVIDENCE_DIGEST_DOMAIN, envelope);
       return PipelineEvidenceSchema.parse({ ...envelope, evidenceDigest });
     },
 

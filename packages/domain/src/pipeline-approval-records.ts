@@ -30,7 +30,14 @@ export type PlanApprovalEvidence = Extract<PipelineEvidence, { stage: "plan_appr
  * Workflow depends on domain, so the intended end state is that the kernel imports this constant;
  * that edit belongs to the workflow package and is out of this module's scope.
  */
-const EVIDENCE_DIGEST_DOMAIN = "autostack.pipeline-evidence";
+/**
+ * The digest domain for a `PipelineEvidence` envelope. Exported because `station-kernel.ts` seals
+ * every envelope with it and this module must reproduce those digests exactly — two copies of the
+ * string would let the two drift silently, and the whole approval chain is digest equality.
+ * `packages/workflow` depends on `packages/domain`, so the shared constant lives here and the
+ * kernel imports it; the reverse direction is not available.
+ */
+export const PIPELINE_EVIDENCE_DIGEST_DOMAIN = "autostack.pipeline-evidence";
 
 /**
  * `digestEnvironmentAuthorization` parses its input under the *full* authorization schema — which
@@ -45,6 +52,15 @@ const PLACEHOLDER_DIGEST = "0".repeat(64);
  * human's decision and the provisioning that decision authorizes: `admitPrepareEnvironment` refuses
  * an expired authorization, so a run whose implement job never ran must be decided again rather
  * than provisioned days later against a repository that has moved on.
+ */
+/**
+ * How long an environment authorization stays usable, in milliseconds.
+ *
+ * Nothing in the contracts constrains this beyond `expiresAt > createdAt`, so it is a local
+ * operational policy rather than a contract shape — which is exactly why it is a named, injectable
+ * default rather than an inline literal. The failure it governs is unpleasant: a run that sits
+ * queued past the window fails provisioning on a *valid* approval, which reads as a stale-approval
+ * error with no stale approval. Composition should set it deliberately (plan Task 16).
  */
 export const ENVIRONMENT_AUTHORIZATION_TTL_MS = 24 * 60 * 60 * 1_000;
 
@@ -82,7 +98,7 @@ export const sealPlanApprovalEvidence = async (
     actorId: input.actorId,
     producedAt: input.producedAt
   };
-  const evidenceDigest = await digestVersionedValue(EVIDENCE_DIGEST_DOMAIN, envelope);
+  const evidenceDigest = await digestVersionedValue(PIPELINE_EVIDENCE_DIGEST_DOMAIN, envelope);
   return PlanApprovalEvidenceSchema.parse({ ...envelope, evidenceDigest });
 };
 
@@ -93,6 +109,8 @@ export interface EnvironmentAuthorizationInput {
   readonly approvalEvidenceDigest: string;
   readonly scope: ExecutionScope;
   readonly createdAt: string;
+  /** Overrides `ENVIRONMENT_AUTHORIZATION_TTL_MS`. Composition should set it deliberately. */
+  readonly ttlMs?: number;
 }
 
 export const authorizeEnvironment = async (
@@ -104,7 +122,7 @@ export const authorizeEnvironment = async (
     approvalEvidenceDigest: input.approvalEvidenceDigest,
     scope: input.scope,
     createdAt: input.createdAt,
-    expiresAt: futureTimestamp(input.createdAt, ENVIRONMENT_AUTHORIZATION_TTL_MS),
+    expiresAt: futureTimestamp(input.createdAt, input.ttlMs ?? ENVIRONMENT_AUTHORIZATION_TTL_MS),
     digest: PLACEHOLDER_DIGEST
   };
   return EnvironmentAuthorizationSchema.parse({
