@@ -2,7 +2,9 @@ import { createHash } from "node:crypto";
 
 import {
   ApprovalSchema,
+  EnvironmentAuthorizationIdSchema,
   ExecutionScopeSchema,
+  JobIdSchema,
   PipelineEvidenceSchema,
   PlanDocumentSchema,
   RunSchema,
@@ -22,7 +24,8 @@ import { describe, expect, it } from "vitest";
 import {
   decidePipelineApproval,
   type PipelineApprovalDecision,
-  type PipelineApprovalDecisionCommand
+  type PipelineApprovalDecisionCommand,
+  type PipelineApprovalDecisionDependencies
 } from "../src/pipeline-approval.js";
 
 const NOW = "2026-08-26T12:00:00.000Z";
@@ -159,9 +162,12 @@ const runRecord = (): Run =>
     updatedAt: NOW
   });
 
-const dependencies = (now: () => string = () => LATER) => ({
+const dependencies = (now: () => string = () => LATER): PipelineApprovalDecisionDependencies => ({
   now,
-  ids: { job: () => JOB_ID, environmentAuthorization: () => AUTHORIZATION_ID }
+  ids: {
+    job: () => JobIdSchema.parse(JOB_ID),
+    environmentAuthorization: () => EnvironmentAuthorizationIdSchema.parse(AUTHORIZATION_ID)
+  }
 });
 
 const commandFor = async (
