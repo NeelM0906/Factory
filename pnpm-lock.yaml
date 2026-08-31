@@ -208,6 +208,9 @@ importers:
       '@autostack/contracts':
         specifier: workspace:*
         version: link:../contracts
+      zod:
+        specifier: ^4.1.5
+        version: 4.4.3
     devDependencies:
       '@autostack/domain':
         specifier: workspace:*

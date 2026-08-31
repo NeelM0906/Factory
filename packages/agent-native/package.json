@@ -14,7 +14,8 @@
   },
   "dependencies": {
     "@autostack/agent-runtime": "workspace:*",
-    "@autostack/contracts": "workspace:*"
+    "@autostack/contracts": "workspace:*",
+    "zod": "^4.1.5"
   },
   "devDependencies": {
     "@autostack/domain": "workspace:*"
