@@ -16,7 +16,6 @@
 
 import { execFile as execFileCallback } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { readFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
@@ -40,10 +39,13 @@ import {
   assertPullRequestCiFilter,
   liveBranchName,
   readGhToken,
+  resolveLiveConfig,
   type ExecFileLauncher
 } from "./live-config.js";
 
-const live = process.env.AUTOSTACK_LIVE_GITHUB === "1";
+// Reuses the guard itself rather than re-deriving `=== "1"` here, so the gating logic and its own
+// test in live-config.test.ts can never drift from what actually decides whether this file runs.
+const live = resolveLiveConfig(process.env).enabled;
 
 // One suite-wide timeout, generous enough for a full sequence of real, un-mocked GitHub REST
 // calls (repository read, two branch creates, a file commit, a PR create + replay, a comment
@@ -53,7 +55,6 @@ const LIVE_TEST_TIMEOUT_MS = 180_000;
 const USER_AGENT = "autostack-live-suite/1.0";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
-const repoRoot = path.resolve(here, "../../../../");
 
 const REPOSITORY_PATH = encodeRepositoryPath(LIVE_REPOSITORY_FULL_NAME);
 
@@ -70,8 +71,37 @@ const realSleep = (milliseconds: number, signal?: AbortSignal): Promise<void> =>
     );
   });
 
-const repositoryInfoSchema = z.object({ default_branch: z.string() });
 const gitRefSchema = z.object({ object: z.object({ sha: z.string() }) });
+
+/**
+ * The remote branch this suite cuts its `autostack/e2e-*` branches from.
+ *
+ * Deliberately NOT the repository's default branch. GitHub decides which workflow runs for a
+ * `pull_request` event from the file on the PR's BASE branch, and the base branch inherits the
+ * tree of whatever ref it was cut from. The default branch still carries a bare `pull_request:`
+ * trigger with no `branches-ignore`, so cutting from it produces a PR that starts the full
+ * matrix — including the 60-minute macOS job — no matter what this checkout contains.
+ */
+const CI_FILTER_SOURCE_REF = "codex/milestone-a-wave0";
+
+const workflowContentSchema = z.object({ content: z.string(), encoding: z.literal("base64") });
+
+/**
+ * Reads `.github/workflows/ci.yml` as it exists on `ref` in the repository — the artifact that
+ * actually governs whether a pull request against a branch cut from `ref` starts CI.
+ */
+const readWorkflowFromRef = async (
+  transport: ReturnType<typeof createGitHubTransport>,
+  ref: string
+): Promise<string> => {
+  const response = await transport.request({
+    method: "GET",
+    path: `/repos/${REPOSITORY_PATH}/contents/.github/workflows/ci.yml?ref=${encodeURIComponent(ref)}`,
+    schema: workflowContentSchema
+  });
+  return Buffer.from(response.content, "base64").toString("utf8");
+};
+
 const pullRequestStateSchema = z.object({ number: z.number(), state: z.string() });
 const pullRequestListSchema = z.array(z.object({ number: z.number() }));
 const workflowRunsSchema = z.object({
@@ -82,11 +112,9 @@ describe.skipIf(!live)("GitHub live validation", () => {
   it(
     "opens, verifies, and fully cleans up a draft PR against the live repository",
     async () => {
-      // Step 0 (precondition): stop before opening anything if the worktree's CI workflow does
-      // not exclude autostack/** pull requests -- see live-config.ts for why a substring check on
-      // this file would not be trustworthy.
-      const ciWorkflowYaml = readFileSync(path.join(repoRoot, ".github/workflows/ci.yml"), "utf8");
-      assertPullRequestCiFilter(ciWorkflowYaml);
+      // Step 0's CI-filter precondition now runs AFTER the transport exists (below), because it
+      // must read the workflow from the remote ref the base branch is cut from, not from this
+      // checkout. See the comment at that call site.
 
       // Belt-and-suspenders, matching every branch-ref call site in this package: the repository
       // this suite is about to touch is asserted, not merely assumed, before any network call.
@@ -129,20 +157,32 @@ describe.skipIf(!live)("GitHub live validation", () => {
         random: Math.random
       });
 
+      // Step 0 (precondition) — the guard that actually governs whether CI starts.
+      //
+      // The local worktree's ci.yml is the WRONG artifact to check, and checking it is exactly
+      // what let a 60-minute macOS job start on 2026-08-31. For a `pull_request` event GitHub
+      // evaluates the workflow file on the PR's BASE branch IN THE REPOSITORY -- not the file in
+      // whatever checkout runs the test. Reading the local file passed unconditionally (this
+      // branch is the one that added the filter) while the base branch, cut from the default
+      // branch, carried an older unfiltered workflow. A guard asserting a property of the wrong
+      // artifact always passes.
+      //
+      // So: read the workflow from the exact remote ref this suite cuts its branches from, and
+      // fail closed if that ref does not carry the filter.
+      const ciWorkflowYaml = await readWorkflowFromRef(transport, CI_FILTER_SOURCE_REF);
+      assertPullRequestCiFilter(ciWorkflowYaml);
+
       let prNumber: number | undefined;
       let headCommitSha: string | undefined;
       let mainError: unknown;
 
       try {
-        // Step 2: read the repository's default-branch head SHA.
-        const repositoryInfo = await transport.request({
-          method: "GET",
-          path: `/repos/${REPOSITORY_PATH}`,
-          schema: repositoryInfoSchema
-        });
+        // Step 2: cut from the ref whose workflow was just verified to carry the filter -- NOT
+        // the default branch. The base branch inherits that ref's tree, so the PR GitHub sees is
+        // governed by a workflow that ignores autostack/** and starts no jobs.
         const defaultBranchRef = await transport.request({
           method: "GET",
-          path: `/repos/${REPOSITORY_PATH}/git/ref/heads/${encodeURIComponent(repositoryInfo.default_branch)}`,
+          path: `/repos/${REPOSITORY_PATH}/git/ref/heads/${encodeURIComponent(CI_FILTER_SOURCE_REF)}`,
           schema: gitRefSchema
         });
         const baseSha = defaultBranchRef.object.sha;
