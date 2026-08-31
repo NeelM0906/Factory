@@ -8,15 +8,19 @@ import {
   ExecutionScopeSchema,
   PipelineEvidenceSchema,
   PlanDocumentSchema,
+  admitStartCommand,
   digestExecutionScope,
   digestPlanDocument,
   digestVersionedValue,
+  validateCommandAuthorizationAgainstEnvironment,
   type Actor,
   type Approval,
+  type CommandSpec,
   type EnvironmentAuthorization,
   type ExecutionScope,
   type PipelineEvidence,
   type PlanDocument,
+  type TrustedRunnerAdmissionDependencies,
   type VerificationCommand
 } from "@autostack/contracts";
 import { describe, expect, it } from "vitest";
@@ -26,6 +30,7 @@ import {
   derivePlanNamedCommandAuthorizations,
   type DerivePlanNamedCommandAuthorizationsCommand,
   type DerivePlanNamedCommandAuthorizationsDependencies,
+  type DerivedCommandAuthorization,
   type DerivedCommandAuthorizations,
   type PlanNamedCommandRequest
 } from "../src/command-authorization.js";
@@ -523,5 +528,135 @@ describe("plan-named command authorizations", () => {
     await expect(
       derivePlanNamedCommandAuthorizations({ ...command, planApproval: pending }, dependencies())
     ).rejects.toThrow();
+  });
+});
+
+/**
+ * Asserted against the REAL admitters. A local restatement of their rules would agree with itself
+ * and prove nothing: the failure this guards against is a derivation that satisfies this file's
+ * idea of `admitStartCommand` and not the one `packages/contracts` actually ships.
+ */
+const deriveWith = async (
+  overrides: CommandOverrides = {}
+): Promise<{
+  readonly command: DerivePlanNamedCommandAuthorizationsCommand;
+  readonly record: DerivedCommandAuthorization;
+}> => {
+  const command = await commandFor(overrides);
+  const result = await derivePlanNamedCommandAuthorizations(command, dependencies());
+  const record = result.derived[0];
+  if (record === undefined) throw new Error("The derivation minted nothing.");
+  return { command, record };
+};
+
+const admissionDependencies = (
+  command: DerivePlanNamedCommandAuthorizationsCommand,
+  record: DerivedCommandAuthorization,
+  overrides: { readonly withoutPermissionApproval?: boolean } = {}
+): TrustedRunnerAdmissionDependencies => ({
+  resolveApproval: async (approvalId) => {
+    if (approvalId === command.planApproval.id) return command.planApproval;
+    if (approvalId === record.approval.id) {
+      return overrides.withoutPermissionApproval === true ? undefined : record.approval;
+    }
+    return undefined;
+  },
+  resolveEnvironmentAuthorization: async (authorizationId) =>
+    authorizationId === command.environmentAuthorization.id
+      ? command.environmentAuthorization
+      : undefined,
+  resolveCommandAuthorization: async (authorizationId) =>
+    authorizationId === record.authorization.id ? record.authorization : undefined
+});
+
+const startRequestFor = (
+  command: DerivePlanNamedCommandAuthorizationsCommand,
+  record: DerivedCommandAuthorization,
+  spec: CommandSpec = record.command
+): Readonly<Record<string, unknown>> => ({
+  workspaceId: record.authorization.scope.workspaceId,
+  runId: record.authorization.scope.runId,
+  environmentId: record.authorization.scope.environmentId,
+  commandId: record.commandId,
+  command: spec,
+  environmentAuthorizationId: command.environmentAuthorization.id,
+  environmentAuthorizationDigest: command.environmentAuthorization.digest,
+  authorization: record.authorization,
+  idempotency: { key: "start-command-1" }
+});
+
+describe("derived command authorizations at the runner boundary", () => {
+  it("is admitted by admitStartCommand", async () => {
+    const { command, record } = await deriveWith();
+    const admission = await admitStartCommand(
+      startRequestFor(command, record),
+      DERIVED_AT,
+      admissionDependencies(command, record)
+    );
+    expect(admission.approval.kind).toBe("permission");
+    expect(admission.approval.status).toBe("approved");
+    expect(admission.commandAuthorization.id).toBe(record.authorization.id);
+  });
+
+  it("narrows its environment authorization rather than widening it", async () => {
+    const { command, record } = await deriveWith();
+    expect(() =>
+      validateCommandAuthorizationAgainstEnvironment(
+        record.authorization,
+        command.environmentAuthorization
+      )
+    ).not.toThrow();
+    const environmentLimits = command.environmentAuthorization.scope.resourceLimits;
+    const commandLimits = record.authorization.scope.resourceLimits;
+    expect(commandLimits.durationSeconds).toBeLessThanOrEqual(environmentLimits.durationSeconds);
+    expect(commandLimits.cpu).toBeLessThanOrEqual(environmentLimits.cpu);
+    expect(commandLimits.memoryMb).toBeLessThanOrEqual(environmentLimits.memoryMb);
+  });
+
+  it("is admitted for no command other than the one it was derived for", async () => {
+    // The authorization is genuine and the spec is a byte-level variation on the approved one, so
+    // the only thing refusing here is `scope.commandDigest` against `digestCommandSpec`.
+    const { command, record } = await deriveWith();
+    const reordered: CommandSpec = {
+      ...record.command,
+      args: ["--filter", "@autostack/domain", "test"]
+    };
+    await expect(
+      admitStartCommand(
+        startRequestFor(command, record, reordered),
+        DERIVED_AT,
+        admissionDependencies(command, record)
+      )
+    ).rejects.toThrow("Command specification digest is invalid.");
+  });
+
+  it("is admitted for no working directory other than the pinned one", async () => {
+    const scope = scopeFor("packages/app");
+    const { command, record } = await deriveWith({
+      scope,
+      environmentAuthorization: await environmentAuthorizationFor(scope),
+      requests: [requestFor({ cwd: "packages/app" })]
+    });
+    const moved: CommandSpec = { ...record.command, cwd: "packages/app/vendor" };
+    await expect(
+      admitStartCommand(
+        startRequestFor(command, record, moved),
+        DERIVED_AT,
+        admissionDependencies(command, record)
+      )
+    ).rejects.toThrow("Command specification digest is invalid.");
+  });
+
+  it("is admitted only while the permission approval it names is durable", async () => {
+    // The permission approval is not decoration: without it the runner refuses, which is what makes
+    // minting one the security-critical act rather than a bookkeeping one.
+    const { command, record } = await deriveWith();
+    await expect(
+      admitStartCommand(
+        startRequestFor(command, record),
+        DERIVED_AT,
+        admissionDependencies(command, record, { withoutPermissionApproval: true })
+      )
+    ).rejects.toThrow("A trusted approved authorization is required.");
   });
 });
