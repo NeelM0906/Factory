@@ -588,6 +588,21 @@ git commit -m "feat(ui): add the workbench pane group and inspector sections"
 
 ---
 
+### Task 4a rulings (decided 2026-08-28, binding on Tasks 5a/5b/6)
+
+1. **`PaneGroup` mounts only the active panel.** Inactive panes are unmounted, not `hidden`. Accepted as the default because the panes are pure functions of props and their data lives above them in `client-app`, so a remount is cheap.
+   **If Task 5a's terminal pane needs scroll preservation, lift the scroll offset into props — do not change the mounting model.** State belongs above the primitive; making the primitive stateful to preserve it is the wrong repair.
+2. **Keyboard selection moves DOM focus; click selection does not.** Standard ARIA tabs behavior — a click has already placed focus on the clicked element. Accepted as implemented.
+3. **`InspectorSection` renders a visible `<h3>` wired by `aria-labelledby`**, not an invisible `aria-label`. Six of these stack in the inspector and an operator needs to see the section names.
+   **Watch item for Tasks 6 and 10b:** `<h3>` is hardcoded. axe's `heading-order` rule flags a level skip, so if the composed workbench yields `h1 → h3` with no `h2` between, the axe gate will trip. Fix it at composition time if it does — a `headingLevel` prop added now would be speculative flexibility for a violation that may never occur.
+4. **`InspectorRow.value` is `string | number | undefined`, and absence is `=== undefined`, never falsy.** A real `0` and a real `""` are present values and render as themselves. The narrow type is also a security-aligned constraint: the inspector renders untrusted provenance and evidence text, and refusing `ReactNode` keeps markup out structurally. Widen it only with a stated reason.
+
+### A guard must be able to fail _for its own reason_
+
+The Task 4a implementer caught something worth promoting to doctrine. Its first "Not recorded" test could not distinguish `value || NOT_RECORDED` from `value === undefined ? NOT_RECORDED : value` — because `undefined` is itself falsy, both implementations pass. The guard failed only when paired with assertions that `0` and `""` render as themselves.
+
+So observed-red is necessary but not sufficient. **The break used to prove a guard red must be the specific defect the guard exists to catch**, not any defect. "I broke it and the test failed" is satisfied by deleting the component. State, in each report, _which_ wrong implementation the test now rejects.
+
 ## Task 4b: Command palette and composer primitives
 
 **Files:**
