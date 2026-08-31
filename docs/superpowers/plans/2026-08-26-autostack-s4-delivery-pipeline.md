@@ -941,6 +941,18 @@ Converged practice across the streams; adopt it in every verification step.
 - **Package-scoped suites during development** (`pnpm --filter <pkg> test`); reserve the full suite for task boundaries and pre-merge.
 - **A full-suite failure is suspect-until-isolated.** Re-run the failing package alone before believing it. A _different_ victim each run, all timeouts, is contention — not a regression. Only a failure that reproduces in isolation is real.
 
+**Full-suite lock (binding, orchestrator 2026-09-01).** A `ps` precheck cannot see a suite that is about to start, which is how three streams collided on one announced quiet window. Before any **full-suite** run, claim the shared lock:
+
+```bash
+LOCK=/Users/zidane/Factory/.superpowers/sdd/full-suite.lock   # absolute; shared across all worktrees
+[ -f "$LOCK" ] && find "$LOCK" -mmin -60 | grep -q . && { echo "held: $(cat "$LOCK")"; exit 1; }
+echo "s4 $(date -u +%Y-%m-%dT%H:%M:%SZ)" > "$LOCK"
+# ... run the suite ...
+rm -f "$LOCK"
+```
+
+A lock older than 60 minutes is stale and may be taken. **The `ps` precheck stays** — the lock covers intent, `ps` covers reality, and neither subsumes the other. Package-scoped suites do not need the lock, only the precheck.
+
 **Never read turbo's exit code alone (binding).** Turbo can exit **0 over an incomplete run**. S6 observed it print `Force killed Turborepo tasks: @autostack/runner-local#test`, finish in 1m40s where that package alone needs ~7 minutes, and exit `0`. A killed task is not a passed task, and the exit status does not say so.
 
 **The rule:** every gate claim confirms the summary line `Tasks: N successful, N total` with N equal to the total, **and** shows no `Force killed` line. A report's quoted evidence must include that line. `tail -3` is _not_ sufficient — it commonly catches `Cached: … / Time: …` and misses the task line. Use an explicit filter:
