@@ -1,4 +1,19 @@
 export {
+  assembleContext,
+  type AssembledContext,
+  type AssembledContextFile,
+  type ContextAssemblyDeps,
+  type ContextAssemblyRequest,
+  type ContextOmission,
+  type ContextOmissionReason,
+  type ContextTruncation,
+  type ContextTruncationReason,
+  type NativeContextReader,
+  type OutOfScopePermissionOption,
+  type OutOfScopeRead
+} from "./context-assembly.js";
+export { isPathInScope, type ContextScope } from "./context-scope.js";
+export {
   NATIVE_AGENT_FAILURES,
   NativeAgentError,
   type NativeAgentFailure,
