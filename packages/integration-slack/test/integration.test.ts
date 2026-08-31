@@ -17,7 +17,7 @@ import * as SlackIntegrationModule from "../src/index.js";
 
 const SLACK_WORKSPACE_ID = "T0AUTOSTACK1";
 const CHANNEL_ID = "C0AUTOSTACKCH";
-const BINDING_REF = `${SLACK_WORKSPACE_ID}:${CHANNEL_ID}`;
+const BINDING_REF = "chb_01h9x2k4m5n6p7q8r9s0t1u2v3";
 const RUN_URL = "https://runs.autostack.dev/run/abc123";
 const NOW = "2026-08-31T00:00:00.000Z";
 const BOT_TOKEN = "xoxb-fixture-not-a-real-token-0001";
@@ -65,7 +65,7 @@ const buildDeps = (
   const deps: SlackIntegrationDependencies = {
     fetch: createFakeFetch([{ status: 200, body: { ok: true, ts: "1700000300.000600" } }]),
     now: () => NOW,
-    resolveBinding: vi.fn(async () => validBinding()),
+    resolveBindingByRef: vi.fn(async () => validBinding()),
     botToken: botTokenFn,
     signingSecret: vi.fn(async () => "fixture-signing-secret"),
     ...overrides
@@ -88,7 +88,7 @@ describe("createSlackIntegration", () => {
   describe("postSlackProgress", () => {
     it("validates the request schema before doing anything else", async () => {
       const { deps } = buildDeps();
-      const resolveBindingFn = deps.resolveBinding as ReturnType<typeof vi.fn>;
+      const resolveBindingFn = deps.resolveBindingByRef as ReturnType<typeof vi.fn>;
       const integration = createSlackIntegration(deps);
       const malformed = { schemaVersion: 1 } as unknown as Parameters<
         typeof integration.postSlackProgress
@@ -297,9 +297,9 @@ describe("createSlackIntegration", () => {
   });
 
   describe("fail-closed binding resolution", () => {
-    it("fails with zero fetch calls when resolveBinding throws", async () => {
+    it("fails with zero fetch calls when resolveBindingByRef throws", async () => {
       const { deps } = buildDeps({
-        resolveBinding: vi.fn(async () => {
+        resolveBindingByRef: vi.fn(async () => {
           throw new Error("no binding for this workspace/channel");
         })
       });
@@ -320,7 +320,7 @@ describe("createSlackIntegration", () => {
 
     it("fails with zero fetch calls when the resolved binding is disabled", async () => {
       const { deps } = buildDeps({
-        resolveBinding: vi.fn(async () => validBinding({ enabled: false }))
+        resolveBindingByRef: vi.fn(async () => validBinding({ enabled: false }))
       });
       const integration = createSlackIntegration(deps);
       const request = await composeSlackMessage(
@@ -337,10 +337,17 @@ describe("createSlackIntegration", () => {
       expect(deps.fetch).not.toHaveBeenCalled();
     });
 
-    it("rejects a resolved binding whose workspace/channel disagree with the request", async () => {
+    // Rejects the wrong implementation: one that trusts whatever the resolver hands back. A buggy
+    // or hostile resolver returning a *different* binding would otherwise redirect an approved
+    // run's messages into another channel. The returned binding must be the one asked for.
+    it("rejects a resolved binding whose bindingRef differs from the requested one", async () => {
       const { deps } = buildDeps({
-        resolveBinding: vi.fn(async () =>
-          validBinding({ slackWorkspaceId: "T_SOMEONE_ELSE", channelId: "C_SOMEONE_ELSE" })
+        resolveBindingByRef: vi.fn(async () =>
+          validBinding({
+            bindingRef: "chb_01hzzzzzzzzzzzzzzzzzzzzzzz",
+            slackWorkspaceId: "T_SOMEONE_ELSE",
+            channelId: "C_SOMEONE_ELSE"
+          })
         )
       });
       const integration = createSlackIntegration(deps);
@@ -358,8 +365,16 @@ describe("createSlackIntegration", () => {
       expect(deps.fetch).not.toHaveBeenCalled();
     });
 
-    it("rejects a malformed bindingRef with zero fetch calls", async () => {
-      const { deps } = buildDeps();
+    // The bindingRef is OPAQUE: this adapter imposes no structure on it, so an id in any shape the
+    // contract's StableRefSchema permits must reach the resolver untouched. This test rejects the
+    // wrong implementation that parses the ref (e.g. as "workspace:channel") and rejects anything
+    // not matching that invented convention — which would break the moment bindings are minted as
+    // ordinary opaque ids.
+    it("passes an unusually-shaped opaque bindingRef through to the resolver verbatim", async () => {
+      const opaqueRef = "chb_01hqqqqqqqqqqqqqqqqqqqqqqq";
+      const { deps } = buildDeps({
+        resolveBindingByRef: vi.fn(async () => validBinding({ bindingRef: opaqueRef }))
+      });
       const integration = createSlackIntegration(deps);
       const request = await composeSlackMessage(
         {
@@ -368,11 +383,12 @@ describe("createSlackIntegration", () => {
           runUrl: RUN_URL,
           evidenceDigest: EVIDENCE_DIGEST
         },
-        { bindingRef: "not-a-workspace-channel-pair", threadTs: "1700000300.000500" }
+        { bindingRef: opaqueRef, threadTs: "1700000300.000500" }
       );
 
-      await expect(integration.postSlackProgress(request)).rejects.toThrow();
-      expect(deps.fetch).not.toHaveBeenCalled();
+      await expect(integration.postSlackProgress(request)).resolves.toBeUndefined();
+      const resolver = deps.resolveBindingByRef as ReturnType<typeof vi.fn>;
+      expect(resolver).toHaveBeenCalledWith(opaqueRef);
     });
 
     it("rejects a resolved binding that is not a Slack binding, with zero fetch calls", async () => {
@@ -389,7 +405,7 @@ describe("createSlackIntegration", () => {
         enabled: true
       };
       const { deps } = buildDeps({
-        resolveBinding: vi.fn(async () => githubBinding as unknown as SlackChannelBinding)
+        resolveBindingByRef: vi.fn(async () => githubBinding as unknown as SlackChannelBinding)
       });
       const integration = createSlackIntegration(deps);
       const request = await composeSlackMessage(

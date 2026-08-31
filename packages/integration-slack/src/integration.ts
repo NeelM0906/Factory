@@ -39,11 +39,21 @@ export const createMemoryIdempotencyRecordStore = (): IdempotencyRecordStore => 
 export interface SlackIntegrationDependencies {
   readonly fetch: typeof globalThis.fetch;
   readonly now: () => string;
-  /** Throws when no *enabled* binding exists. Never returns undefined. */
-  readonly resolveBinding: (input: {
-    readonly slackWorkspaceId: string;
-    readonly channelId: string;
-  }) => Promise<SlackChannelBinding>;
+  /**
+   * Resolves an outbound request's opaque `bindingRef` to its binding. Throws when no *enabled*
+   * binding exists; never returns undefined.
+   *
+   * Takes the `bindingRef` verbatim and imposes no structure on it. `ChannelBindingSchema` models
+   * `bindingRef` as an opaque `StableRefSchema` *alongside* separate `slackWorkspaceId` and
+   * `channelId` fields — so the reference is an identifier, not a composite key, and parsing
+   * workspace/channel out of it would invent a cross-stream convention the contract never
+   * declares. Whoever mints bindings (S4/composition) is free to use an opaque `chb_…` id like
+   * every other identifier in this repo, and this adapter keeps working.
+   *
+   * The resolver owns the binding store, so it is the component that can answer this. The
+   * workspace/channel pair it returns is then authoritative for the outbound call.
+   */
+  readonly resolveBindingByRef: (bindingRef: string) => Promise<SlackChannelBinding>;
   /** Already-resolved by the credential store; S5 never dereferences a CredentialRefId. */
   readonly botToken: () => Promise<string>;
   readonly signingSecret: () => Promise<string>;
@@ -54,45 +64,19 @@ export interface SlackIntegrationDependencies {
 export type SlackIntegration = Pick<DeliveryIntegrationPort, "postSlackProgress"> &
   SlackApprovalIntegrationPort;
 
-const BINDING_REF_SEPARATOR = ":";
-
 /**
- * This stream's `bindingRef` convention: `${slackWorkspaceId}:${channelId}` (`StableRefSchema`
- * permits the colon). `SlackProgressRequest`/`SlackApprovalPrompt` carry only the opaque
- * `bindingRef`, not the workspace/channel pair directly, so this is how `postSlackProgress` and
- * `postApprovalPrompt` recover the values `resolveBinding` needs — without ever dereferencing a
- * `CredentialRefId` themselves.
- */
-const parseBindingRef = (bindingRef: string): { slackWorkspaceId: string; channelId: string } => {
-  const separatorIndex = bindingRef.indexOf(BINDING_REF_SEPARATOR);
-  if (separatorIndex <= 0 || separatorIndex === bindingRef.length - 1) {
-    throw new SlackRequestError(
-      "Slack bindingRef is not a recognized workspace:channel reference.",
-      "invalid_request",
-      false
-    );
-  }
-  return {
-    slackWorkspaceId: bindingRef.slice(0, separatorIndex),
-    channelId: bindingRef.slice(separatorIndex + 1)
-  };
-};
-
-/**
- * Fail-closed binding resolution (spec §13.2, decision D10). A `resolveBinding` that throws, a
- * disabled binding, or a binding whose workspace/channel disagree with what was asked for are all
- * rejected before anything is sent to Slack — this must run, and must fail, before the first
- * `fetch` call.
+ * Fail-closed binding resolution (spec §13.2, decision D10). A `resolveBindingByRef` that throws,
+ * a disabled binding, a non-Slack binding, or one whose own `bindingRef` disagrees with the one
+ * requested are all rejected before anything is sent to Slack — this must run, and must fail,
+ * before the first `fetch` call.
  */
 const resolveEnabledBinding = async (
   deps: SlackIntegrationDependencies,
   bindingRef: string
 ): Promise<SlackChannelBinding> => {
-  const { slackWorkspaceId, channelId } = parseBindingRef(bindingRef);
-
   let resolved: SlackChannelBinding;
   try {
-    resolved = await deps.resolveBinding({ slackWorkspaceId, channelId });
+    resolved = await deps.resolveBindingByRef(bindingRef);
   } catch (cause) {
     throw new SlackRequestError(
       "No enabled Slack channel binding could be resolved for this request.",
@@ -113,9 +97,12 @@ const resolveEnabledBinding = async (
   if (!binding.enabled) {
     throw new SlackRequestError("Slack channel binding is disabled.", "invalid_request", false);
   }
-  if (binding.slackWorkspaceId !== slackWorkspaceId || binding.channelId !== channelId) {
+  // The resolver must return the binding that was actually asked for. Without this a buggy or
+  // hostile resolver could redirect an approved run's messages into a different channel, so the
+  // returned binding is checked against the requested reference rather than trusted.
+  if (binding.bindingRef !== bindingRef) {
     throw new SlackRequestError(
-      "Resolved Slack binding does not match the requested workspace/channel.",
+      "Resolved Slack binding does not match the requested bindingRef.",
       "invalid_request",
       false
     );
