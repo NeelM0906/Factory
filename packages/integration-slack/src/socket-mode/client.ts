@@ -37,6 +37,8 @@ export interface SocketModeClient {
 
 const APPS_CONNECTIONS_OPEN_URL = "https://slack.com/api/apps.connections.open";
 const DEFAULT_MAXIMUM_RECONNECT_ATTEMPTS = 5;
+/** Matches the GitHub delivery replay guard's ceiling; see `rememberEnvelopeId` below. */
+const MAXIMUM_REMEMBERED_ENVELOPE_IDS = 4096;
 const BASE_BACKOFF_MS = 1000;
 const MAX_BACKOFF_MS = 30000;
 
@@ -123,9 +125,25 @@ export const createSocketModeClient = (deps: SocketModeDependencies): SocketMode
   const maximumReconnectAttempts =
     deps.maximumReconnectAttempts ?? DEFAULT_MAXIMUM_RECONNECT_ATTEMPTS;
 
-  // Envelope-id dedup for the client's lifetime: a Slack redelivery must still be acked but must
-  // never be enqueued twice.
+  /**
+   * Envelope-id dedup: a Slack redelivery must still be acked but must never be enqueued twice.
+   *
+   * Bounded, mirroring the GitHub adapter's delivery replay guard. A plain unbounded `Set` grows
+   * for the lifetime of a Socket Mode connection — which is meant to stay open indefinitely — so
+   * every envelope ever seen would be retained forever. The dedup only needs to span Slack's retry
+   * window (seconds), so a bounded FIFO gives the same protection with a fixed ceiling.
+   * Insertion-ordered `Set` iteration makes the oldest key the first one yielded, so eviction is
+   * oldest-first, never most-recent-first.
+   */
   const seenEnvelopeIds = new Set<string>();
+  const rememberEnvelopeId = (envelopeId: string): void => {
+    seenEnvelopeIds.add(envelopeId);
+    while (seenEnvelopeIds.size > MAXIMUM_REMEMBERED_ENVELOPE_IDS) {
+      const oldest = seenEnvelopeIds.values().next();
+      if (oldest.done === true) break;
+      seenEnvelopeIds.delete(oldest.value);
+    }
+  };
   let currentSocket: SocketLike | undefined;
   let closing = false;
   let reconnecting = false;
@@ -156,7 +174,7 @@ export const createSocketModeClient = (deps: SocketModeDependencies): SocketMode
     socket.send(JSON.stringify({ envelope_id: envelopeId }));
 
     if (seenEnvelopeIds.has(envelopeId)) return; // Already queued once; still acked above.
-    seenEnvelopeIds.add(envelopeId);
+    rememberEnvelopeId(envelopeId);
 
     const payload = ackable.data.payload ?? ackable.data;
     void deps.queue.enqueue({ envelopeId, payload, enqueuedAt: deps.now() }).catch(() => {

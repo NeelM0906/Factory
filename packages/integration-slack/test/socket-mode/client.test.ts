@@ -183,6 +183,55 @@ describe("createSocketModeClient", () => {
     expect(sequence).toEqual([`ack:${JSON.stringify({ envelope_id: "E1" })}`, "handler:E1"]);
   });
 
+  // Rejects two wrong implementations at once (merge-review MEDIUM-3). An UNBOUNDED Set never
+  // forgets, so the oldest id would still be deduped after 4096 newer ones — the first assertion
+  // catches that. A bound that evicts MOST-RECENT-first would forget the newest id instead — the
+  // second assertion catches that, and without it "evict something" passes.
+  it("bounds envelope-id memory, evicting oldest-first rather than most-recent-first", async () => {
+    const { factory, sockets } = createTrackedWebSocketFactory();
+    const { fetch } = createOpenConnectionFetch([{ ok: true, url: "wss://example.test/socket-1" }]);
+    const queue = createMemoryIngressQueue({ capacity: 20_000 });
+    const client = createSocketModeClient({
+      fetch,
+      appToken: async () => "xapp-token",
+      webSocketFactory: factory,
+      queue,
+      now
+    });
+
+    await client.connect();
+    const socket = requireSocket(sockets, 0);
+
+    const send = async (envelopeId: string): Promise<void> => {
+      await socket.dispatch("message", {
+        data: JSON.stringify({ type: "events_api", envelope_id: envelopeId, payload: {} })
+      });
+    };
+
+    await send("oldest");
+    for (let index = 0; index < 4096; index += 1) await send(`filler-${index}`);
+    await send("newest");
+
+    const drained: string[] = [];
+    await queue.drain(async (item) => {
+      drained.push(item.envelopeId);
+    });
+    const enqueuedBefore = drained.length;
+
+    // "oldest" was pushed out by the bound, so a redelivery of it enqueues again.
+    await send("oldest");
+    // "newest" is still remembered, so a redelivery of it must NOT enqueue again.
+    await send("newest");
+
+    const redrained: string[] = [];
+    await queue.drain(async (item) => {
+      redrained.push(item.envelopeId);
+    });
+
+    expect(enqueuedBefore).toBe(4098);
+    expect(redrained).toEqual(["oldest"]);
+  });
+
   it("enqueues a re-delivered envelope_id only once but still acks the redelivery", async () => {
     const { factory, sockets } = createTrackedWebSocketFactory();
     const { fetch } = createOpenConnectionFetch([{ ok: true, url: "wss://example.test/socket-1" }]);
