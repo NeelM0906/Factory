@@ -146,6 +146,10 @@ delivery in **Advanced → Recent Deliveries** to confirm it now succeeds.
 
 A **503** response (`{"error":{"code":"local_runner_unavailable", …}}`) is a different failure
 mode — it means the signature verified but the local runner was not accepting work at that
-moment (ingress closed, or AutoStack was not running). GitHub automatically retries a non-2xx
-response, so once the local runner is available again, use **Redeliver** to confirm recovery
-rather than treating it as a signature problem.
+moment (ingress closed, or AutoStack was not running).
+
+**GitHub does not automatically retry a failed webhook delivery.** A non-2xx response is recorded
+in **Recent Deliveries** and left there; redelivery is a manual action. So a 503 means that event
+is waiting for you, not queued for automatic recovery: start AutoStack, then open the failed
+delivery and press **Redeliver**. Any event that arrived while AutoStack was down needs the same
+treatment, one delivery at a time — nothing replays on its own.

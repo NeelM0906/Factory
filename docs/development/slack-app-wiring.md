@@ -17,9 +17,15 @@ built and tested for Milestone A: a long-lived WebSocket connection opened via
 durable ingress queue. **Signed HTTP delivery is a Milestone B concern** (spec §13.2) — the
 `X-Slack-Signature`/`X-Slack-Request-Timestamp` verifier in
 `packages/integration-slack/src/http/signature.ts` exists and is tested, but nothing in this
-milestone serves an HTTP endpoint for Slack to call. The **signing secret** you generate below is
-still required (Socket Mode's own `apps.connections.open` handshake and any future HTTP-mode
-verification both use it), but no public URL needs to be configured for it in this milestone.
+milestone serves an HTTP endpoint for Slack to call.
+
+Store the **signing secret** anyway, but be clear about what it is and is not for.
+`apps.connections.open` authenticates with the **app-level token** (`xapp-…`) alone — it does not
+use the signing secret, and Socket Mode envelopes arrive over an authenticated WebSocket rather
+than as separately-signed HTTP requests. The signing secret verifies **HTTP-mode** request
+signatures only, which is a Milestone B path. It is captured now so the credential store is
+complete before the workspace app is handed over, not because anything in this milestone reads
+it — and no public URL needs configuring for it here.
 
 ## Step 1: Create the app from a manifest
 
@@ -127,9 +133,10 @@ Store all three of the following in AutoStack's credential store (macOS Keychain
 `packages/model-router/src/credential-ref-store.ts`) — **never** in a repository file and
 **never** in a `.env` file:
 
-- The **app-level token** (`xapp-…`) from Step 2.
-- The **bot token** (`xoxb-…`) from this step.
-- The **signing secret** from this step.
+- The **app-level token** (`xapp-…`) from Step 2 — this is what opens the Socket Mode connection.
+- The **bot token** (`xoxb-…`) from this step — this is what posts messages.
+- The **signing secret** from this step — stored for Milestone B's HTTP mode; nothing in
+  Milestone A reads it.
 
 Placeholders only past this point — this document never records the real values:
 
