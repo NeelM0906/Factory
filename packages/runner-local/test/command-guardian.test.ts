@@ -1506,7 +1506,7 @@ describe("CommandGuardian", () => {
 
   it("redacts split UTF-8, ANSI, and configured-secret output before every durable sink", async () => {
     const fixture = await createGuardianFixture(["super-secret"]);
-    const encoded = Buffer.from("héllo [31msuper-secret[0m");
+    const encoded = Buffer.from("héllo \u001b[31msuper-secret\u001b[0m");
     fixture.pty.session.emitData(encoded.subarray(0, 2));
     fixture.pty.session.emitData(encoded.subarray(2, 14));
     fixture.pty.session.emitData(encoded.subarray(14));
