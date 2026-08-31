@@ -1,29 +1,24 @@
 import {
-  ApprovalSchema,
-  CommandAuthorizationSchema,
-  CommandScopeSchema,
   CommandSpecSchema,
-  PendingDomainEventSchema,
   RelativeWorkspacePathSchema,
   admitPlanDocument,
-  digestCommandAuthorization,
-  digestCommandScope,
-  digestCommandSpec,
   digestEnvironmentAuthorization,
-  digestLocalExecutionPhase,
   type Actor,
   type Approval,
-  type CommandAuthorization,
   type CommandId,
   type CommandSpec,
   type EnvironmentAuthorization,
   type IdFactory,
-  type PendingDomainEvent,
   type PipelineEvidence,
   type PlanDocument,
   type VerificationCommand
 } from "@autostack/contracts";
 
+import {
+  COMMAND_AUTHORIZATION_TTL_MS,
+  sealCommandAuthorizationRecords,
+  type DerivedCommandAuthorization
+} from "./command-authorization-records.js";
 import { StaleApprovalEvidenceError } from "./errors.js";
 import { futureTimestamp } from "./pipeline-approval-records.js";
 
@@ -34,11 +29,10 @@ import { futureTimestamp } from "./pipeline-approval-records.js";
  * This module writes `status: "approved"` approval records **without a fresh human act**, on the
  * strength of the plan approval a human already gave. `admitStartCommand` re-reads those records and
  * cannot tell a derived one from a clicked one — so the whole distinction lives here, in what this
- * function refuses to derive. Its threat analysis is `.superpowers/sdd/task-7-threat-analysis.md`.
- *
- * Refusal is the base case. A wrongly-refused command costs one trip through the out-of-envelope
- * permission route, which exists; a wrongly-derived one runs an attacker-chosen process on the
- * developer's machine and leaves a durable record claiming a human authorized it.
+ * function refuses to derive. Refusal is therefore the base case: a wrongly-refused command costs
+ * one trip through the out-of-envelope permission route, while a wrongly-derived one runs an
+ * attacker-chosen process and leaves a durable record claiming a human authorized it. Full analysis:
+ * `.superpowers/sdd/task-7-threat-analysis.md`.
  */
 
 /** Environment entries are declared on `CommandSpecSchema`; contracts exports no standalone type. */
@@ -118,30 +112,11 @@ export interface DerivePlanNamedCommandAuthorizationsDependencies {
   readonly authorizationTtlMs?: number;
 }
 
-export interface DerivedCommandAuthorization {
-  readonly commandId: CommandId;
-  readonly command: CommandSpec;
-  readonly approval: Approval;
-  readonly authorization: CommandAuthorization;
-  readonly event: PendingDomainEvent;
-}
-
 export interface DerivedCommandAuthorizations {
   /** The plan evidence every record below descends from — the binding, recorded once. */
   readonly planEvidenceDigest: string;
   readonly derived: readonly DerivedCommandAuthorization[];
 }
-
-/**
- * How long a derived command authorization stays admissible, in milliseconds. Much shorter than the
- * environment's window: a command authorization is minted immediately before the command runs, so a
- * long window buys nothing and widens the replay surface. The effective expiry is never later than
- * the environment authorization's own.
- */
-export const COMMAND_AUTHORIZATION_TTL_MS = 60 * 60 * 1_000;
-
-/** `digestCommandAuthorization` parses under the full schema, which requires a `digest` to drop. */
-const PLACEHOLDER_DIGEST = "0".repeat(64);
 
 const earlier = (left: string, right: string): string =>
   Date.parse(left) <= Date.parse(right) ? left : right;
@@ -300,88 +275,28 @@ export async function derivePlanNamedCommandAuthorizations(
       timeoutSeconds: request.timeoutSeconds,
       terminal: request.terminal
     });
-    const commandScope = CommandScopeSchema.parse({
-      environmentAuthorizationId: environment.id,
-      environmentAuthorizationDigest: environment.digest,
-      workspaceId: scope.workspaceId,
-      runId: scope.runId,
-      environmentId: scope.environmentId,
-      commandId: request.commandId,
-      action: command.action,
-      commandDigest: await digestCommandSpec(spec),
-      repositoryIdentity: scope.repositoryIdentity,
-      sourceCommit: scope.sourceCommit,
-      branch: scope.branch,
-      cwdRoot: scope.cwdRoot,
-      networkPolicy: "host",
-      filesystemDisclosure: "host_user",
-      // Narrowing only: cpu and memory are the environment's ceilings, and the duration is this
-      // command's own timeout rather than the whole environment's budget.
-      resourceLimits: {
-        cpu: scope.resourceLimits.cpu,
-        memoryMb: scope.resourceLimits.memoryMb,
-        durationSeconds: request.timeoutSeconds
-      },
-      allowedCredentialRefIds: credentialRefIds
-    });
-
-    // `admitStartCommand` requires the permission approval's `evidenceDigest` to equal the command
-    // authorization's `approvalEvidenceDigest`, which must equal this scope's digest — so each
-    // command necessarily gets its own approval, and one approval can never cover two commands.
-    const approvalEvidenceDigest = await digestCommandScope(commandScope);
-    const approvalId = dependencies.ids.approval();
-    const approval = ApprovalSchema.parse({
-      schemaVersion: 1,
-      id: approvalId,
-      workspaceId: scope.workspaceId,
-      runId: scope.runId,
-      kind: "permission",
-      status: "approved",
-      evidenceDigest: approvalEvidenceDigest,
-      eligibleApproverIds: command.planApproval.eligibleApproverIds,
-      decision: {
-        decision: "approved",
-        actor: approver.actor,
-        origin: approver.origin,
-        decidedAt: now
-      },
-      createdAt: now,
-      updatedAt: now
-    });
-    const draft = {
-      id: dependencies.ids.commandAuthorization(),
-      approvalId,
-      approvalEvidenceDigest,
-      scope: commandScope,
-      createdAt: now,
-      expiresAt,
-      digest: PLACEHOLDER_DIGEST
-    };
-    const authorization = CommandAuthorizationSchema.parse({
-      ...draft,
-      digest: await digestCommandAuthorization(draft)
-    });
-
-    const payload = {
-      runId: scope.runId,
-      environmentId: scope.environmentId,
-      commandId: request.commandId,
-      authorization,
-      phaseKey: `command:${request.commandId}:authorization`
-    };
-    const event = PendingDomainEventSchema.parse({
-      workspaceId: scope.workspaceId,
-      actor: command.actor,
-      correlationId: command.correlationId,
-      occurredAt: now,
-      type: "command.authorization_recorded",
-      payload: {
-        ...payload,
-        phaseDigest: await digestLocalExecutionPhase("command.authorization_recorded", payload)
-      }
-    });
-    derived.push({ commandId: request.commandId, command: spec, approval, authorization, event });
+    derived.push(
+      await sealCommandAuthorizationRecords({
+        commandId: request.commandId,
+        command: spec,
+        action: command.action,
+        environmentAuthorization: environment,
+        allowedCredentialRefIds: credentialRefIds,
+        approver,
+        eligibleApproverIds: command.planApproval.eligibleApproverIds,
+        actor: command.actor,
+        correlationId: command.correlationId,
+        createdAt: now,
+        expiresAt,
+        ids: dependencies.ids
+      })
+    );
   }
 
   return { planEvidenceDigest: command.planEvidence.evidenceDigest, derived };
 }
+
+export {
+  COMMAND_AUTHORIZATION_TTL_MS,
+  type DerivedCommandAuthorization
+} from "./command-authorization-records.js";
