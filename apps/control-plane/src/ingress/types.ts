@@ -87,3 +87,44 @@ export interface SlackIngressDependencies {
   /** Default `/ingress/slack/interactivity` — outside the bearer-protected `/v1` surface. */
   readonly interactivityPath?: string;
 }
+
+/** Thrown by {@link readRawBody} when a request body exceeds its cap. */
+export class BodyTooLargeError extends Error {}
+
+/**
+ * Reads the request body once as raw bytes, enforcing `maximumBodyBytes` while streaming so an
+ * oversized body is never buffered past the cap. The same bytes are later handed to the signature
+ * verifier and to `JSON.parse` — never re-encoded in between, which is what makes signature
+ * verification meaningful (both providers sign the exact bytes they sent).
+ *
+ * Shared by both ingress routes rather than duplicated per route: the streaming cap is a security
+ * control, and two copies drift. It also means one route's cap test cannot give false assurance
+ * about the other's — they run the same code.
+ */
+export async function readRawBody(request: Request, maximumBodyBytes: number): Promise<Uint8Array> {
+  const declaredLength = request.headers.get("content-length");
+  if (declaredLength !== null && Number(declaredLength) > maximumBodyBytes) {
+    throw new BodyTooLargeError();
+  }
+  const reader = request.body?.getReader();
+  if (reader === undefined) return new Uint8Array(0);
+  const chunks: Uint8Array[] = [];
+  let total = 0;
+  while (true) {
+    const chunk = await reader.read();
+    if (chunk.done) break;
+    total += chunk.value.byteLength;
+    if (total > maximumBodyBytes) {
+      await reader.cancel();
+      throw new BodyTooLargeError();
+    }
+    chunks.push(chunk.value);
+  }
+  const merged = new Uint8Array(total);
+  let offset = 0;
+  for (const chunk of chunks) {
+    merged.set(chunk, offset);
+    offset += chunk.byteLength;
+  }
+  return merged;
+}

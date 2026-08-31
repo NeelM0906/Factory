@@ -304,6 +304,47 @@ describe("registerSlackIngress: /ingress/slack/events", () => {
     expect(elapsed).toBeLessThan(DELAY_MS + 300);
   });
 
+  // Merge-review LOW-1: the streaming cap was duplicated per route and only GitHub's copy was
+  // tested, so Slack's cap path had no coverage at all. `readRawBody` is now shared (see
+  // src/ingress/types.ts), but sharing alone does not prove THIS route passes its cap through --
+  // a route that forgot to, or passed a wrong value, would still be untested. Hence this.
+  it("stops reading a streamed body once the cap is exceeded, never draining the full stream", async () => {
+    const CAP = 1024;
+    const CHUNK = 4096;
+    const AVAILABLE = 50 * 1024 * 1024;
+    let bytesPulled = 0;
+    let cancelled = false;
+    const stream = new ReadableStream<Uint8Array>({
+      pull(controller) {
+        if (cancelled || bytesPulled >= AVAILABLE) {
+          controller.close();
+          return;
+        }
+        const size = Math.min(CHUNK, AVAILABLE - bytesPulled);
+        controller.enqueue(new Uint8Array(size).fill(97));
+        bytesPulled += size;
+      },
+      cancel() {
+        cancelled = true;
+      }
+    });
+
+    const { app, accept } = makeHarness({ maximumBodyBytes: CAP });
+    const request = new Request("http://localhost/ingress/slack/events", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: stream,
+      duplex: "half"
+    } as RequestInit & { readonly duplex: "half" });
+
+    const response = await app.request(request);
+
+    expect(response.status).toBe(413);
+    expect(accept).not.toHaveBeenCalled();
+    expect(bytesPulled).toBeLessThanOrEqual(CAP + CHUNK);
+    expect(cancelled).toBe(true);
+  });
+
   describe("outside the bearer wall", () => {
     it("succeeds with no Authorization header, given a valid signature", async () => {
       const { app } = makeHarness();

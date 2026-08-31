@@ -1,6 +1,6 @@
 import type { Context, Hono } from "hono";
 
-import type { SlackIngressDependencies } from "./types.js";
+import { BodyTooLargeError, readRawBody, type SlackIngressDependencies } from "./types.js";
 
 const DEFAULT_EVENTS_PATH = "/ingress/slack/events";
 const DEFAULT_INTERACTIVITY_PATH = "/ingress/slack/interactivity";
@@ -9,48 +9,12 @@ const DEFAULT_MAXIMUM_BODY_BYTES = 1024 * 1024;
 type ErrorCode =
   "unauthorized" | "invalid_request" | "request_too_large" | "local_runner_unavailable";
 
-class BodyTooLargeError extends Error {}
-
 const errorResponse = (
   context: Context,
   status: 401 | 400 | 413 | 503,
   code: ErrorCode,
   message: string
 ): Response => context.json({ error: { code, message } }, status);
-
-/**
- * Reads the request body once as raw bytes, enforcing `maximumBodyBytes` while streaming so an
- * oversized body is never buffered past the cap. Both Slack routes verify the signature over
- * these exact bytes before doing anything else with them (JSON-decoding for the events route,
- * form-decoding for the interactivity route) — never a re-encoded copy.
- */
-async function readRawBody(request: Request, maximumBodyBytes: number): Promise<Uint8Array> {
-  const declaredLength = request.headers.get("content-length");
-  if (declaredLength !== null && Number(declaredLength) > maximumBodyBytes) {
-    throw new BodyTooLargeError();
-  }
-  const reader = request.body?.getReader();
-  if (reader === undefined) return new Uint8Array(0);
-  const chunks: Uint8Array[] = [];
-  let total = 0;
-  while (true) {
-    const chunk = await reader.read();
-    if (chunk.done) break;
-    total += chunk.value.byteLength;
-    if (total > maximumBodyBytes) {
-      await reader.cancel();
-      throw new BodyTooLargeError();
-    }
-    chunks.push(chunk.value);
-  }
-  const merged = new Uint8Array(total);
-  let offset = 0;
-  for (const chunk of chunks) {
-    merged.set(chunk, offset);
-    offset += chunk.byteLength;
-  }
-  return merged;
-}
 
 const readStringField = (payload: unknown, field: string): string | undefined => {
   if (typeof payload !== "object" || payload === null) return undefined;
