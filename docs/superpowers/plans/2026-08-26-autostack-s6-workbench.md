@@ -761,7 +761,7 @@ Six labelled sections (spec §4.1, with policy per the scope disposition above):
 - **Policy** from `ModelPolicySchema` (`packages/contracts/src/model.ts:318`) — allowed routes, ordered fallbacks, token/cost ceilings, reasoning level.
 - **Provenance** — source trigger from the work item's `SourceRef`, workflow version, adapter ID.
 
-The load-bearing test: given a usage record with `{ kind: "unknown" }` cost, the rendered output contains "Not recorded" and does **not** contain "0" in the cost field. That is spec §10.2 made testable.
+The load-bearing test: given a usage record with `{ state: "unknown" }` cost (CORRECTED at Task 6 step 1: the discriminant is `state`, not `kind` — `ModelCostSchema`/`ModelTokenCountSchema` discriminate on `state`), the rendered output contains "Not recorded" and does **not** contain "0" in the cost field. That is spec §10.2 made testable.
 
 ```bash
 pnpm --filter @autostack/client-app test -- run-inspector.test.tsx
@@ -901,22 +901,22 @@ export const deriveFactoryMetrics = (
 ): FactoryMetrics => { ... };
 ```
 
-| Metric                | Derived from                                                                         |
-| --------------------- | ------------------------------------------------------------------------------------ |
-| Intake volume         | `work_item.created` count                                                            |
-| Source coverage       | `work_item.created` → `payload.workItem.source.kind`                                 |
-| Run state counts      | fold `run.created` + `run.transitioned` per `runId` to a final `RunStatus`           |
-| Stage throughput      | `stage.succeeded` per `payload.stage`                                                |
-| Queue depth           | `stage.queued` minus `stage.leased`, per stage, by `jobId`                           |
-| Stage latency         | `stage.leased.occurredAt` → `stage.succeeded\|failed.occurredAt`, matched on `jobId` |
-| Retry counts          | max `stage.leased.payload.attempt` per `(runId, stage)`                              |
-| Pass rate             | `verify`-stage `succeeded / (succeeded + failed)`                                    |
-| Cycle time            | `run.created.occurredAt` → the `run.transitioned` whose `to === "completed"`         |
-| Approval wait time    | `approval.requested` → `approval.decided`, matched on `approvalId`                   |
-| Human interventions   | `approval.decided` count + transitions into `waiting_for_user`                       |
-| Pull requests drafted | `stage.succeeded` where `stage === "publish"`                                        |
-| Validation checks run | `command.completed` count                                                            |
-| Tokens / cost         | **no event source — D4.** Returned as `{ kind: "unknown" }`, rendered "Not recorded" |
+| Metric                | Derived from                                                                          |
+| --------------------- | ------------------------------------------------------------------------------------- |
+| Intake volume         | `work_item.created` count                                                             |
+| Source coverage       | `work_item.created` → `payload.workItem.source.kind`                                  |
+| Run state counts      | fold `run.created` + `run.transitioned` per `runId` to a final `RunStatus`            |
+| Stage throughput      | `stage.succeeded` per `payload.stage`                                                 |
+| Queue depth           | `stage.queued` minus `stage.leased`, per stage, by `jobId`                            |
+| Stage latency         | `stage.leased.occurredAt` → `stage.succeeded\|failed.occurredAt`, matched on `jobId`  |
+| Retry counts          | max `stage.leased.payload.attempt` per `(runId, stage)`                               |
+| Pass rate             | `verify`-stage `succeeded / (succeeded + failed)`                                     |
+| Cycle time            | `run.created.occurredAt` → the `run.transitioned` whose `to === "completed"`          |
+| Approval wait time    | `approval.requested` → `approval.decided`, matched on `approvalId`                    |
+| Human interventions   | `approval.decided` count + transitions into `waiting_for_user`                        |
+| Pull requests drafted | `stage.succeeded` where `stage === "publish"`                                         |
+| Validation checks run | `command.completed` count                                                             |
+| Tokens / cost         | **no event source — D4.** Returned as `{ state: "unknown" }`, rendered "Not recorded" |
 
 Rules the tests pin: an empty stream yields zeros, not `NaN`; an unmatched `stage.leased` (crash mid-stage) contributes to queue depth and nothing else; a `run.transitioned` for a run with no `run.created` in the window is counted as partial rather than dropped silently; `windowComplete: false` marks every total partial, mirroring the `partialMetrics` convention at `app.tsx:250`.
 
