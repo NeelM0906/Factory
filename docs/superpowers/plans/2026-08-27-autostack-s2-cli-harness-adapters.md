@@ -175,6 +175,17 @@ _D-3 buffering (Tasks 7–8) — likewise:_
 
 Deleting the buffer or the quiesce is **not** acceptable red evidence for any row above.
 
+**D-15 — `AgentInvocationRequest.environmentId` is optional, and absence is a legitimate state this stream must not paper over.** _(Ruling E10, base `a538cdd`.)_
+
+Triage and the other pre-provisioning stations (spec §8.2) invoke agents before any environment exists, and `StageRunSchema` already modelled that with an optional `environmentId` — the invocation request was the outlier. Adapters therefore read it as `string | undefined`.
+
+Rules for this stream:
+
+- **Forward or record it only when present.** Never substitute a placeholder, a sentinel, or a freshly minted id to satisfy a type. An id that reaches no durable event is fabricated identity, which is the same failure class as D-11 — a value that looks legitimate while belonging to nothing.
+- **Nothing in this lane may fail on absence.** The spawn envelope keys on `cwd` and on ambient credentials, never on environment identity. If an adapter is ever found to genuinely require the id to function, that is an escalation, not a local default.
+
+**Do not confuse this with D-5.** `environmentId` is the identity of a provisioned workspace environment; D-5's allowlist governs the child process's environment _variables_. They share a word and nothing else. Absence of `environmentId` says nothing about which variables are forwarded, and no code path should let one influence the other.
+
 **Remaining escalations:** none blocking. E-1 is resolved in favour of Option B — S2 implements the child supervisor inside `agent-adapter-kit`, modelled on but not copied from the private `packages/runner-local/src/process-runner.ts`, importing runner-local's public redaction, path-policy, and signal exports. The module is to be written so that promoting it into `runner-local` later is a clean lift. E-3's `AgentEvidenceSink` port is confirmed as S2-owned.
 
 ---
