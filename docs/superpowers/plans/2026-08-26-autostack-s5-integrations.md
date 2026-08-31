@@ -42,7 +42,16 @@
 - **Untrusted input (§14.1):** issue bodies, PR comments, and Slack text are data. They are length-bounded, validated through `SafeMetadataStringSchema` where the contract requires it, and never interpreted as instructions, permissions, or policy by this stream's code.
 - **Fail closed:** an unverifiable signature, an unparseable delivery, a non-`autostack/` branch, an over-budget message, or a redaction failure is a rejection, never a downgrade to "post it anyway".
 - TDD: failing test first, observe the stated failure, minimal implementation, focused re-run, package gate, conventional commit per task.
-- **Guard tests name the wrong implementation they reject (doctrine upgrade, 2026-08-31).** "I broke it and it went red" is satisfied by deleting the component, so observed-red alone is not evidence. Every guard test must identify the specific defect it discriminates against, and its red evidence must come from **that** defect rather than arbitrary breakage. In practice this means a rejection test needs the companion assertion that pins its boundary: a byte budget needs a case at exactly the budget (else `>=` passes for `>`), a threshold of 20 needs a passing case at 19, a fallback needs the `0`/`""` case (else `||` is indistinguishable from `=== undefined`), and a set of reject-cases needs at least one accept-case (else "reject everything" passes them all). Where a property is **not** behaviourally testable — constant-time comparison being the standing example, since `timingSafeEqual` and `===` accept and reject identically — say so in a comment at the call site instead of leaving a test that implies coverage it does not provide.
+- **Guard tests must not be vacuous — apply the standing question (doctrine final form, 2026-08-31).** "I broke it and it went red" is also satisfied by deleting the component, so observed-red alone is not evidence. Every vacuous-guard vector shares one shape: **the environment supplies a default that satisfies the assertion.** So for each guard, ask:
+
+  > **What does the environment return when the feature is ABSENT, and does that value pass?**
+
+  If it passes, the guard is decorative. The earlier case list — boundary companions, accept-cases alongside reject-cases, the `0`/`""` fallback case — are all instances of this one question, not separate rules.
+
+  Worked example from this stream: `expect(error.message).not.toContain(secret)` looks like a redaction guard, but `redactSensitiveText` returns `""` from its own catch block. Absent redaction ⇒ empty message ⇒ assertion passes. Every error message in the package could have been blank with that suite green. The fix is the companion that proves the message _survived_ (non-empty, still carrying its non-sensitive text), verified by mutating the redactor to `() => ""` and watching exactly those tests — and only those — go red.
+
+  Where the environment returns **identical** behaviour present-or-absent, no test can exist: constant-time comparison is the limit case, since `timingSafeEqual` and `===` accept and reject the same inputs and differ only in timing. There, documentation at the call site is the correct answer, not a test that implies coverage it cannot provide.
+
 - **`tsc` is a separate gate from the tests.** Vitest does not typecheck, so a green suite proves nothing about `pnpm --filter <pkg> check`. Both must pass before a task is done.
 
 ---

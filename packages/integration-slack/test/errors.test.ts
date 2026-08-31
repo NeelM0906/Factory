@@ -99,15 +99,23 @@ describe("SlackRequestError", () => {
     expect(JSON.stringify(error)).not.toContain("underlying transport failure detail");
   });
 
-  it("redacts a declared sensitive value out of the message", () => {
+  // The `not.toContain` assertions below are vacuous on their own: `redactSensitiveText` returns
+  // "" from its own catch block, so a redactor that failed outright — or one replaced by
+  // `() => ""` — satisfies "does not contain the secret" perfectly. That is the environment
+  // supplying a default that passes the assertion. Each case therefore also asserts the message
+  // SURVIVED: non-empty, and still carrying its non-sensitive text. Absent that companion these
+  // tests would go on passing while every error message in the package was blank.
+  it("redacts a declared sensitive value while preserving the rest of the message", () => {
     const secret = "super-secret-signing-value";
     const error = new SlackRequestError(`Request failed: ${secret}`, "unauthenticated", false, {
       sensitiveValues: [secret]
     });
     expect(error.message).not.toContain(secret);
+    expect(error.message).toContain("Request failed:");
+    expect(error.message.length).toBeGreaterThan(0);
   });
 
-  it("redacts a known Slack bot token shape even when not declared", () => {
+  it("redacts a known Slack bot token shape while preserving the rest of the message", () => {
     const token = ["xoxb", "0123456789", "abcdefghijklmnop"].join("-");
     const error = new SlackRequestError(
       `Request failed with header Authorization: Bearer ${token}`,
@@ -115,5 +123,7 @@ describe("SlackRequestError", () => {
       false
     );
     expect(error.message).not.toContain(token);
+    expect(error.message).toContain("Request failed with header");
+    expect(error.message.length).toBeGreaterThan(0);
   });
 });
