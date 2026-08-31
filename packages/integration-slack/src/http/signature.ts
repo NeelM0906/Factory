@@ -61,6 +61,15 @@ export const verifySlackSignature = (input: VerifySlackSignatureInput): void => 
 
   // timingSafeEqual throws on unequal-length buffers; both are pre-checked to be exactly
   // 32 bytes by SIGNATURE_HEX_PATTERN and the fixed sha256 digest length, so this never throws.
+  //
+  // NOT BEHAVIOURALLY TESTABLE — stated here so nobody mistakes the suite for proof of it.
+  // Swapping `timingSafeEqual` for `===` produces identical accept/reject results on every input,
+  // so no test in `signature.test.ts` can reject that wrong implementation; the difference is only
+  // observable as timing, which a unit test cannot assert without being flaky. The length
+  // pre-check above IS behaviourally pinned (a wrong implementation omitting it makes
+  // timingSafeEqual throw a RangeError instead of returning a clean rejection, which the
+  // short-signature test catches). Constant-time comparison itself is a code-review invariant:
+  // preserve this call deliberately, because the tests will stay green if you break it.
   if (providedBuffer.length !== expectedBuffer.length) throw signatureInvalidError();
   if (!timingSafeEqual(providedBuffer, expectedBuffer)) throw signatureInvalidError();
 

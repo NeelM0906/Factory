@@ -31,6 +31,15 @@ describe("assertPostable", () => {
     }
   });
 
+  // Rejects the wrong implementation: an off-by-one budget check (`length >= 3000` instead of
+  // `> 3000`). Every over-budget case above still passes against that defect, so only a text of
+  // exactly the budget distinguishes them. Without this companion the threshold is unpinned.
+  it("passes for text of exactly the 3000-byte budget", () => {
+    const text = "s".repeat(3_000);
+    expect(new TextEncoder().encode(text).byteLength).toBe(3_000);
+    expect(() => assertPostable(text)).not.toThrow();
+  });
+
   it("throws not_postable for text carrying a unified-diff header", () => {
     const text = "Applied a fix.\n--- a/src/index.ts\n+++ b/src/index.ts\n";
     expect(() => assertPostable(text)).toThrow(SlackRequestError);
@@ -42,6 +51,18 @@ describe("assertPostable", () => {
     );
     const text = ["Summary of changes:", ...changeLines].join("\n");
     expect(() => assertPostable(text)).toThrow(SlackRequestError);
+  });
+
+  // Rejects the wrong implementation: a diff-line threshold of `>= 19` (or any lower bound), which
+  // the 20-line case above cannot tell apart from the correct `>= 20`. A legitimate status message
+  // may well carry a handful of +/- bullet lines, so the lower side of this boundary is the side
+  // that would silently break real posts.
+  it("passes for text with 19 +/- prefixed lines, just under the diff threshold", () => {
+    const changeLines = Array.from({ length: 19 }, (_, index) =>
+      index % 2 === 0 ? `+added line ${index}` : `-removed line ${index}`
+    );
+    const text = ["Summary of changes:", ...changeLines].join("\n");
+    expect(() => assertPostable(text)).not.toThrow();
   });
 
   it("throws not_postable for a fenced block over 10 lines", () => {

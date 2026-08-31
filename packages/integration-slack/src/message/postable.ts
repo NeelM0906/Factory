@@ -60,7 +60,9 @@ const FENCED_BLOCK_LINE_LIMIT = 10;
 const DIFF_HEADER_PATTERN = /\n--- a\/|\n\+\+\+ b\//;
 const DIFF_CHANGE_LINE_COUNT_THRESHOLD = 20;
 
-// A CSI-style ANSI escape sequence, e.g. "[31m".
+// A CSI-style ANSI escape sequence: the ESC control character (written as "", never as an
+// embedded control byte) followed by a bracket, optional parameter digits/semicolons, and a
+// terminating letter — for example a color code.
 const ANSI_ESCAPE_PATTERN = /\[[0-9;]*[A-Za-z]/;
 const FENCED_BLOCK_PATTERN = /```[\s\S]*?```/g;
 
