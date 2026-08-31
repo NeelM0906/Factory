@@ -379,7 +379,7 @@ describe("LocalRunnerProvider real composition", () => {
     const sourceBefore = await captureSourceCheckoutInvariant(fixture.repository);
     await fixture.provider.prepareEnvironment(fixture.prepare);
     await fixture.provider.startCommand(fixture.start);
-    const events = fixture.provider.readCommandEvents({
+    const eventRequest = {
       workspaceId: fixture.start.workspaceId,
       runId: fixture.start.runId,
       environmentId: fixture.start.environmentId,
@@ -387,20 +387,42 @@ describe("LocalRunnerProvider real composition", () => {
       environmentAuthorizationId: fixture.start.environmentAuthorizationId,
       environmentAuthorizationDigest: fixture.start.environmentAuthorizationDigest,
       commandAuthorizationId: fixture.start.authorization.id,
-      commandAuthorizationDigest: fixture.start.authorization.digest,
-      after: 0
-    });
+      commandAuthorizationDigest: fixture.start.authorization.digest
+    };
+    const events = fixture.provider.readCommandEvents({ ...eventRequest, after: 0 });
     fixture.processTree.actualExit = { exitCode: 0, signal: null };
     fixture.pty.session.emitData(Buffer.from("verified\n"));
     fixture.pty.session.emitEof();
     fixture.pty.session.emitExit({ exitCode: 0, signal: null });
-    const collected = [];
-    for await (const item of events) collected.push(item);
-    const terminal = collected.findLast(
-      (item) => item.type === "runner.event" && item.event.type === "command.completed"
-    );
-    if (terminal?.type !== "runner.event" || terminal.event.type !== "command.completed") {
-      throw new TypeError("Missing real terminal evidence.");
+    // The registry commits the terminal frame to every live subscriber before the guardian session
+    // can close, so a subscription ends in exactly one of two ways it is obliged to report: it
+    // delivers a terminal frame (`command.completed` or `stream.error`), or it hands back
+    // `subscription.lagged` with the cursor to resume from -- the subscriber queue is bounded at 64
+    // frames and 1MiB here, and a starved consumer overruns it. Draining once and searching the
+    // result treats a lag terminus as an absent one. Resume from the cursor the runtime hands back,
+    // exactly as the control-plane reconciler does, until a terminal frame actually arrives.
+    let stream = events;
+    let terminal;
+    for (;;) {
+      let lagged;
+      for await (const item of stream) {
+        if (item.type === "subscription.lagged") lagged = item;
+        if (
+          item.type === "runner.event" &&
+          (item.event.type === "command.completed" || item.event.type === "stream.error")
+        ) {
+          terminal = item;
+        }
+      }
+      if (terminal !== undefined || lagged === undefined) break;
+      stream = fixture.provider.readCommandEvents({ ...eventRequest, after: lagged.resumeCursor });
+    }
+    if (terminal?.type !== "runner.event") {
+      throw new TypeError("Stream ended without terminal evidence.");
+    }
+    if (terminal.event.type !== "command.completed") {
+      // A `stream.error` terminus is a real command-wide protocol failure, not a missing frame.
+      throw new TypeError(`Command terminalized as ${terminal.event.type}.`);
     }
     await fixture.provider.interruptAndDrain();
     expect(terminal.event.transcript.digest).toMatch(/^[a-f0-9]{64}$/);
