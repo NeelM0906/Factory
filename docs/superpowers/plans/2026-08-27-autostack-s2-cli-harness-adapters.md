@@ -186,6 +186,18 @@ Rules for this stream:
 
 **Do not confuse this with D-5.** `environmentId` is the identity of a provisioned workspace environment; D-5's allowlist governs the child process's environment _variables_. They share a word and nothing else. Absence of `environmentId` says nothing about which variables are forwarded, and no code path should let one influence the other.
 
+**D-16 — Commit per verified step, not per task. Durability is a property of the git tree, not of an agent's memory.** _(Adopted 2026-08-31 after Task 2 was lost twice.)_
+
+Task 2 was started twice and died twice to silent API loss, leaving **zero** on-disk artifacts both times. The tree was clean, the ledger was accurate, and everything in between was gone. That is not bad luck; it is a working mode whose only durable output arrives at the end of a ten-step task.
+
+The rule, for every task in this plan from here on:
+
+- Each step's red/green pair ends in a commit. A failing test may be committed on its own when the implementation is a separate step — an honest `test(...): add failing X` commit is a better recovery point than an uncommitted working tree.
+- A death therefore costs at most one step, and the next session recovers by reading `git log` rather than by reconstructing intent.
+- This interacts with the single-committer rule (subagents never commit): work performed by an implementer subagent is **undurable until the lead commits it**, so the lead commits at each reported step rather than at the end of a long dispatch. A long-running subagent that reports only on completion is the same fragility wearing a different hat.
+
+The cost is a longer commit history on this branch. That is the correct trade: a reviewer can read a sequence of small verified steps, and nobody has to rebuild a lost day.
+
 **Remaining escalations:** none blocking. E-1 is resolved in favour of Option B — S2 implements the child supervisor inside `agent-adapter-kit`, modelled on but not copied from the private `packages/runner-local/src/process-runner.ts`, importing runner-local's public redaction, path-policy, and signal exports. The module is to be written so that promoting it into `runner-local` later is a clean lift. E-3's `AgentEvidenceSink` port is confirmed as S2-owned.
 
 ---
@@ -383,16 +395,27 @@ Cover each row of D-14's quiesce table with its own case: a macrotask-emitting c
 
 Mutation-test each row with **that row's** wrong implementation, never by deleting `quiesce`.
 
-- [ ] **Step 10: Verify and commit**
+- [ ] **Step 10: Final verification for the task**
+
+Per **D-16**, each step above already ended in its own commit — this step is the task-level gate, not the first time anything is written down.
 
 ```bash
 pnpm --filter @autostack/agent-adapter-kit check
 pnpm --filter @autostack/agent-adapter-kit test:coverage
 git diff --check
 git status --short
-git add packages/agent-adapter-kit pnpm-lock.yaml
-git commit -m "feat(agent-adapter-kit): supervise an agent child over line-delimited stdio"
+git log --oneline <task-start>..HEAD   # one commit per verified step
 ```
+
+Per-step commit messages for this task, so a recovering session can see exactly where it stopped:
+
+| Step | Commit                                                                            |
+| ---- | --------------------------------------------------------------------------------- |
+| 1–2  | `feat(agent-adapter-kit): validate the executable-plus-args launch configuration` |
+| 3–4  | `feat(agent-adapter-kit): build the spawn environment by opaque key-copy`         |
+| 5–6  | `feat(agent-adapter-kit): read line-delimited frames from raw child bytes`        |
+| 7–8  | `feat(agent-adapter-kit): supervise an agent child over line-delimited stdio`     |
+| 9    | `test(agent-adapter-kit): prove quiesce reports idleness only when idle`          |
 
 ---
 
