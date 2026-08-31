@@ -401,6 +401,31 @@ describe("agent invocation identity", () => {
       })
     ).toThrow();
   });
+
+  it("optionally carries the provisioned environment, absent before provisioning", () => {
+    const { environmentId: _unprovisioned, ...preProvisioning } = {
+      schemaVersion: 1,
+      idempotencyKey: "agent-invoke:run:triage:1",
+      ...ids,
+      adapterId: "claude.local.v1",
+      objective: "Triage the work item.",
+      cwd: "/workspace/factory",
+      inputEvidenceDigests: [digest("c")]
+    };
+    expect(AgentInvocationRequestSchema.parse(preProvisioning).environmentId).toBeUndefined();
+    expect(
+      AgentInvocationRequestSchema.parse({
+        ...preProvisioning,
+        environmentId: ids.environmentId
+      }).environmentId
+    ).toBe(ids.environmentId);
+    expect(() =>
+      AgentInvocationRequestSchema.parse({
+        ...preProvisioning,
+        environmentId: "run_123e4567-e89b-42d3-a456-426614174000"
+      })
+    ).toThrow();
+  });
 });
 
 describe("agent harness port", () => {

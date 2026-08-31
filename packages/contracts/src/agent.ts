@@ -70,7 +70,15 @@ export const AgentInvocationRequestSchema = z
     workItemId: WorkItemIdSchema.optional(),
     stageRunId: StageRunIdSchema,
     agentSessionId: AgentSessionIdSchema,
-    environmentId: EnvironmentIdSchema,
+    /**
+     * The provisioned environment the session runs in. Optional because pre-provisioning stations
+     * (e.g. triage, spec §8.2) invoke agents before any environment exists — `StageRunSchema`
+     * already models that reality with an optional `environmentId`. Absence is legitimate ONLY
+     * when no environment has been provisioned: a station operating inside a provisioned
+     * environment must supply the id and fail closed when it cannot, and it must never be minted
+     * to satisfy the field — an id that reaches no durable event is fabricated identity.
+     */
+    environmentId: EnvironmentIdSchema.optional(),
     adapterId: StableRefSchema,
     objective: SafeMetadataStringSchema.max(100_000),
     cwd: z.string().min(1).max(4_096),
