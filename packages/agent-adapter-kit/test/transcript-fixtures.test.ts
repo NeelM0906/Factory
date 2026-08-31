@@ -522,10 +522,36 @@ describe("checked-in transcript fixtures", () => {
       }
     });
 
-    it("reports no usage at all for ACP", () => {
-      for (const entry of forProvider("acp")) {
+    it("reports no usage at all for ACP, across a session that genuinely produced work", () => {
+      // D-14 standing question: absence assertions alone are the environment's default here. An
+      // empty `forProvider` result skips the loop, and a content-free fixture contains no usage
+      // keys either — both would pass while proving nothing. The companions below are what make
+      // the absence a finding about a real session rather than about an empty file.
+      const entries = forProvider("acp");
+      expect(entries.length, "no ACP fixtures were loaded at all").toBeGreaterThan(0);
+
+      for (const entry of entries) {
         expect(entry.text).not.toContain("tokenUsage");
         expect(entry.text).not.toContain("inputTokens");
+      }
+
+      // The positive half: ACP's honest `unknown` for conformance behaviour 8 is only meaningful
+      // because a real ACP session still does work and still reports no figures for it.
+      //
+      // Asserted across EVERY completes variant, not `const [first] = ...`. There are two
+      // (`acp-completes.json` and `acp-completes-minimal.json`), and `-` sorts before `.`, so
+      // destructuring silently inspected the minimal one — a guard that checks a different file
+      // than its author believes is the same vacuity wearing another costume.
+      const completesVariants = forScenario("acp", "completes");
+      expect(completesVariants.length, "no ACP completes fixtures were found").toBeGreaterThan(0);
+      for (const completes of completesVariants) {
+        const evidence = completes.fixture.frames.filter((frame) =>
+          isEvidenceBearing("acp", frame)
+        );
+        expect(
+          evidence.length,
+          `${completes.fileName} must carry evidence-bearing frames, or 'no usage' is a statement about an empty transcript`
+        ).toBeGreaterThan(0);
       }
     });
   });

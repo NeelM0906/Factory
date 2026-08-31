@@ -135,21 +135,35 @@ Verified against the rebased base before any new work: all sixteen planned codes
 - `OriginSchema`/`ORIGINS` are now exported from `entities.ts`; not consumed by this stream.
 - `ModelInferencePort` and its fake, the five new event types, and the station-evidence and pipeline additions are other streams' lanes and touch no surface this stream produces or consumes.
 
-**D-14 — A guard test names the wrong implementation it rejects, and its red evidence comes from that defect.** _(S6 doctrine, adopted 2026-08-31.)_
+**D-14 — Every guard answers the standing question: what does the environment return when the feature is ABSENT, and does that value pass?** _(S6 doctrine, final form, adopted 2026-08-31.)_
 
-"I broke it and the test went red" is satisfied by **deleting** the component, which proves only that the test observes the component's existence. S6's discovering case: a fallback test could not distinguish `||` from `=== undefined`, because both pass when the value is `undefined` — only companion assertions on `0` and `""` gave it teeth.
+All vacuous-guard vectors share one shape: **the environment supplies a default that already satisfies the assertion.** If it does, the guard is decorative — it observes that the component exists, not that it works. S6's discovering case is this shape exactly: a fallback test could not distinguish `||` from `=== undefined`, because the environment's `undefined` satisfies both; only companion assertions on `0` and `""` gave it teeth.
 
-So every guard in this stream carries a named defect list, and its red evidence must come from **that** defect rather than from removal. Two places this bites hardest, both of which the conformance suite cannot check for us:
+This supersedes the weaker "name the defect" framing. Naming a defect is still how a guard is documented and mutation-tested, but the **question is the generative tool** — it finds decorative guards that no defect list would have prompted anyone to look for, because it asks about the ambient default rather than about an implementation someone thought to imagine.
 
-_Quiesce honesty (Task 2 Step 9) — each wrong implementation gets its own case:_
+Applying it to this stream's own tables found a decorative assertion already written into this plan (Step 9's "silent child ⇒ pending"), documented below.
 
-| Defect             | Wrong implementation                                      | The case that must reject it                                                                                                                    |
-| ------------------ | --------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------- |
-| `lazy`             | `async () => {}` — resolves immediately                   | a frame already written by the child but not yet pulled: `isPending` must be **false**; a lazy quiesce returns before delivery and reports true |
-| `microtask-only`   | the in-process default, `for (8) await Promise.resolve()` | a child that emits on a macrotask — a microtask drain returns before the frame lands                                                            |
-| `check-phase-only` | a bare `setImmediate` loop                                | a child whose bytes arrive only on a **poll**-phase read, which the check phase can skip entirely                                               |
-| `fixed-turn`       | loop a constant number of turns, ignoring the counters    | a child that emits one turn later than the constant                                                                                             |
-| `no-floor`         | resolve as soon as counters are momentarily stable        | a live child that is between writes — stable for an instant, then writes                                                                        |
+_Quiesce honesty (Task 2 Step 9). `isPending` is the environment default trap: **nothing has been delivered yet** is what the event loop returns for free, so only `expect(false)` carries weight._
+
+| Defect             | Wrong implementation                                      | Environment default when absent                          | Guard with teeth                                                                       |
+| ------------------ | --------------------------------------------------------- | -------------------------------------------------------- | -------------------------------------------------------------------------------------- |
+| `lazy`             | `async () => {}` — resolves immediately                   | frame undelivered ⇒ `isPending` **true**                 | frame in flight ⇒ `isPending` must be **false** ✅                                     |
+| `microtask-only`   | the in-process default, `for (8) await Promise.resolve()` | macrotask frame undelivered ⇒ **true**                   | macrotask-emitting child ⇒ **false** ✅                                                |
+| `check-phase-only` | a bare `setImmediate` loop                                | poll-phase bytes unread ⇒ **true**                       | child whose bytes land only on a **poll**-phase read ⇒ **false** ✅                    |
+| `fixed-turn`       | loop a constant number of turns, ignoring the counters    | frame after turn N undelivered ⇒ **true**                | child emitting one turn past the constant ⇒ **false** ✅                               |
+| `no-floor`         | resolve as soon as counters are momentarily stable        | between-writes lull ⇒ resolves early, undelivered ⇒ true | live silent child ⇒ `quiesce()` **must not resolve before the wall-clock floor** ⏱️ ✅ |
+
+**Decorative, and struck:** "with the child deliberately silent, `isPending` reports **true**". A lazy `quiesce` resolves immediately, nothing is delivered, and the assertion passes — the environment hands back exactly the value the test wants. The paused direction is instead proven by the **elapsed floor**: a live silent child must hold `quiesce()` for at least the floor, which `async () => {}` returns in ~0 ms and fails.
+
+_D-3 buffering (Tasks 7–8). Checked against the same question; all three survive, because in each the ambient default is "no event / no ceiling", which is what the assertion forbids:_
+
+| Defect             | Wrong implementation                             | Environment default when absent      | Guard with teeth                                                                |
+| ------------------ | ------------------------------------------------ | ------------------------------------ | ------------------------------------------------------------------------------- |
+| `eager-emit`       | map `tool_use` straight to `tool_call` `started` | the early `tool_call` **is** emitted | no `tool_call` may appear before `permission_resolved` ✅                       |
+| `never-flush`      | buffer, but only ever release on an approval     | no events at all                     | an **ungated** call's `tool_result` must still yield `started` + `completed` ✅ |
+| `unbounded-buffer` | buffer with no entry or byte ceiling             | buffer grows, no failure raised      | announce-without-resolve ⇒ a classified `provider_output_malformed` ✅          |
+
+Deleting the buffer or the quiesce is **not** acceptable red evidence for any row above.
 
 _D-3 buffering (Tasks 7–8) — likewise:_
 
@@ -348,7 +362,15 @@ Model the spawn flags, PGID kill escalation, and bounds on the private `packages
 
 - [ ] **Step 9: Test the quiesce itself**
 
-The suite cannot detect a lazy `quiesce()`, so this stream tests it directly. Prove that with a frame in flight — written by the child but not yet pulled — `isPending` over an outstanding `next()` reports **false**; and with the child deliberately silent it reports **true**. A `quiesce()` returning an already-resolved promise fails the first assertion. Prove it waits out a child that emits after several event-loop turns, and a child that emits only after a poll-phase read (the case a `setImmediate`-only loop misses). Run each of these **20 times in a loop** to catch a quiesce that is merely usually right.
+The suite cannot detect a lazy `quiesce()`, so this stream tests it directly — against D-14's standing question, not against intuition.
+
+**The direction that carries weight is `isPending` ⇒ false.** With a frame in flight — written by the child, not yet pulled — an outstanding `next()` must report **false**. Every wrong implementation in D-14's table fails here, because each returns before the frame is delivered and the event loop's ambient answer is "still pending".
+
+**The paused direction must be proven by elapsed time, not by the boolean.** Asserting that a silent child reports `isPending` **true** is decorative: `async () => {}` delivers nothing, so the environment hands back `true` and the assertion passes. Instead assert the floor — with a live silent child, `quiesce()` must not resolve before the wall-clock floor has elapsed. A lazy quiesce returns in ~0 ms and fails; an honest one cannot.
+
+Cover each row of D-14's quiesce table with its own case: a macrotask-emitting child, a child whose bytes land only on a poll-phase read (the case a `setImmediate`-only loop misses), a child that emits one turn past any fixed constant, and the live-silent floor. Run each **20 times in a loop** — these are the assertions that catch a transport which is only usually well-behaved, so a single green pass is not evidence.
+
+Mutation-test each row with **that row's** wrong implementation, never by deleting `quiesce`.
 
 - [ ] **Step 10: Verify and commit**
 
