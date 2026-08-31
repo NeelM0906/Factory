@@ -381,7 +381,34 @@ git commit -m "feat(workflow): triage work items and ask focused clarifying ques
 
 ## Task 4A: Source authorization — may THIS actor start a run (security-critical)
 
-**Blocked by:** Task 4. **Carries security-analysis-first treatment and a security-lens review at merge**, like Task 7.
+**Blocked by:** Task 4 **and escalation E11 (below) — do not dispatch until E11 is ruled.** **Carries security-analysis-first treatment and a security-lens review at merge**, like Task 7.
+
+> **E11 — there is no durable shape for "which actors may start a run" (BLOCKING this task).** Verified by inspection at base `88c8e31`: `WorkspaceSchema` (`entities.ts:79`) carries only id/name/mode/timestamps; `ProjectSchema` (`:104`) carries `executionSources`, but `ExecutionSourceSchema` (`:99`) is `local | cloud` — **where execution runs, not who may start it**; and `eligibleApproverIds` (`:286`) is approval-decision eligibility, a different question asked at a different gate. So this task's `policy` argument has nothing to read.
+>
+> This stream cannot invent it: a new public type belongs in `@autostack/contracts`, which is outside this boundary, and inventing one locally is exactly the "work around a contract locally" the protocol forbids. **Proposed minimal append-only shape**, for the orchestrator to rule on or reassign:
+>
+> ```ts
+> export const SourceAuthorizationPolicySchema = z
+>   .object({
+>     schemaVersion: z.literal(1),
+>     workspaceId: WorkspaceIdSchema,
+>     projectId: ProjectIdSchema.optional(), // absent = workspace-wide
+>     authorizedRequesters: z
+>       .array(
+>         z
+>           .object({
+>             source: z.enum(["github", "slack", "api", "manual"]),
+>             externalId: z.string().min(1)
+>           })
+>           .strict()
+>       )
+>       .max(200),
+>     updatedAt: TimestampSchema
+>   })
+>   .strict();
+> ```
+>
+> Two sub-questions the ruling should settle: **where it is declared** (a field on `ProjectSchema` vs a standalone policy record), and **how it persists** (a durable event vs local configuration read at composition). Milestone A is single-user local-first, so an acceptable answer may be "the workspace owner's own identity, declared in config" — but that identity still needs a durable representation, because §14.1 means the decision cannot be read from the delivery.
 
 **Owner of the S5 handoff (orchestrator ruling, 2026-08-31).** Mention-gating for `issue_comment.created` is _addressing_ and is implemented S5-side (`b76b46d`). The **authorization** half of spec §4.4's "authorized `@AutoStack` mention" is this stream's: S5's parser carries the commenter downstream as `issue.authorId` and **grants nothing**. **A mention is an address, never a grant.** This is also spec §8.2's first triage bullet — "validate source authorization and repository scope" — so triage is its correct home.
 
