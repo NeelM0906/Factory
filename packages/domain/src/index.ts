@@ -9,3 +9,4 @@ export * from "./ports/runner-provider.js";
 export * from "./projections.js";
 export * from "./runner-policy.js";
 export * from "./run-machine.js";
+export * from "./source-authorization.js";
