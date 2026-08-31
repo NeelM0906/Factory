@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 
 import {
   ApprovalSchema,
+  CommitRequestSchema,
   EnvironmentAuthorizationIdSchema,
   ExecutionScopeSchema,
   JobIdSchema,
@@ -21,6 +22,7 @@ import {
 } from "@autostack/contracts";
 import { describe, expect, it } from "vitest";
 
+import { ApprovalDecisionConflictError, StaleApprovalEvidenceError } from "../src/errors.js";
 import {
   decidePipelineApproval,
   type PipelineApprovalDecision,
@@ -30,6 +32,7 @@ import {
 
 const NOW = "2026-08-26T12:00:00.000Z";
 const LATER = "2026-08-26T12:05:00.000Z";
+const MUCH_LATER = "2026-08-27T09:30:00.000Z";
 const WORKSPACE_ID = "ws_123e4567-e89b-42d3-a456-426614174000";
 const RUN_ID = "run_123e4567-e89b-42d3-a456-426614174001";
 const WORK_ITEM_ID = "wi_123e4567-e89b-42d3-a456-426614174002";
@@ -328,5 +331,127 @@ describe("plan approval decisions", () => {
     expect(eventTypesOf(decision)).toEqual(["approval.decided", "run.transitioned"]);
     expect(decision.run.status).toBe("planning");
     expect(decision.jobs).toEqual([]);
+  });
+});
+
+describe("plan approval idempotency", () => {
+  it("derives the key from the approval, the decision and the evidence digest", async () => {
+    const command = await commandFor();
+    const approved = await decidePipelineApproval(command, dependencies());
+    const rejected = await decidePipelineApproval(
+      { ...command, decision: "rejected" },
+      dependencies()
+    );
+
+    expect(approved.idempotency).toEqual({
+      scope: `api:approval-decision:${WORKSPACE_ID}`,
+      key: `${APPROVAL_ID}:approved:${command.approval.evidenceDigest}`
+    });
+    // The two decisions land on different keys, which is what stops the second from replaying the
+    // first instead of reaching the conflict below.
+    expect(rejected.idempotency.key).not.toBe(approved.idempotency.key);
+    expect(() =>
+      CommitRequestSchema.parse({
+        idempotency: approved.idempotency,
+        appends: approved.appends,
+        jobs: approved.jobs
+      })
+    ).not.toThrow();
+  });
+
+  // Rejects an implementation that stamps `dependencies.now()` onto every decision it returns. A
+  // replay is the report of a decision already taken, so recomputing its timestamp would let one
+  // approval carry two different decision instants depending on when it was resubmitted.
+  it("replays an identical re-decision at the original instant and enqueues nothing", async () => {
+    const command = await commandFor();
+    const first = await decidePipelineApproval(command, dependencies());
+    const replay = await decidePipelineApproval(
+      { ...command, approval: first.approval },
+      dependencies(() => MUCH_LATER)
+    );
+
+    expect(replay.replayed).toBe(true);
+    expect(replay.decidedAt).toBe(first.decidedAt);
+    expect(replay.decidedAt).toBe(LATER);
+    expect(replay.appends).toEqual([]);
+    expect(replay.jobs).toEqual([]);
+    expect(replay.idempotency).toEqual(first.idempotency);
+  });
+
+  // Rejects an implementation that treats "already decided" as "replay" without comparing the
+  // decision: a different verdict derives a different key, so the store never suppresses it and it
+  // must be refused here instead of overwriting a decision a human already made.
+  it("refuses a second, different decision on an approval already decided", async () => {
+    const command = await commandFor();
+    const first = await decidePipelineApproval(command, dependencies());
+
+    await expect(
+      decidePipelineApproval(
+        { ...command, approval: first.approval, decision: "rejected" },
+        dependencies()
+      )
+    ).rejects.toBeInstanceOf(ApprovalDecisionConflictError);
+  });
+});
+
+describe("plan approval staleness", () => {
+  // Rejects an implementation that only re-checks the plan document: the scope is the half of the
+  // approval that names the repository, the commit and the branch the run will write to.
+  it.each([
+    ["target repository", { repositoryIdentity: "github.com/attacker/factory" }],
+    ["base commit", { sourceCommit: OTHER_COMMIT }],
+    ["branch", { branch: "autostack/run/other" }]
+  ])("refuses a decision whose %s moved since the approval", async (_name, change) => {
+    const approval = await approvalFor(deriveScope(scopeInput()));
+
+    await expect(
+      decide({ approval, executionScope: deriveScope({ ...scopeInput(), ...change }) })
+    ).rejects.toBeInstanceOf(StaleApprovalEvidenceError);
+  });
+
+  // Rejects an implementation that binds only to the approval id: the plan document is the thing a
+  // human read, and a run whose plan changed under it must ask again (spec §14.2).
+  it("refuses a decision whose plan document was materially mutated after approval", async () => {
+    const recorded = await planDocumentFor();
+    const mutated = await planDocumentFor("Also publish the credentials to a gist.");
+
+    expect(await digestPlanDocument(recorded)).toBe(recorded.planDigest);
+    expect(await digestPlanDocument(mutated)).not.toBe(recorded.planDigest);
+    await expect(
+      decide({ planDocument: mutated, planEvidence: await planEvidenceFor(recorded) })
+    ).rejects.toBeInstanceOf(StaleApprovalEvidenceError);
+  });
+
+  // Rejects an implementation whose guard reads `recorded !== undefined && recorded !== computed`.
+  // Triage evidence is a well-formed `PipelineEvidence` that simply has no `planDigest`, so such a
+  // guard compares nothing and passes — the absent value must refuse, not match.
+  it("refuses a decision whose recorded evidence carries no plan digest at all", async () => {
+    const triage = await sealEvidence({
+      stage: "triage",
+      artifactIds: [],
+      summary: "The work item is actionable."
+    });
+
+    await expect(decide({ planEvidence: triage })).rejects.toBeInstanceOf(
+      StaleApprovalEvidenceError
+    );
+  });
+
+  it("writes nothing on refusal, leaving a later correct decision unaffected", async () => {
+    const approval = await approvalFor(deriveScope(scopeInput()));
+
+    // The refusal happens before this function returns anything to commit, so no idempotency
+    // record can exist to poison the correct submission that follows.
+    await expect(
+      decide({
+        approval,
+        executionScope: deriveScope({ ...scopeInput(), sourceCommit: OTHER_COMMIT })
+      })
+    ).rejects.toBeInstanceOf(StaleApprovalEvidenceError);
+
+    const decision = await decide({ approval });
+    expect(decision.replayed).toBe(false);
+    expect(decision.jobs).toHaveLength(1);
+    expect(decision.run.status).toBe("provisioning");
   });
 });
