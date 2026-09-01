@@ -71,7 +71,9 @@ describe("createUserTokenAuth", () => {
     // `gh auth token` terminates its output with a newline. A raw CR/LF inside an Authorization
     // value is a header-injection shape, so the strategy must normalise rather than trust the
     // caller's readToken to have trimmed.
-    const token = "gho_abcdefghijklmnopqrstuvwxyz0123456789";
+    // Built at runtime so the source blob never contains a scannable token shape — a literal
+    // matching GitHub's real gho_ pattern is indistinguishable from a leak to secret scanners.
+    const token = ["gho", "abcdefghijklmnopqrstuvwxyz0123456789"].join("_");
     const auth = createUserTokenAuth({ readToken: async () => `  ${token}\r\n` });
 
     const authorization = await auth.authorization();

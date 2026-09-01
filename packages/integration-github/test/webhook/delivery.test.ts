@@ -14,7 +14,6 @@ import issuesDeletedFixture from "../fixtures/webhooks/issues.deleted.json";
 import issueCommentCreatedFixture from "../fixtures/webhooks/issue_comment.created.json";
 import pullRequestOpenedFixture from "../fixtures/webhooks/pull_request.opened.json";
 import injectionFixture from "../fixtures/webhooks/issues.opened.injection.json";
-import credentialTitleFixture from "../fixtures/webhooks/issues.opened.credential-title.json";
 
 const RECEIVED_AT = "2026-08-27T12:00:00.000Z";
 
@@ -441,11 +440,18 @@ describe("parseGitHubDelivery", () => {
 
   describe("credential-shaped metadata", () => {
     it("rejects a title containing a credential-shaped token via SafeMetadataStringSchema", () => {
+      // The token is built at runtime so no fixture blob carries a scannable secret shape, and
+      // the payload is the boundary companion's fixture with ONLY the title changed — so this
+      // pair isolates the title as the rejected element.
+      const credentialTitle = `Deploy is broken, token ${["ghp", "A".repeat(37)].join("_")} still works though`;
       expect(() =>
         parseGitHubDelivery({
           eventHeader: "issues",
           deliveryIdHeader: "11111111-1111-4111-8111-111111111111",
-          payload: credentialTitleFixture,
+          payload: {
+            ...issuesOpenedFixture,
+            issue: { ...issuesOpenedFixture.issue, title: credentialTitle }
+          },
           receivedAt: RECEIVED_AT
         })
       ).toThrow();

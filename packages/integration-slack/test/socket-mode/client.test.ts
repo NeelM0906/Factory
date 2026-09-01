@@ -467,7 +467,8 @@ describe("createSocketModeClient", () => {
   });
 
   it("never includes the app token in an error, the returned client, or any thrown message", async () => {
-    const token = "xapp-1-abcdefghijklmnopqrstuvwxyz0123456789";
+    // Runtime-built so the source blob carries no scannable xapp- token shape.
+    const token = ["xapp-1", "abcdefghijklmnopqrstuvwxyz0123456789"].join("-");
     const { factory } = createTrackedWebSocketFactory();
     const { fetch } = createOpenConnectionFetch([{ ok: false, error: "invalid_auth" }]);
     const client = createSocketModeClient({

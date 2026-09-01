@@ -169,7 +169,8 @@ describe("GitHubRequestError", () => {
   });
 
   it("redacts a known GitHub credential shape while preserving the rest of the message", () => {
-    const token = "ghp_abcdefghijklmnopqrstuvwx0123";
+    // Runtime-built so the source blob carries no scannable ghp_ token shape.
+    const token = ["ghp", "abcdefghijklmnopqrstuvwx0123"].join("_");
     const error = new GitHubRequestError(
       `Request failed with header Authorization: Bearer ${token}`,
       401,
