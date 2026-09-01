@@ -139,7 +139,13 @@ export const ApprovalSummarySchema = z
 /** Query for the approval inbox. Values arrive as strings from the query string. */
 export const ListApprovalsQuerySchema = z
   .object({
-    status: ApprovalSchema.shape.status.default("pending"),
+    /**
+     * Derived from the approval entity's own status vocabulary plus the one wildcard the query
+     * layer needs: `"all"` means NO status filter, and the route must treat it as unfiltered.
+     * Without it a client's "All" view silently degrades to the `"pending"` default — a filter
+     * UI that lies. The default stays `"pending"` (the inbox's working set).
+     */
+    status: z.union([ApprovalSchema.shape.status, z.literal("all")]).default("pending"),
     limit: z.coerce.number().int().min(1).max(100).default(25),
     cursor: z.coerce.number().int().positive().optional()
   })

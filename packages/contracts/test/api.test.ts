@@ -161,6 +161,9 @@ describe("approval and steering HTTP contracts", () => {
       status: "stale",
       limit: 50
     });
+    // "all" is the query layer's wildcard — accepted, and distinct from the omitted-status
+    // default, so a client's "All" view cannot silently degrade to "pending".
+    expect(ListApprovalsQuerySchema.parse({ status: "all" }).status).toBe("all");
     expect(() => ListApprovalsQuerySchema.parse({ limit: 0 })).toThrow();
     expect(() => ListApprovalsQuerySchema.parse({ status: "unknown" })).toThrow();
   });
