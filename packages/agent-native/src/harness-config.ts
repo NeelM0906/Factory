@@ -9,21 +9,24 @@ import {
 import type { NativeContextReader } from "./context-assembly.js";
 import { isPathInScope, type ContextScope } from "./context-scope.js";
 import type { NativeAgentRole } from "./prompts/index.js";
+import type { NativeRoleInputs } from "./roles/role-inputs.js";
 import type { StructuredOutputPolicy } from "./structured-output.js";
 
-/** One upstream document handed to a role for a single invocation. */
-export interface NativeRoleInput {
-  readonly label: string;
-  readonly content: string;
-}
+export type {
+  NativeRoleInput,
+  NativeRoleInputs,
+  ReviewRoleDocuments,
+  ReviewedDiffDescriptor
+} from "./roles/role-inputs.js";
 
 /**
  * Per-invocation upstream documents (review finding 2b); an I1 composition interface. The method
- * is named `forInvocation` — the name this stream published to I1 — and T10 widens the returned
- * inputs to the roles' typed documents.
+ * is named `forInvocation` — the name this stream published to I1 — and T10 widened the returned
+ * inputs to `NativeRoleInputs`: plain `{label, content}` entries for triage and plan, the typed
+ * `ReviewRoleDocuments` for the reviewer.
  */
 export interface NativeRoleInputsProvider {
-  forInvocation(request: AgentInvocationRequest): Promise<readonly NativeRoleInput[]>;
+  forInvocation(request: AgentInvocationRequest): Promise<NativeRoleInputs>;
 }
 
 /** The context sources a role configuration declares; everything else is out of scope. */

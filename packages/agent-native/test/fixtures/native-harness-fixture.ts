@@ -31,6 +31,7 @@ import {
   type NativeHarnessDeps,
   type NativeRoleInputsProvider
 } from "../../src/native-harness.js";
+import { buildReviewRoleDocuments } from "./review-role-documents.js";
 
 const digest = (character: string): string => character.repeat(64);
 
@@ -118,6 +119,13 @@ const REVIEW_RESPONSE_CONTENT = JSON.stringify({
   summary: "The prepared change matches the approved plan and carries no blocking findings.",
   findings: []
 });
+
+/** The invocation identity every scenario's typed review documents must carry (T10). */
+const REVIEW_DOCUMENTS_IDENTITY = {
+  workspaceId: WORKSPACE_ID,
+  workItemId: WORK_ITEM_ID,
+  runId: RUN_ID
+} as const;
 
 /**
  * One successful structured response. `cachedInput`, `reasoning`, and `cost` stay unknown, so the
@@ -278,15 +286,10 @@ const createSubject = (
   };
 
   // The provider method is `forInvocation` — the name this stream already published to I1 as the
-  // composition interface (stream-report, review finding 2b); T10 widens the returned inputs to
-  // the reviewer's typed documents.
+  // composition interface (stream-report, review finding 2b); T10 widened the returned inputs to
+  // the reviewer's typed documents, which the role admits BEFORE the model call.
   const roleInputs: NativeRoleInputsProvider = {
-    forInvocation: async () => [
-      {
-        label: "prepared-change-summary",
-        content: "The prepared change touches packages/checkout/src/totals.ts only."
-      }
-    ]
+    forInvocation: async () => buildReviewRoleDocuments(REVIEW_DOCUMENTS_IDENTITY)
   };
 
   const deps: NativeHarnessDeps = {

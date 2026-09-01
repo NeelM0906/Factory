@@ -4,13 +4,16 @@ import {
   AgentInvocationRequestSchema,
   ModelCatalogEntrySchema,
   ModelRouteSchema,
+  ReviewReportSchema,
   createId,
-  digestVersionedValue,
+  digestReviewReport,
+  digestVerificationReport,
   type AgentHarnessPort,
   type AgentHarnessProfile,
   type AgentInvocationRequest,
   type AgentSessionStreamEvent,
-  type ModelInferencePort
+  type ModelInferencePort,
+  type ReviewReport
 } from "@autostack/contracts";
 import {
   AgentRuntimeError,
@@ -36,6 +39,12 @@ import {
   type NativeAgentHarness,
   type NativeHarnessConfig
 } from "../src/native-harness.js";
+import {
+  REVIEWED_DIFF_DIGEST,
+  buildInputPlanDocument,
+  buildInputVerificationReport,
+  buildReviewRoleDocuments
+} from "./fixtures/review-role-documents.js";
 
 /**
  * Cross-package composition (plan Task 13): a REAL `createNativeHarness` registered in a REAL
@@ -102,11 +111,22 @@ const ROUTE_OUTCOME: FakeModelRouterOutcome = {
 };
 
 /** The model-authored subset of `ReviewReportSchema` the review role's prompt asks for. */
-const REVIEW_RESPONSE_CONTENT = JSON.stringify({
+const REVIEW_MODEL_FIELDS = {
   verdict: "approved",
   summary: "The prepared change matches the approved plan and carries no blocking findings.",
   findings: []
-});
+};
+
+const REVIEW_RESPONSE_CONTENT = JSON.stringify(REVIEW_MODEL_FIELDS);
+
+const REVIEW_PROMPT_REF = "autostack.native.review";
+
+/** The run identity every subject's typed review documents must carry (T10). */
+const REVIEW_DOCUMENTS_IDENTITY = {
+  workspaceId: WORKSPACE_ID,
+  workItemId: WORK_ITEM_ID,
+  runId: RUN_ID
+} as const;
 
 const COMPLETED_OUTCOME: FakeModelInferenceOutcome = {
   kind: "completed",
@@ -201,14 +221,7 @@ const buildSubject = (options: SubjectOptions): Subject => {
     }),
     inference: options.inference,
     reader: createWorkspaceReader(),
-    roleInputs: {
-      forInvocation: async () => [
-        {
-          label: "prepared-change-summary",
-          content: "The prepared change touches packages/checkout/src/totals.ts only."
-        }
-      ]
-    },
+    roleInputs: { forInvocation: async () => buildReviewRoleDocuments(REVIEW_DOCUMENTS_IDENTITY) },
     now: harnessClock.now,
     newProviderSessionRef: () => `native.session.${subject}`,
     newRef: () => {
@@ -354,12 +367,35 @@ const waitUntil = async (satisfied: () => boolean, what: string): Promise<void> 
 };
 
 /**
- * T6 placeholder-by-design (see `native-session.ts`): the completed terminal's evidence digest is
- * the admitted document digested under this INTERNAL domain. The test recomputes the SAME digest
- * so drift between the composed terminal and the harness's construction is caught; T8-T10 replace
- * both sides together with the per-role evidence digest functions.
+ * Recomputes the review report the composed completion's evidence digest must cover (T10: the
+ * review role's evidence pipeline is the contracts helpers — the placeholder
+ * `autostack.native-structured-output` domain is gone): invocation identity, the model-authored
+ * fields, the three binding digests recomputed from the same fixture documents the provider
+ * hands the role, and harness-owned provenance. `producedAt` is the harness clock's SIXTH tick —
+ * started(1), tool_call(2, 3), usage(4), and message(5) are relay appends, then the engine stamps
+ * the document before appending completed(7).
  */
-const NATIVE_STRUCTURED_OUTPUT_DIGEST_DOMAIN = "autostack.native-structured-output";
+const expectedReviewReport = async (subject: Subject): Promise<ReviewReport> => {
+  const plan = await buildInputPlanDocument(REVIEW_DOCUMENTS_IDENTITY);
+  const verification = buildInputVerificationReport(plan);
+  return ReviewReportSchema.parse({
+    schemaVersion: 1,
+    workspaceId: WORKSPACE_ID,
+    workItemId: WORK_ITEM_ID,
+    runId: RUN_ID,
+    planDigest: plan.planDigest,
+    reviewedDiffDigest: REVIEWED_DIFF_DIGEST,
+    verificationReportDigest: await digestVerificationReport(verification),
+    ...REVIEW_MODEL_FIELDS,
+    producedAt: subject.harnessClock.at(6),
+    producedBy: {
+      adapterId: subject.adapterId,
+      promptRef: REVIEW_PROMPT_REF,
+      promptVersion: "1",
+      routeRef: ROUTE_REF
+    }
+  });
+};
 
 describe("runtime composition of the native harness, registry, and supervisor", () => {
   it("relays a completing native session to exactly one completed terminal whose evidence digests match the digest recomputed from the role's admitted document, with re-stamped sequences persisted event by event (rejects a supervisor that drops, duplicates, or re-derives the adapter's completion evidence, and one that appends without persisting)", async () => {
@@ -394,14 +430,12 @@ describe("runtime composition of the native harness, registry, and supervisor", 
     expect(eventsOfType(events, "interrupted")).toHaveLength(0);
 
     // The composed terminal's evidence digest is the digest the native harness produced for the
-    // admitted document — recomputed here under the shared placeholder domain.
-    const document: unknown = JSON.parse(REVIEW_RESPONSE_CONTENT);
-    const expectedDigest = await digestVersionedValue(NATIVE_STRUCTURED_OUTPUT_DIGEST_DOMAIN, {
-      role: "review",
-      document
-    });
+    // admitted review report — recomputed here with the CONTRACTS helper over the reconstructed
+    // report (T10: the placeholder native-structured-output domain is gone).
     const completed = eventsOfType(events, "completed")[0];
-    expect(completed?.evidenceDigests).toEqual([expectedDigest]);
+    expect(completed?.evidenceDigests).toEqual([
+      await digestReviewReport(await expectedReviewReport(subject))
+    ]);
 
     // The supervisor re-stamped identity and order: sequences are strictly 1..n on ITS stream.
     expect(events.map((event) => event.sequence)).toEqual(events.map((_, index) => index + 1));

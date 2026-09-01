@@ -34,6 +34,7 @@ import {
   type NativeAgentHarness,
   type NativeHarnessConfig
 } from "../src/native-harness.js";
+import { buildReviewRoleDocuments } from "./fixtures/review-role-documents.js";
 
 const digest = (character: string): string => character.repeat(64);
 const uuid = (value: number): string =>
@@ -168,7 +169,18 @@ const buildHarness = (options: BuildOptions): BuiltHarness => {
     router,
     inference,
     reader: defaultReader(),
-    roleInputs: { forInvocation: async () => [] },
+    // T10: the review role admits TYPED documents before the model call; other roles keep the
+    // plain context-entry arm.
+    roleInputs: {
+      forInvocation: async () =>
+        config.role === "review"
+          ? buildReviewRoleDocuments({
+              workspaceId: WORKSPACE_ID,
+              workItemId: WORK_ITEM_ID,
+              runId: RUN_ID
+            })
+          : []
+    },
     now,
     newProviderSessionRef: () => providerSessionRef,
     newRef: () => {

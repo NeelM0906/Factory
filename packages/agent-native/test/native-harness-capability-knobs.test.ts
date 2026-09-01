@@ -29,6 +29,7 @@ import {
   type NativeHarnessConfig,
   type NativeSessionConfig
 } from "../src/native-harness.js";
+import { buildReviewRoleDocuments } from "./fixtures/review-role-documents.js";
 
 const digest = (character: string): string => character.repeat(64);
 const uuid = (value: number): string =>
@@ -158,7 +159,16 @@ const buildHarness = (options: BuildOptions): BuiltHarness => {
     router: createFakeModelRouter({ catalog: [ROUTE_DECLARATION], outcomes: [ROUTE_OUTCOME], now }),
     inference,
     reader: options.reader ?? defaultReader(),
-    roleInputs: { forInvocation: async () => [] },
+    // T10: every knob subject runs the review role, whose typed documents are admitted before
+    // the model call.
+    roleInputs: {
+      forInvocation: async () =>
+        buildReviewRoleDocuments({
+          workspaceId: WORKSPACE_ID,
+          workItemId: WORK_ITEM_ID,
+          runId: RUN_ID
+        })
+    },
     now,
     newProviderSessionRef: () => providerSessionRef,
     newRef: () => {

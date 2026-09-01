@@ -31,8 +31,11 @@ export type {
   NativeHarnessConfig,
   NativeHarnessDeps,
   NativeRoleInput,
+  NativeRoleInputs,
   NativeRoleInputsProvider,
-  NativeSessionConfig
+  NativeSessionConfig,
+  ReviewRoleDocuments,
+  ReviewedDiffDescriptor
 } from "./harness-config.js";
 
 /**

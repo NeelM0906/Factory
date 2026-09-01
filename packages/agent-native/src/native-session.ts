@@ -18,14 +18,11 @@ import {
   type ModelRouteSelection
 } from "@autostack/contracts";
 
-import { assembleContext, type AssembledContext, type OutOfScopeRead } from "./context-assembly.js";
+import { assembleContext, type OutOfScopeRead } from "./context-assembly.js";
 import { NativeAgentError, type NativeAgentFailure } from "./errors.js";
 import { classifyThrowable } from "./failure-classification.js";
-import {
-  type NativeHarnessConfig,
-  type NativeHarnessDeps,
-  type NativeRoleInput
-} from "./harness-config.js";
+import { type NativeHarnessConfig, type NativeHarnessDeps } from "./harness-config.js";
+import { buildRepositoryContext } from "./repository-context.js";
 import { NATIVE_ROLE_CONFIGS, type NativeRoleConfig } from "./roles/role-config.js";
 import { admitStructuredOutput } from "./structured-output.js";
 
@@ -86,30 +83,6 @@ const failureOf = (thrown: unknown): NativeAgentFailure =>
   thrown instanceof NativeAgentError
     ? { code: thrown.code, message: thrown.message, retryable: thrown.retryable }
     : classifyThrowable(thrown);
-
-const buildRepositoryContext = (
-  assembled: AssembledContext,
-  inputs: readonly NativeRoleInput[],
-  steerText: string | undefined
-): string => {
-  const sections: string[] = [];
-  for (const input of inputs) {
-    sections.push(`## Upstream input: ${input.label}\n${redactSensitiveText(input.content)}`);
-  }
-  for (const file of assembled.files) {
-    sections.push(`## Workspace file: ${file.path}\n${file.content}`);
-  }
-  for (const omission of assembled.omissions) {
-    sections.push(`## Context omitted: ${omission.path} (${omission.reason})`);
-  }
-  for (const truncation of assembled.truncations) {
-    sections.push(`## Context truncated: ${truncation.path} (${truncation.reason})`);
-  }
-  if (steerText !== undefined) {
-    sections.push(`## Operator steering\n${steerText}`);
-  }
-  return sections.join("\n\n");
-};
 
 const repairMessages = (
   messages: readonly ModelMessage[],
@@ -272,7 +245,16 @@ const runSession = async (context: NativeSessionContext): Promise<void> => {
       ? takeQueuedSteer(context, append)
       : undefined;
 
-  const inputs = await deps.roleInputs.forInvocation(invocation);
+  const providedInputs = await deps.roleInputs.forInvocation(invocation);
+  // Pre-model admission of the role's inputs (T10): runs BEFORE anything derived from them
+  // exists — no rendered prompt, no route, no model call. Whatever the gate throws surfaces as
+  // native_context_unavailable: unadmitted evidence is unavailable context, never a model fault.
+  const inputs =
+    role.admitRoleInputs === undefined
+      ? providedInputs
+      : await role.admitRoleInputs(providedInputs, invocation).catch((thrown: unknown) => {
+          throw new NativeAgentError("native_context_unavailable", thrown);
+        });
   const messages = role.prompt.render({
     objective: invocation.objective,
     repositoryContext: buildRepositoryContext(assembled, inputs, steerText)
@@ -324,7 +306,7 @@ const runSession = async (context: NativeSessionContext): Promise<void> => {
   // Invocation-scoped admission the static output schema cannot express (T9: the plan role's
   // credential scoping). Runs BEFORE the echo, the evidence pipeline, and any detail event, so a
   // refused response leaves no message, no plan event, and no completion behind it.
-  const invalidity = role.validateModelAuthored?.(outcome.value, invocation);
+  const invalidity = role.validateModelAuthored?.(outcome.value, invocation, inputs);
   if (invalidity !== undefined) {
     append({
       type: "failed",
@@ -357,7 +339,8 @@ const runSession = async (context: NativeSessionContext): Promise<void> => {
     identity: { workspaceId: invocation.workspaceId, workItemId, runId: invocation.runId },
     modelAuthored: outcome.value,
     producedAt: deps.now(),
-    producedBy
+    producedBy,
+    roleInputs: inputs
   });
   const evidenceDigest = await role.digestDocument(document);
   await role.admitDocument(document, evidenceDigest);

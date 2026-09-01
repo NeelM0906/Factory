@@ -15,8 +15,10 @@ export {
 export { isPathInScope, type ContextScope } from "./context-scope.js";
 export {
   admitPlanEvidence,
+  admitReviewEvidence,
   admitTriageEvidence,
   digestPlanEvidence,
+  digestReviewEvidence,
   digestTriageEvidence
 } from "./evidence.js";
 export {
@@ -37,7 +39,10 @@ export {
   type NativeHarnessConfig,
   type NativeHarnessDeps,
   type NativeRoleInput,
-  type NativeRoleInputsProvider
+  type NativeRoleInputs,
+  type NativeRoleInputsProvider,
+  type ReviewRoleDocuments,
+  type ReviewedDiffDescriptor
 } from "./native-harness.js";
 export {
   NATIVE_ROLE_CONFIGS,
@@ -47,6 +52,8 @@ export {
   type NativeRolePlanEvent
 } from "./roles/role-config.js";
 export { PLAN_ROLE_CONFIG } from "./roles/plan-role.js";
+export { REVIEW_ROLE_CONFIG } from "./roles/review-role.js";
+export { isReviewRoleDocuments } from "./roles/role-inputs.js";
 export { TRIAGE_ROLE_CONFIG } from "./roles/triage-role.js";
 export {
   admitStructuredOutput,
