@@ -16,3 +16,8 @@ export {
   createFixtureRunSupervisionSource,
   type RunSupervisionFixtureData
 } from "./fixture-run-supervision-source.js";
+export {
+  DASHBOARD_FIXTURE_COMPOSITION,
+  DASHBOARD_RUN_IDS,
+  SEEDED_DASHBOARD_EVENTS
+} from "./seed-dashboard-events.js";
