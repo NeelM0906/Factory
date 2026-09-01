@@ -224,9 +224,14 @@ interface RecordedRequest {
   readonly url: string;
   readonly method: string;
   readonly headers: Headers;
+  readonly body: unknown;
 }
 
-/** Wraps a fetch implementation to record every outbound request's method, URL, and headers. */
+/**
+ * Wraps a fetch implementation to record every outbound request's method, URL, headers, and
+ * parsed JSON body (`undefined` for a GET with no body) — the body capture is what lets a guard
+ * assert on the request's own key set, not merely that some request happened.
+ */
 function recording(
   fetchImpl: typeof globalThis.fetch,
   sent: RecordedRequest[]
@@ -237,7 +242,12 @@ function recording(
     const headers = new Headers(
       init?.headers ?? (input instanceof Request ? input.headers : undefined)
     );
-    sent.push({ url, method, headers });
+    const rawBody = init?.body;
+    const body =
+      typeof rawBody === "string" && rawBody.length > 0
+        ? (JSON.parse(rawBody) as unknown)
+        : undefined;
+    sent.push({ url, method, headers, body });
     return fetchImpl(input, init);
   };
 }
@@ -471,6 +481,14 @@ describe("approvals, steering, and cancellation", () => {
       "cancelRun",
       (client: AutoStackApiClient, runId: string) =>
         client.cancelRun(runId, { reason: "No longer needed." })
+    ],
+    [
+      "answerClarification",
+      (client: AutoStackApiClient, runId: string) =>
+        client.answerClarification(runId, "clarify_narrow_scope", {
+          answer: "Use the existing token schema.",
+          origin: "web"
+        })
     ]
   ] as const)("maps a 409 on the %s route to the shared conflict error", async (route, call) => {
     const fixture = seedFactoryFixture();
@@ -494,6 +512,14 @@ describe("approvals, steering, and cancellation", () => {
       "cancelRun",
       (client: AutoStackApiClient, runId: string) =>
         client.cancelRun(runId, { reason: "No longer needed." })
+    ],
+    [
+      "answerClarification",
+      (client: AutoStackApiClient, runId: string) =>
+        client.answerClarification(runId, "clarify_narrow_scope", {
+          answer: "Use the existing token schema.",
+          origin: "web"
+        })
     ]
   ] as const)("maps 401 and a malformed body on the %s route", async (route, call) => {
     const fixture = seedFactoryFixture();
@@ -565,6 +591,91 @@ describe("approvals, steering, and cancellation", () => {
   });
 });
 
+describe("answering a clarification", () => {
+  const CLARIFICATION_REF = "clarify_narrow_scope";
+
+  it("sends only answer and origin — no idempotencyKey, no actorId keys on the request body", async () => {
+    const fixture = seedFactoryFixture();
+    const run = firstRun(fixture);
+    const server = createMockApiServer({ fixture });
+    const sent: RecordedRequest[] = [];
+    const client = createApiClient({
+      baseUrl: "",
+      getToken: () => TOKEN,
+      fetch: recording(server.fetch, sent)
+    });
+
+    await client.answerClarification(run.id, CLARIFICATION_REF, {
+      answer: "Use the existing token schema.",
+      origin: "web"
+    });
+
+    const body = sent.at(-1)?.body;
+    expect(body).toBeDefined();
+    expect(Object.keys(body as object).sort()).toEqual(["answer", "origin"]);
+    expect(sent.at(-1)?.headers.has("Idempotency-Key")).toBe(false);
+  });
+
+  it("refuses to send an answer containing credential material, before any network call", async () => {
+    const fixture = seedFactoryFixture();
+    const run = firstRun(fixture);
+    const server = createMockApiServer({ fixture });
+    const sent: RecordedRequest[] = [];
+    const client = createApiClient({
+      baseUrl: "",
+      getToken: () => TOKEN,
+      fetch: recording(server.fetch, sent)
+    });
+
+    // Runtime-built so the file's bytes never contain a real credential prefix (fixture
+    // credential doctrine): "gh" and "p_" are separate literals, never adjacent in the source.
+    const credentialLookingAnswer = ["gh", "p_"].join("") + "a".repeat(36);
+    await expect(
+      client.answerClarification(run.id, CLARIFICATION_REF, {
+        answer: credentialLookingAnswer,
+        origin: "web"
+      })
+    ).rejects.toBeInstanceOf(ApiRequestValidationError);
+
+    expect(sent).toHaveLength(0);
+  });
+
+  it("replays an identical answer rather than sending twice, and does not branch into a second send", async () => {
+    const fixture = seedFactoryFixture();
+    const run = firstRun(fixture);
+    const server = createMockApiServer({ fixture });
+    const sent: RecordedRequest[] = [];
+    const client = createApiClient({
+      baseUrl: "",
+      getToken: () => TOKEN,
+      fetch: recording(server.fetch, sent)
+    });
+    const input = { answer: "Use the existing token schema.", origin: "web" as const };
+
+    const once = await client.answerClarification(run.id, CLARIFICATION_REF, input);
+    const twice = await client.answerClarification(run.id, CLARIFICATION_REF, input);
+
+    expect(twice.replayed).toBe(true);
+    expect(twice.answeredAt).toBe(once.answeredAt);
+    // Exactly one network request per call — the client neither dedupes the second call away nor
+    // fires an extra corrective request after seeing `replayed: true`.
+    expect(sent).toHaveLength(2);
+  });
+
+  it("reports 404 for an unknown run", async () => {
+    const fixture = seedFactoryFixture();
+    const server = createMockApiServer({ fixture });
+    const client = createApiClient({ baseUrl: "", getToken: () => TOKEN, fetch: server.fetch });
+
+    await expect(
+      client.answerClarification("run_00000000-0000-4000-8000-000000000000", CLARIFICATION_REF, {
+        answer: "Use the existing token schema.",
+        origin: "web"
+      })
+    ).rejects.toBeInstanceOf(ApiResponseError);
+  });
+});
+
 describe("desktop client honesty for approvals, steer, and cancel (D1)", () => {
   function createRecordingBridge() {
     const calls: unknown[] = [];
@@ -616,6 +727,21 @@ describe("desktop client honesty for approvals, steer, and cancel (D1)", () => {
     await expect(client.cancelRun("run_1", { reason: "duplicate work" })).rejects.toBeInstanceOf(
       ApiOperationUnavailableError
     );
+    expect(calls).toHaveLength(0);
+  });
+
+  // No `factory.runs.answer` member exists in `DesktopApiOperationMap` — same D1 shape as the
+  // other four operations above.
+  it("throws ApiOperationUnavailableError for answerClarification and never touches bridge.request", async () => {
+    const { bridge, calls } = createRecordingBridge();
+    const client = createDesktopApiClient({ bridge: bridge as never });
+
+    await expect(
+      client.answerClarification("run_1", "clarify_narrow_scope", {
+        answer: "Use the existing token schema.",
+        origin: "web"
+      })
+    ).rejects.toBeInstanceOf(ApiOperationUnavailableError);
     expect(calls).toHaveLength(0);
   });
 });

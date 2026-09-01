@@ -1,4 +1,6 @@
 import {
+  AnswerClarificationRequestSchema,
+  AnswerClarificationResponseSchema,
   ApprovalDecisionRequestSchema,
   ApprovalDecisionResponseSchema,
   CancelRunRequestSchema,
@@ -13,6 +15,8 @@ import {
   RunIdSchema,
   SteerRunRequestSchema,
   SteerRunResponseSchema,
+  type AnswerClarificationRequest,
+  type AnswerClarificationResponse,
   type ApprovalDecisionRequest,
   type ApprovalDecisionResponse,
   type ApprovalSummary,
@@ -81,6 +85,12 @@ export interface AutoStackApiClient {
     input: CancelRunRequest,
     signal?: AbortSignal
   ): Promise<CancelRunResponse>;
+  answerClarification(
+    runId: string,
+    clarificationRef: string,
+    input: AnswerClarificationRequest,
+    signal?: AbortSignal
+  ): Promise<AnswerClarificationResponse>;
 }
 
 export interface CreateApiClientOptions {
@@ -189,6 +199,11 @@ export function createDesktopApiClient(options: CreateDesktopApiClientOptions): 
     async cancelRun(_runId, _input, signal) {
       assertNotAborted(signal);
       throw new ApiOperationUnavailableError("factory.runs.cancel");
+    },
+    // D1, as above — no `factory.runs.answer` member yet.
+    async answerClarification(_runId, _clarificationRef, _input, signal) {
+      assertNotAborted(signal);
+      throw new ApiOperationUnavailableError("factory.runs.answer");
     }
   };
 }
@@ -360,6 +375,29 @@ export function createApiClient(options: CreateApiClientOptions): AutoStackApiCl
       if (response.status === 409) throw new ApiConflictError();
       if (!response.ok) throw new ApiResponseError();
       return decode(response, CancelRunResponseSchema);
+    },
+
+    async answerClarification(runId, clarificationRef, input, signal) {
+      assertNotAborted(signal);
+      const body = parseRequestBody(AnswerClarificationRequestSchema, input);
+      const headers = authenticatedHeaders();
+      headers.set("Content-Type", "application/json");
+      // Idempotency is server-derived from the clarification ref and answer content, and
+      // `actorId` comes from authenticated context — mirroring D2's approval-decision pattern, so
+      // this sends neither an `Idempotency-Key` header nor an `actorId` field.
+      const response = await request(
+        `/v1/runs/${encodeURIComponent(runId)}/clarifications/${encodeURIComponent(clarificationRef)}/answer`,
+        {
+          method: "POST",
+          headers,
+          body: JSON.stringify(body),
+          ...(signal === undefined ? {} : { signal })
+        }
+      );
+      if (response.status === 401) throw new ApiAuthenticationError();
+      if (response.status === 409) throw new ApiConflictError();
+      if (!response.ok) throw new ApiResponseError();
+      return decode(response, AnswerClarificationResponseSchema);
     }
   };
 }

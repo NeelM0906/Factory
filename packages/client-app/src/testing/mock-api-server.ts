@@ -1,4 +1,6 @@
 import {
+  AnswerClarificationRequestSchema,
+  AnswerClarificationResponseSchema,
   ApprovalDecisionRequestSchema,
   ApprovalDecisionResponseSchema,
   ApprovalSchema,
@@ -289,6 +291,37 @@ export function createMockApiServer(options: MockApiServerOptions): MockApiServe
             requestedAt: updatedRun.updatedAt
           })
         };
+      }
+
+      case "answerClarification": {
+        const parsedBody = AnswerClarificationRequestSchema.safeParse(request.body);
+        if (!parsedBody.success) {
+          return errorResponse(400, "invalid_request", "The clarification answer is invalid.");
+        }
+        const run = state.runs.get(match.runId);
+        if (run === undefined)
+          return errorResponse(404, "run_not_found", "No matching run was found.");
+
+        // Server-derived, same shape as the approval-decision idempotency key (D2): a client
+        // cannot mint two distinct acts out of one answer by resubmitting it.
+        const derivedKey = `${match.runId}:${match.clarificationRef}:${parsedBody.data.answer}`;
+        const replay = state.answerReplays.get(derivedKey);
+        if (replay !== undefined) {
+          return {
+            status: 200,
+            body: AnswerClarificationResponseSchema.parse({ ...replay, replayed: true })
+          };
+        }
+
+        // This route does not append to `state.events` — see the note in "createRun" above.
+        const response = AnswerClarificationResponseSchema.parse({
+          runId: run.id,
+          clarificationRef: match.clarificationRef,
+          answeredAt: now(),
+          replayed: false
+        });
+        state = { ...state, answerReplays: new Map(state.answerReplays).set(derivedKey, response) };
+        return { status: 200, body: response };
       }
     }
   }

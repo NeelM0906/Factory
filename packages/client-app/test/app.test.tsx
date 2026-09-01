@@ -48,7 +48,8 @@ const makeClient = (runs: readonly RunSummary[] = []): AutoStackApiClient => ({
   listApprovals: vi.fn(),
   decideApproval: vi.fn(),
   steerRun: vi.fn(),
-  cancelRun: vi.fn()
+  cancelRun: vi.fn(),
+  answerClarification: vi.fn()
 });
 
 afterEach(() => {

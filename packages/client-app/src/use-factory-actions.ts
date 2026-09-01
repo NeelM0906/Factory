@@ -1,6 +1,10 @@
 import { useCallback, useRef, useState } from "react";
 
-import type { CancelRunResponse, SteerRunResponse } from "@autostack/contracts";
+import type {
+  AnswerClarificationResponse,
+  CancelRunResponse,
+  SteerRunResponse
+} from "@autostack/contracts";
 
 import type { AutoStackApiClient } from "./api-client.js";
 import { ApiRequestValidationError } from "./api-errors.js";
@@ -14,30 +18,44 @@ export interface FactoryActionError {
 export interface FactoryActionState {
   readonly steering: boolean;
   readonly cancelling: boolean;
+  readonly answering: boolean;
   readonly steerError?: FactoryActionError;
   readonly cancelError?: FactoryActionError;
+  readonly answerError?: FactoryActionError;
 }
 
-const idleActionState: FactoryActionState = { steering: false, cancelling: false };
+const idleActionState: FactoryActionState = {
+  steering: false,
+  cancelling: false,
+  answering: false
+};
 
 const GENERIC_STEER_FAILURE = "The instruction could not be sent. Try again.";
 const GENERIC_CANCEL_FAILURE = "The run could not be cancelled. Try again.";
+const GENERIC_ANSWER_FAILURE = "The answer could not be sent. Try again.";
 
 /**
- * Steer and cancel, composed into {@link FactoryController} by `use-factory.ts`'s single
+ * Steer, cancel, and answer, composed into {@link FactoryController} by `use-factory.ts`'s single
  * composition line.
  *
- * `answerClarification` is not implemented here — see the Task 7 report's escalation. No HTTP
- * route, control-plane handler, `AutoStackApiClient` method, or request/response schema exists
- * anywhere in `@autostack/contracts` or `apps/control-plane` for submitting a clarification
- * answer; only the event-payload-side `ClarificationResponseSchema` (recording an answer that
- * already happened) exists. Implementing the action would mean inventing a wire contract this
- * stream does not own, which is exactly the hand-rolling the brief prohibits.
+ * `answerClarification` sends `{ answer, origin }` only — E1 (the Task 7 report escalation) is
+ * resolved: `AnswerClarificationRequestSchema`/`AnswerClarificationResponseSchema`
+ * (`@autostack/contracts` `api.ts`) landed with idempotency server-derived from the clarification
+ * ref and answer content, and `actorId` from authenticated context, mirroring D2's
+ * approval-decision pattern. `origin` is fixed to `"web"` here: this action has no signal for which
+ * shell hosts it, and the desktop transport can't reach this route yet anyway (no
+ * `factory.runs.answer` member in `DesktopApiOperationMap` — same D1 shape as the other four
+ * operations). Revisit if/when desktop wiring for this route lands.
  */
 export interface FactoryActionsController {
   readonly actionState: FactoryActionState;
   steer(runId: string, instruction: string): Promise<SteerRunResponse>;
   cancel(runId: string, reason: string): Promise<CancelRunResponse>;
+  answerClarification(
+    runId: string,
+    clarificationRef: string,
+    answer: string
+  ): Promise<AnswerClarificationResponse>;
 }
 
 /**
@@ -64,6 +82,7 @@ export function useFactoryActions(
   const [actionState, setActionState] = useState<FactoryActionState>(idleActionState);
   const steerRequest = useRef<AbortController | null>(null);
   const cancelRequest = useRef<AbortController | null>(null);
+  const answerRequest = useRef<AbortController | null>(null);
 
   const steer = useCallback(
     async (runId: string, instruction: string): Promise<SteerRunResponse> => {
@@ -133,5 +152,48 @@ export function useFactoryActions(
     [client, refresh]
   );
 
-  return { actionState, steer, cancel };
+  const answerClarification = useCallback(
+    async (
+      runId: string,
+      clarificationRef: string,
+      answer: string
+    ): Promise<AnswerClarificationResponse> => {
+      if (client === null) throw new TypeError("The factory is disconnected.");
+      answerRequest.current?.abort();
+      const controller = new AbortController();
+      answerRequest.current = controller;
+      setActionState((current) => ({ ...current, answering: true }));
+      try {
+        const response = await client.answerClarification(
+          runId,
+          clarificationRef,
+          { answer, origin: "web" },
+          controller.signal
+        );
+        if (!controller.signal.aborted) {
+          await refresh();
+          setActionState((current) => {
+            const { answerError: ignoredAnswerError, ...withoutAnswerError } = current;
+            void ignoredAnswerError;
+            return { ...withoutAnswerError, answering: false };
+          });
+        }
+        return response;
+      } catch (error) {
+        if (!controller.signal.aborted) {
+          setActionState((current) => ({
+            ...current,
+            answering: false,
+            answerError: toActionError(error, GENERIC_ANSWER_FAILURE)
+          }));
+        }
+        throw error;
+      } finally {
+        if (answerRequest.current === controller) answerRequest.current = null;
+      }
+    },
+    [client, refresh]
+  );
+
+  return { actionState, steer, cancel, answerClarification };
 }

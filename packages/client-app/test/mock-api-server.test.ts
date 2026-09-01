@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  AnswerClarificationResponseSchema,
   ApiErrorSchema,
   ApprovalDecisionResponseSchema,
   CancelRunResponseSchema,
@@ -222,6 +223,92 @@ describe("contract-derived mock API server", () => {
         body: JSON.stringify({ reason: "No longer needed." })
       });
       expect(notFound.status).toBe(404);
+    });
+
+    it("answers a clarification on a known run, and reports 404 for an unknown one", async () => {
+      const fixture = seedFactoryFixture();
+      const server = createMockApiServer({ fixture });
+      const run = fixture.runs[0];
+      if (run === undefined) throw new Error("Fixture has no runs.");
+
+      const answered = await fetchJson(
+        server,
+        `/v1/runs/${run.id}/clarifications/clarify_ref/answer`,
+        {
+          method: "POST",
+          headers: { ...authHeaders, "content-type": "application/json" },
+          body: JSON.stringify({ answer: "Use the existing token schema.", origin: "web" })
+        }
+      );
+      expect(answered.status).toBe(200);
+      const parsed = AnswerClarificationResponseSchema.parse(answered.body);
+      expect(parsed.replayed).toBe(false);
+      expect(parsed.clarificationRef).toBe("clarify_ref");
+
+      const unknownRunId = "run_ffffffff-ffff-4fff-8fff-ffffffffffff";
+      const notFound = await fetchJson(
+        server,
+        `/v1/runs/${unknownRunId}/clarifications/clarify_ref/answer`,
+        {
+          method: "POST",
+          headers: { ...authHeaders, "content-type": "application/json" },
+          body: JSON.stringify({ answer: "Use the existing token schema.", origin: "web" })
+        }
+      );
+      expect(notFound.status).toBe(404);
+    });
+  });
+
+  describe("clarification answer idempotency (server-derived, no client key)", () => {
+    it("replays the same (runId, clarificationRef, answer) with the original answeredAt", async () => {
+      const fixture = seedFactoryFixture();
+      const server = createMockApiServer({ fixture });
+      const run = fixture.runs[0];
+      if (run === undefined) throw new Error("Fixture has no runs.");
+      const path = `/v1/runs/${run.id}/clarifications/clarify_ref/answer`;
+      const body = JSON.stringify({ answer: "Use the existing token schema.", origin: "web" });
+      const headers = { ...authHeaders, "content-type": "application/json" };
+
+      const once = AnswerClarificationResponseSchema.parse(
+        (await fetchJson(server, path, { method: "POST", headers, body })).body
+      );
+      const twice = AnswerClarificationResponseSchema.parse(
+        (await fetchJson(server, path, { method: "POST", headers, body })).body
+      );
+
+      expect(twice.replayed).toBe(true);
+      expect(twice.answeredAt).toBe(once.answeredAt);
+    });
+
+    it("treats a different answer to the same clarificationRef as a fresh answer, not a replay", async () => {
+      const fixture = seedFactoryFixture();
+      const server = createMockApiServer({ fixture });
+      const run = fixture.runs[0];
+      if (run === undefined) throw new Error("Fixture has no runs.");
+      const path = `/v1/runs/${run.id}/clarifications/clarify_ref/answer`;
+      const headers = { ...authHeaders, "content-type": "application/json" };
+
+      const first = AnswerClarificationResponseSchema.parse(
+        (
+          await fetchJson(server, path, {
+            method: "POST",
+            headers,
+            body: JSON.stringify({ answer: "Use the existing token schema.", origin: "web" })
+          })
+        ).body
+      );
+      const second = AnswerClarificationResponseSchema.parse(
+        (
+          await fetchJson(server, path, {
+            method: "POST",
+            headers,
+            body: JSON.stringify({ answer: "Use a new schema instead.", origin: "web" })
+          })
+        ).body
+      );
+
+      expect(first.replayed).toBe(false);
+      expect(second.replayed).toBe(false);
     });
   });
 

@@ -2,7 +2,11 @@ import { useState, type ReactElement } from "react";
 
 import { Composer, type ComposerMode } from "@autostack/ui";
 
-import type { CancelRunResponse, SteerRunResponse } from "@autostack/contracts";
+import type {
+  AnswerClarificationResponse,
+  CancelRunResponse,
+  SteerRunResponse
+} from "@autostack/contracts";
 
 import type { FactoryActionState } from "../use-factory-actions.js";
 
@@ -11,6 +15,18 @@ export interface RunComposerProps {
   readonly actionState: FactoryActionState;
   readonly steer: (runId: string, instruction: string) => Promise<SteerRunResponse>;
   readonly cancel: (runId: string, reason: string) => Promise<CancelRunResponse>;
+  readonly answerClarification: (
+    runId: string,
+    clarificationRef: string,
+    answer: string
+  ) => Promise<AnswerClarificationResponse>;
+  /**
+   * The clarification currently pending an answer for this run, or `undefined` when none is
+   * pending. `| undefined` rather than `?:` to satisfy `exactOptionalPropertyTypes` and match the
+   * existing pane convention (e.g. `RunInspectorProps.environment`): a caller must say "explicitly
+   * none" rather than merely omit the prop.
+   */
+  readonly clarificationRef: string | undefined;
 }
 
 const MODES: readonly ComposerMode[] = ["steer", "answer", "cancel"];
@@ -21,31 +37,35 @@ const MODE_SWITCH_LABEL: Record<ComposerMode, string> = {
   cancel: "Cancel"
 };
 
-/**
- * No HTTP route, control-plane handler, or `AutoStackApiClient` method exists for submitting a
- * clarification answer — see the Task 7 report escalation (E1). Per the interim ruling, `answer`
- * mode stays selectable and visible rather than disappearing (D1/D3 precedent: a missing backend
- * renders a typed, named unavailable state, never a silent gap), and its submit control stays in
- * the accessibility tree, permanently disabled, rather than looking live while doing nothing.
- */
-const ANSWER_UNAVAILABLE_MESSAGE = "Answering clarifications is not served by this build.";
+const NO_PENDING_CLARIFICATION_MESSAGE = "No clarification is pending to answer for this run.";
 
 /**
- * Wires the `@autostack/ui` `Composer` primitive to the step 1 factory actions. Presentation and
- * glue only — no network code of its own; `steer`/`cancel` (and their busy flags and validation
- * errors) come entirely from `useFactoryActions`.
+ * Wires the `@autostack/ui` `Composer` primitive to the step 1/2b factory actions. Presentation
+ * and glue only — no network code of its own; `steer`/`cancel`/`answerClarification` (and their
+ * busy flags and validation errors) come entirely from `useFactoryActions`.
  */
-export function RunComposer({ runId, actionState, steer, cancel }: RunComposerProps): ReactElement {
+export function RunComposer({
+  runId,
+  actionState,
+  steer,
+  cancel,
+  answerClarification,
+  clarificationRef
+}: RunComposerProps): ReactElement {
   const [mode, setMode] = useState<ComposerMode>("steer");
 
   const busy =
-    mode === "steer" ? actionState.steering : mode === "cancel" ? actionState.cancelling : true;
+    mode === "steer"
+      ? actionState.steering
+      : mode === "cancel"
+        ? actionState.cancelling
+        : actionState.answering;
   const validationError =
     mode === "steer"
       ? actionState.steerError
       : mode === "cancel"
         ? actionState.cancelError
-        : undefined;
+        : actionState.answerError;
 
   // No `content.trim().length === 0` re-check here: `Composer` already gates on empty/whitespace
   // content before ever calling `onSubmit` (Task 4b's dead-guard removal precedent — a caller-side
@@ -59,9 +79,12 @@ export function RunComposer({ runId, actionState, steer, cancel }: RunComposerPr
       void cancel(runId, content).catch(() => undefined);
       return;
     }
-    // mode === "answer": no backing action exists — see `ANSWER_UNAVAILABLE_MESSAGE`. `busy` is
-    // permanently `true` in this mode, so `Composer` never actually invokes this branch; it exists
-    // only so every mode is handled explicitly.
+    // mode === "answer". This check is type narrowing (`clarificationRef` is `string | undefined`
+    // and `answerClarification` needs a `string`), not a re-gate: `Composer` for this mode only
+    // ever renders below when `clarificationRef !== undefined`, so `onSubmit` cannot fire while it
+    // is `undefined` — the branch exists to satisfy the compiler, not to catch a reachable case.
+    if (clarificationRef === undefined) return;
+    void answerClarification(runId, clarificationRef, content).catch(() => undefined);
   }
 
   return (
@@ -79,17 +102,18 @@ export function RunComposer({ runId, actionState, steer, cancel }: RunComposerPr
           </button>
         ))}
       </div>
-      {mode === "answer" ? (
-        <p className="run-composer__unavailable" role="status">
-          {ANSWER_UNAVAILABLE_MESSAGE}
-        </p>
-      ) : null}
       {validationError === undefined ? null : (
         <p className="run-composer__error" role="alert">
           {validationError.message}
         </p>
       )}
-      <Composer mode={mode} busy={busy} onSubmit={handleSubmit} />
+      {mode === "answer" && clarificationRef === undefined ? (
+        <p className="run-composer__unavailable" role="status">
+          {NO_PENDING_CLARIFICATION_MESSAGE}
+        </p>
+      ) : (
+        <Composer mode={mode} busy={busy} onSubmit={handleSubmit} />
+      )}
     </div>
   );
 }

@@ -1,5 +1,6 @@
 import {
   ApiErrorSchema,
+  type AnswerClarificationResponse,
   type ApiError,
   type Approval,
   type ApprovalDecisionResponse,
@@ -18,7 +19,8 @@ export type MockApiRoute =
   | "listApprovals"
   | "decideApproval"
   | "steerRun"
-  | "cancelRun";
+  | "cancelRun"
+  | "answerClarification";
 
 /**
  * `conflict` exists because three of the client's four 409 branches are otherwise unreachable:
@@ -73,6 +75,8 @@ export interface ServerState {
   readonly approvals: ReadonlyMap<string, Approval>;
   readonly events: FactoryFixture["events"];
   readonly decisionReplays: ReadonlyMap<string, ApprovalDecisionResponse>;
+  /** Keyed `${runId}:${clarificationRef}:${answer}` — server-derived, same shape as decisions. */
+  readonly answerReplays: ReadonlyMap<string, AnswerClarificationResponse>;
 }
 
 export type RouteMatch =
@@ -83,7 +87,12 @@ export type RouteMatch =
   | { readonly route: "listApprovals" }
   | { readonly route: "decideApproval"; readonly runId: string; readonly approvalId: string }
   | { readonly route: "steerRun"; readonly runId: string }
-  | { readonly route: "cancelRun"; readonly runId: string };
+  | { readonly route: "cancelRun"; readonly runId: string }
+  | {
+      readonly route: "answerClarification";
+      readonly runId: string;
+      readonly clarificationRef: string;
+    };
 
 export const errorResponse = (
   status: number,
@@ -120,6 +129,15 @@ export function matchRoute(method: string, path: string): RouteMatch | undefined
 
   const cancelMatch = /^\/v1\/runs\/([^/]+)\/cancel$/.exec(path);
   if (method === "POST" && cancelMatch) return { route: "cancelRun", runId: cancelMatch[1] ?? "" };
+
+  const answerMatch = /^\/v1\/runs\/([^/]+)\/clarifications\/([^/]+)\/answer$/.exec(path);
+  if (method === "POST" && answerMatch) {
+    return {
+      route: "answerClarification",
+      runId: answerMatch[1] ?? "",
+      clarificationRef: answerMatch[2] ?? ""
+    };
+  }
 
   return undefined;
 }
@@ -186,6 +204,7 @@ export function buildInitialState(fixture: FactoryFixture): ServerState {
     runs: new Map(fixture.runs.map((run) => [run.id, run])),
     approvals: new Map(fixture.approvals.map((approval) => [approval.id, approval])),
     events: fixture.events,
-    decisionReplays: new Map()
+    decisionReplays: new Map(),
+    answerReplays: new Map()
   };
 }

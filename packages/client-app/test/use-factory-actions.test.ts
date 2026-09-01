@@ -24,6 +24,8 @@ function buildCredentialLookingInstruction(): string {
   return `Rotate this before merging: ${prefix}${"N".repeat(24)}`;
 }
 
+const CLARIFICATION_REF = "clarify_narrow_scope";
+
 describe("useFactoryActions: steer", () => {
   it("calls client.steerRun exactly once and reflects accepted", async () => {
     const fixture = seedFactoryFixture();
@@ -124,7 +126,8 @@ describe("useFactoryActions: steer", () => {
       listApprovals: () => Promise.reject(new Error("unused")),
       decideApproval: () => Promise.reject(new Error("unused")),
       steerRun: () => Promise.reject(new ApiConflictError()),
-      cancelRun: () => Promise.reject(new Error("unused"))
+      cancelRun: () => Promise.reject(new Error("unused")),
+      answerClarification: () => Promise.reject(new Error("unused"))
     };
     const refresh = vi.fn(async () => {});
     const { result } = renderHook(() => useFactoryActions(conflictingClient, refresh));
@@ -210,5 +213,118 @@ describe("useFactoryActions: cancel", () => {
 
     expect(refresh).not.toHaveBeenCalled();
     expect(result.current.actionState.cancelling).toBe(false);
+  });
+});
+
+describe("useFactoryActions: answerClarification", () => {
+  it("calls client.answerClarification exactly once and reflects the response", async () => {
+    const fixture = seedFactoryFixture();
+    const runId = firstRunId(fixture);
+    const server = createMockApiServer({ fixture });
+    const fetchSpy = vi.fn(server.fetch);
+    const client = createApiClient({ baseUrl: "", getToken: () => TOKEN, fetch: fetchSpy });
+    const refresh = vi.fn(async () => {});
+    const { result } = renderHook(() => useFactoryActions(client, refresh));
+
+    let response: Awaited<ReturnType<typeof result.current.answerClarification>> | undefined;
+    await act(async () => {
+      response = await result.current.answerClarification(
+        runId,
+        CLARIFICATION_REF,
+        "Use the existing token schema."
+      );
+    });
+
+    expect(fetchSpy).toHaveBeenCalledTimes(1);
+    expect(response?.clarificationRef).toBe(CLARIFICATION_REF);
+    expect(refresh).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not call the client again while already answering (busy blocks re-entry)", async () => {
+    const fixture = seedFactoryFixture();
+    const runId = firstRunId(fixture);
+    const server = createMockApiServer({ fixture });
+    const fetchSpy = vi.fn(server.fetch);
+    const client = createApiClient({ baseUrl: "", getToken: () => TOKEN, fetch: fetchSpy });
+    const refresh = vi.fn(async () => {});
+    const { result } = renderHook(() => useFactoryActions(client, refresh));
+
+    await act(async () => {
+      const first = result.current.answerClarification(runId, CLARIFICATION_REF, "first answer");
+      const second = result.current.answerClarification(runId, CLARIFICATION_REF, "second answer");
+      await Promise.all([first, second]);
+    });
+
+    // Superseded like steer/cancel: two calls in flight, only the latest one's effect lands.
+    expect(refresh).toHaveBeenCalledTimes(1);
+  });
+
+  it("rejects a credential-bearing answer before the request leaves the client, naming the field", async () => {
+    const fixture = seedFactoryFixture();
+    const runId = firstRunId(fixture);
+    const server = createMockApiServer({ fixture });
+    const fetchSpy = vi.fn(server.fetch);
+    const client = createApiClient({ baseUrl: "", getToken: () => TOKEN, fetch: fetchSpy });
+    const refresh = vi.fn(async () => {});
+    const { result } = renderHook(() => useFactoryActions(client, refresh));
+
+    await act(async () => {
+      await expect(
+        result.current.answerClarification(
+          runId,
+          CLARIFICATION_REF,
+          buildCredentialLookingInstruction()
+        )
+      ).rejects.toBeInstanceOf(ApiRequestValidationError);
+    });
+
+    expect(fetchSpy).not.toHaveBeenCalled();
+    expect(result.current.actionState.answerError?.field).toBe("answer");
+  });
+
+  it("does not branch into a second send when the server reports a replay", async () => {
+    const fixture = seedFactoryFixture();
+    const runId = firstRunId(fixture);
+    const server = createMockApiServer({ fixture });
+    const fetchSpy = vi.fn(server.fetch);
+    const client = createApiClient({ baseUrl: "", getToken: () => TOKEN, fetch: fetchSpy });
+    const refresh = vi.fn(async () => {});
+    const { result } = renderHook(() => useFactoryActions(client, refresh));
+
+    let once: Awaited<ReturnType<typeof result.current.answerClarification>> | undefined;
+    let twice: Awaited<ReturnType<typeof result.current.answerClarification>> | undefined;
+    await act(async () => {
+      once = await result.current.answerClarification(
+        runId,
+        CLARIFICATION_REF,
+        "Use the existing token schema."
+      );
+    });
+    await act(async () => {
+      twice = await result.current.answerClarification(
+        runId,
+        CLARIFICATION_REF,
+        "Use the existing token schema."
+      );
+    });
+
+    expect(once?.replayed).toBe(false);
+    expect(twice?.replayed).toBe(true);
+    // One client call per action invocation — seeing `replayed: true` triggers no extra request.
+    expect(fetchSpy).toHaveBeenCalledTimes(2);
+  });
+
+  it("rejects when the factory is disconnected, without touching actionState", async () => {
+    const refresh = vi.fn(async () => {});
+    const { result } = renderHook(() => useFactoryActions(null, refresh));
+
+    await act(async () => {
+      await expect(
+        result.current.answerClarification("run_1", CLARIFICATION_REF, "an answer")
+      ).rejects.toBeInstanceOf(TypeError);
+    });
+
+    expect(refresh).not.toHaveBeenCalled();
+    expect(result.current.actionState.answering).toBe(false);
   });
 });
