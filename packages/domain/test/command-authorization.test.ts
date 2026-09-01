@@ -1,5 +1,6 @@
 import {
   ApprovalIdSchema,
+  RunIdSchema,
   ApprovalSchema,
   CommandAuthorizationIdSchema,
   CommandIdSchema,
@@ -46,6 +47,9 @@ const DECIDED_AT = "2026-08-26T12:05:00.000Z";
 const DERIVED_AT = "2026-08-26T12:10:00.000Z";
 const WORKSPACE_ID = "ws_123e4567-e89b-42d3-a456-426614174000";
 const RUN_ID = "run_123e4567-e89b-42d3-a456-426614174001";
+/** A second run and approval, used only to prove the evidence chain is bound to identity. */
+const OTHER_RUN_ID = RunIdSchema.parse("run_123e4567-e89b-42d3-a456-4266141740aa");
+const OTHER_APPROVAL_ID = ApprovalIdSchema.parse("apr_123e4567-e89b-42d3-a456-4266141740bb");
 const WORK_ITEM_ID = "wi_123e4567-e89b-42d3-a456-426614174002";
 const PLAN_APPROVAL_ID = "apr_123e4567-e89b-42d3-a456-426614174003";
 const PERMISSION_APPROVAL_ID = "apr_123e4567-e89b-42d3-a456-426614174004";
@@ -658,5 +662,79 @@ describe("derived command authorizations at the runner boundary", () => {
         admissionDependencies(command, record, { withoutPermissionApproval: true })
       )
     ).rejects.toThrow("A trusted approved authorization is required.");
+  });
+});
+
+// The evidence chain that must hold BEFORE any command is matched. Task 7's implementer died while
+// adding these; every one of them was uncovered, which is the gap that matters most in this module:
+// the matching rules below decide WHICH commands get minted, but these decide whether minting is
+// permitted at all. A break here mints correctly-shaped authorizations from an approval that was
+// never granted.
+//
+// Each case mutates exactly one link of a fixture that is otherwise valid — so the red comes from
+// that specific defect and not from a malformed input the function would reject anyway.
+describe("plan-named command authorizations reject a broken evidence chain", () => {
+  const deriveFrom = async (
+    mutate: (
+      command: DerivePlanNamedCommandAuthorizationsCommand
+    ) => DerivePlanNamedCommandAuthorizationsCommand
+  ): Promise<DerivedCommandAuthorizations> =>
+    derivePlanNamedCommandAuthorizations(mutate(await commandFor()), dependencies());
+
+  it("refuses an approval that was never granted", async () => {
+    // Rejects an implementation that reads `decision` without checking `status` — the record still
+    // carries an approved decision, so only the status separates granted from pending.
+    await expect(
+      deriveFrom((c) => ({ ...c, planApproval: { ...c.planApproval, status: "pending" } }))
+    ).rejects.toThrow(/approved plan approval/);
+  });
+
+  it("refuses an approval decided by someone not eligible to decide it", async () => {
+    // Rejects an implementation that trusts `decision.actor` without checking it against
+    // `eligibleApproverIds`. A decision signed by a stranger is not a grant.
+    await expect(
+      deriveFrom((c) => ({
+        ...c,
+        planApproval: { ...c.planApproval, eligibleApproverIds: ["someone-else"] }
+      }))
+    ).rejects.toThrow(/no eligible approval decision/);
+  });
+
+  it("refuses evidence naming a different approval", async () => {
+    // Rejects an implementation that checks the digest but not the identity: the approval and the
+    // evidence must be about the same decision, not merely about equal bytes.
+    await expect(
+      deriveFrom((c) => ({
+        ...c,
+        planApprovalEvidence: { ...c.planApprovalEvidence, actorId: "a-different-approver" }
+      }))
+    ).rejects.toThrow(/names a different approval/);
+  });
+
+  it("refuses a plan approved under a different run", async () => {
+    // Rejects an implementation that binds by digest alone. Digests travel; run identity does not,
+    // and a plan approved for one run must not authorize commands in another.
+    await expect(
+      deriveFrom((c) => ({
+        ...c,
+        planApproval: { ...c.planApproval, runId: OTHER_RUN_ID }
+      }))
+    ).rejects.toThrow(/different run/);
+  });
+
+  it("refuses an environment authorization that descends from another approval", async () => {
+    // Mutating `planApproval.id` would trip the earlier evidence-identity guard instead, so the
+    // authorization itself is repointed: the plan chain stays intact and only the environment's
+    // parentage is wrong. Rejects an implementation that validates the environment authorization
+    // in isolation — it is well-formed here and simply belongs to a different grant.
+    await expect(
+      deriveFrom((c) => ({
+        ...c,
+        environmentAuthorization: {
+          ...c.environmentAuthorization,
+          approvalId: OTHER_APPROVAL_ID
+        }
+      }))
+    ).rejects.toThrow(/does not descend from this plan approval/);
   });
 });
