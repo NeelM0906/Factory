@@ -248,6 +248,10 @@ describe("AGENT_RUNTIME_FAILURES", () => {
   it("carries exactly this task's codes in a frozen table", () => {
     expect(Object.isFrozen(AGENT_RUNTIME_FAILURES)).toBe(true);
     expect(Object.keys(AGENT_RUNTIME_FAILURES).sort()).toEqual([
+      "agent_harness_already_registered",
+      "agent_harness_capability_mismatch",
+      "agent_harness_not_registered",
+      "agent_harness_probe_failed",
       "agent_session_already_terminal",
       "agent_session_disposed",
       "agent_session_interrupted",
