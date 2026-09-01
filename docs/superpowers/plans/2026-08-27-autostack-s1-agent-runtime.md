@@ -719,6 +719,18 @@ Commit: `docs(agent-runtime,agent-native): document the stream's public surface`
 
 ---
 
+## Pending assignment — clarification answer route (2026-08-31, awaiting ownership ruling)
+
+The orchestrator assigned `POST /v1/runs/:runId/clarifications/:clarificationRef/answer`
+(`AnswerClarificationRequestSchema` / `AnswerClarificationResponseSchema`, landed at `105db8e`)
+to this lane. No task T1–T13 touches `apps/control-plane`, and this plan's ownership rule makes
+any other path an escalation — so the route is RECORDED here to keep it from falling between
+tasks, and carrying it requires either an explicit ownership expansion (a new T14: control-plane
+run-action route, server-derived idempotency from clarificationRef + answer content, actorId from
+authenticated context, `replayed: true` on idempotent re-answer, durable record
+`ClarificationResponseSchema`) or re-routing to the stream that owns run-action routes. Do not
+start it without that ruling.
+
 ## Definition of done
 
 - Native harness passes `describeAgentHarnessConformance` unmodified, in both the in-process and the macrotask-transport runs.
