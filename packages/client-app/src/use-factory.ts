@@ -9,6 +9,7 @@ import type {
 } from "@autostack/contracts";
 
 import type { AutoStackApiClient } from "./api-client.js";
+import { useFactoryActions, type FactoryActionsController } from "./use-factory-actions.js";
 
 export interface FactoryState {
   readonly status: "disconnected" | "loading" | "ready" | "error";
@@ -46,7 +47,7 @@ const pageFingerprint = (page: ListRunsResponse): string =>
     ])
   ]);
 
-export interface FactoryController {
+export interface FactoryController extends FactoryActionsController {
   readonly state: FactoryState;
   refresh(): Promise<void>;
   loadMore(): Promise<void>;
@@ -465,5 +466,5 @@ export function useFactory(
     [client, refresh]
   );
 
-  return { state, refresh, loadMore, createRun };
+  return { state, refresh, loadMore, createRun, ...useFactoryActions(client, refresh) };
 }
