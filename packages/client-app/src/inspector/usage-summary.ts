@@ -53,8 +53,11 @@ function deriveCostDisplay(cost: ModelCost): string | undefined {
  * deliberately not `toLocaleString`/`Intl.NumberFormat`, whose output differs across environments
  * and would break an exact-string test. `micros` is a nonnegative integer (schema-enforced), so no
  * sign or fractional handling is needed.
+ *
+ * Exported so `run-inspector.tsx` can format `ModelPolicy.maxCostMicros` (a reported ceiling, never
+ * `reported | unknown`) with the same rule rather than duplicating it.
  */
-function formatCostMicros(micros: number): string {
+export function formatCostMicros(micros: number): string {
   const digits = micros.toString().padStart(7, "0");
   const dollars = digits.slice(0, -6);
   const microsPart = digits.slice(-6);
