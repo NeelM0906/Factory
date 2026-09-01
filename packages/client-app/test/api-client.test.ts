@@ -401,7 +401,8 @@ describe("approvals, steering, and cancellation", () => {
         decision: "approved",
         evidenceDigest: approval.evidenceDigest,
         origin: "web",
-        note: `ghp_${"a".repeat(36)}`
+        // Runtime-built to keep credential-pattern bytes out of the source (fixture doctrine).
+        note: ["gh", "p_"].join("") + "a".repeat(36)
       })
     ).rejects.toBeInstanceOf(ApiRequestValidationError);
 
@@ -419,8 +420,11 @@ describe("approvals, steering, and cancellation", () => {
       fetch: recording(server.fetch, sent)
     });
 
+    // Runtime-built so the file's bytes never contain a real credential prefix (fixture
+    // credential doctrine): "gh" and "p_" are separate literals, never adjacent in the source.
+    const credentialLookingInstruction = ["gh", "p_"].join("") + "a".repeat(36);
     await expect(
-      client.steerRun(run.id, { instruction: `ghp_${"a".repeat(36)}` })
+      client.steerRun(run.id, { instruction: credentialLookingInstruction })
     ).rejects.toBeInstanceOf(ApiRequestValidationError);
 
     expect(sent).toHaveLength(0);
