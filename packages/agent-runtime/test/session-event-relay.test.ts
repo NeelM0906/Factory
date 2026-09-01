@@ -248,10 +248,12 @@ describe("AGENT_RUNTIME_FAILURES", () => {
   it("carries exactly this task's codes in a frozen table", () => {
     expect(Object.isFrozen(AGENT_RUNTIME_FAILURES)).toBe(true);
     expect(Object.keys(AGENT_RUNTIME_FAILURES).sort()).toEqual([
+      "agent_event_invalid",
       "agent_harness_already_registered",
       "agent_harness_capability_mismatch",
       "agent_harness_not_registered",
       "agent_harness_probe_failed",
+      "agent_session_already_supervised",
       "agent_session_already_terminal",
       "agent_session_disposed",
       "agent_session_interrupted",
@@ -262,12 +264,12 @@ describe("AGENT_RUNTIME_FAILURES", () => {
   it("pins the retryable split: only the re-runnable probe failure invites a retry", () => {
     // Rejects an implementation that defaults every entry to one retryable value: the probe is
     // environmental and re-runnable (a workbench refresh IS the retry), while the three
-    // registration failures and the four session failures are deterministic.
+    // registration failures and the six session/supervision failures are deterministic.
     expect(AGENT_RUNTIME_FAILURES.agent_harness_probe_failed.retryable).toBe(true);
     const deterministic = Object.entries(AGENT_RUNTIME_FAILURES)
       .filter(([code]) => code !== "agent_harness_probe_failed")
       .map(([, entry]) => entry.retryable);
-    expect(deterministic).toHaveLength(7);
+    expect(deterministic).toHaveLength(9);
     expect(deterministic.every((retryable) => retryable === false)).toBe(true);
   });
 
