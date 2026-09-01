@@ -45,6 +45,16 @@ export {
   type ReviewedDiffDescriptor
 } from "./native-harness.js";
 export {
+  NATIVE_AGENT_ROLES,
+  NATIVE_PROMPTS,
+  PROMPT_DIGESTS,
+  PROMPT_SAMPLE_INPUTS,
+  type NativeAgentRole,
+  type NativePromptArtifact,
+  type NativePromptRenderInput,
+  type PromptDigestRow
+} from "./prompts/index.js";
+export {
   NATIVE_ROLE_CONFIGS,
   type NativeRoleConfig,
   type NativeRoleDocumentIdentity,

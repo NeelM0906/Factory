@@ -16,7 +16,6 @@ export {
 } from "./harness-registry.js";
 export {
   createSessionEventRelay,
-  type DistributiveOmit,
   type SessionEventRelay,
   type SessionEventRelayOptions,
   type SessionEventTemplate

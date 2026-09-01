@@ -58,8 +58,8 @@ import { TRIAGE_ROLE_CONFIG } from "../src/roles/triage-role.js";
  *   the invocation's identity, the admitted model fields, and `producedBy` (adapterId, promptRef,
  *   `String(version)`, resolved routeRef); digests it with `digestTriageReport`; emits `completed`
  *   with `evidenceDigests: [thatDigest]`; and admits via the TWO-argument
- *   `admitTriageReport(report, digest)` before completion. Plan and review keep the interim
- *   `autostack.native-structured-output` placeholder digest until T9/T10 replace them the same way.
+ *   `admitTriageReport(report, digest)` before completion. Plan and review follow the same
+ *   pipeline; T9/T10 deleted the interim `autostack.native-structured-output` placeholder digest.
  */
 
 const FIXED_NOW = "2026-08-30T12:00:00.000Z";
