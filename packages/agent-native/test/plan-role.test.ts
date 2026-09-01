@@ -203,7 +203,7 @@ const expectedProducedBy = (): StationProvenance =>
 const expectedPlanDocument = async (
   overrides: Record<string, unknown> = {}
 ): Promise<PlanDocument> => {
-  const canonicalSource = {
+  const canonicalSource = PlanDocumentSchema.parse({
     schemaVersion: 1,
     workspaceId: WORKSPACE_ID,
     workItemId: WORK_ITEM_ID,
@@ -213,7 +213,7 @@ const expectedPlanDocument = async (
     producedBy: expectedProducedBy(),
     ...overrides,
     planDigest: "0".repeat(64)
-  };
+  });
   const planDigest = await digestPlanDocument(canonicalSource);
   return PlanDocumentSchema.parse({ ...canonicalSource, planDigest });
 };
@@ -668,6 +668,38 @@ describe("plan permission and credential scoping", () => {
     expect(failed.retryable).toBe(false);
     noCompletedWasEmitted(events);
     expect(planEventsOf(events)).toEqual([]);
+  });
+
+  it("treats the authorized set as a SET: a requested subset passes regardless of order or repetition, and only genuine widening fails (rejects an array-equality check standing in for set membership)", () => {
+    const validate = PLAN_ROLE_CONFIG.validateModelAuthored;
+    if (validate === undefined) {
+      throw new Error("The plan role must declare invocation-scoped credential validation.");
+    }
+    const secondRef = createId("credentialRef", uuid(8));
+    const unauthorizedRef = createId("credentialRef", uuid(9));
+    // Authorized set deliberately ordered [second, first].
+    const { invocation } = buildPlanHarness({
+      authorizedCredentialRefIds: [secondRef, PLAN_CREDENTIAL_REF_ID]
+    });
+
+    // Adjacent-but-distinguishable vectors: subset in a different order, and a repeated ref —
+    // neither widens the grant, so both must pass.
+    expect(
+      validate({ requiredCredentialRefIds: [PLAN_CREDENTIAL_REF_ID] }, invocation)
+    ).toBeUndefined();
+    expect(
+      validate(
+        { requiredCredentialRefIds: [PLAN_CREDENTIAL_REF_ID, PLAN_CREDENTIAL_REF_ID, secondRef] },
+        invocation
+      )
+    ).toBeUndefined();
+    // Negative companion in the same run: one genuinely-unauthorized ref among authorized ones.
+    const widened = validate(
+      { requiredCredentialRefIds: [PLAN_CREDENTIAL_REF_ID, unauthorizedRef] },
+      invocation
+    );
+    expect(widened?.code).toBe("malformed_model_output");
+    expect(widened?.retryable).toBe(false);
   });
 });
 

@@ -1,7 +1,7 @@
 import {
-  PlanDocumentSchema,
   ReviewReportSchema,
   digestVersionedValue,
+  type AgentInvocationRequest,
   type ModelRouteContext,
   type RunId,
   type StationProvenance,
@@ -10,12 +10,14 @@ import {
 } from "@autostack/contracts";
 import type { z } from "zod";
 
+import type { NativeAgentFailure } from "../errors.js";
 import {
   NATIVE_PROMPTS,
   type NativeAgentRole,
   type NativePromptArtifact
 } from "../prompts/index.js";
 import { pickModelAuthoredShape } from "../prompts/prompt-artifact.js";
+import { PLAN_ROLE_CONFIG } from "./plan-role.js";
 import { TRIAGE_ROLE_CONFIG } from "./triage-role.js";
 
 /** The document identity the harness owns; the model never authors any of these (spec §14.1). */
@@ -34,12 +36,18 @@ export interface NativeRoleDocumentInput {
   readonly producedBy: StationProvenance;
 }
 
+/** The `plan` detail event a role's admitted document announces (contract: `{planDigest, summary}`). */
+export interface NativeRolePlanEvent {
+  readonly planDigest: string;
+  readonly summary: string;
+}
+
 /**
  * One native station role as DATA (plan Task 8): the engine in `native-session.ts` is generic and
  * consumes exactly this shape, so the three roles differ in what they declare, never in control
  * flow. `buildDocument`, `digestDocument`, and `admitDocument` are the role's evidence pipeline;
- * for triage they delegate to the contracts helpers via `evidence.ts`, while plan and review carry
- * the T6 placeholder digest until T9/T10 replace them the same way.
+ * for triage and plan they delegate to the contracts helpers via `evidence.ts`, while review
+ * carries the T6 placeholder digest until T10 replaces it the same way.
  *
  * The document-handling members are declared as methods deliberately: method parameter bivariance
  * is what lets `NativeRoleConfig<TriageReport>` sit in a `Record` of `NativeRoleConfig<unknown>`
@@ -56,16 +64,37 @@ export interface NativeRoleConfig<TDocument = unknown> {
   readonly maxOutputTokens: number;
   /** The model-authored subset of the role's document schema; identity is never offered. */
   readonly outputSchema: z.ZodType;
-  buildDocument(input: NativeRoleDocumentInput): TDocument;
+  /**
+   * May return a promise (T9 lead ruling): the plan document carries a self-`planDigest` the
+   * builder must compute with the async contracts digest helper before the document exists, so
+   * the engine awaits every build. Triage's synchronous return stays assignable.
+   */
+  buildDocument(input: NativeRoleDocumentInput): TDocument | Promise<TDocument>;
   digestDocument(document: TDocument): Promise<string>;
   admitDocument(document: unknown, expectedDigest: string): Promise<TDocument>;
+  /**
+   * Invocation-scoped admission the static `outputSchema` cannot express (e.g. the plan role's
+   * credential scoping against the invocation's authorized `credentialRefIds`). Runs after
+   * structured-output admission and BEFORE any echo, evidence, or detail event exists; a returned
+   * failure terminates the session `failed` with exactly that code and nothing else is emitted.
+   */
+  validateModelAuthored?(
+    modelAuthored: unknown,
+    invocation: AgentInvocationRequest
+  ): NativeAgentFailure | undefined;
+  /**
+   * The `plan` detail event this role's ADMITTED document announces. Declared only by the plan
+   * role — presence of the method is the signal, so the engine stays role-agnostic control flow
+   * and the roles differ in data.
+   */
+  planEvent?(document: TDocument): NativeRolePlanEvent;
 }
 
 /**
- * INTERNAL-ONLY digest domain for the roles whose evidence pipeline is still the T6 placeholder.
- * Plan and review keep it until T9/T10 give them their contracts digest functions; the
- * runtime-composition and conformance suites pin this domain for the review role and must keep
- * passing unchanged until then.
+ * INTERNAL-ONLY digest domain for the role whose evidence pipeline is still the T6 placeholder.
+ * Review keeps it until T10 gives it its contracts digest functions; the runtime-composition and
+ * conformance suites pin this domain for the review role and must keep passing unchanged until
+ * then.
  */
 const STRUCTURED_OUTPUT_DIGEST_DOMAIN = "autostack.native-structured-output";
 
@@ -80,7 +109,7 @@ interface PlaceholderRoleOptions {
  * A role still on the placeholder pipeline: the "document" is the admitted model-authored value
  * unchanged, digested under the internal domain, and admitted by recomputing that same digest.
  * `requiredCapabilities` stays at the T6 interim `["structured_output"]` pin; formalizing it is
- * part of each role's own task (T9/T10), exactly as T8 formalized triage's.
+ * part of the role's own task (T10 for review), exactly as T8 and T9 formalized triage and plan.
  */
 const placeholderRoleConfig = (options: PlaceholderRoleOptions): NativeRoleConfig => {
   const digestDocument = (document: unknown): Promise<string> =>
@@ -110,12 +139,7 @@ const placeholderRoleConfig = (options: PlaceholderRoleOptions): NativeRoleConfi
 export const NATIVE_ROLE_CONFIGS: Readonly<Record<NativeAgentRole, NativeRoleConfig>> =
   Object.freeze({
     triage: TRIAGE_ROLE_CONFIG,
-    plan: placeholderRoleConfig({
-      role: "plan",
-      stage: "plan",
-      maxOutputTokens: 32_768,
-      documentShape: PlanDocumentSchema.shape
-    }),
+    plan: PLAN_ROLE_CONFIG,
     review: placeholderRoleConfig({
       role: "review",
       stage: "isolated_review",

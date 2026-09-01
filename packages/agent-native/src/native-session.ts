@@ -321,15 +321,30 @@ const runSession = async (context: NativeSessionContext): Promise<void> => {
     return;
   }
 
+  // Invocation-scoped admission the static output schema cannot express (T9: the plan role's
+  // credential scoping). Runs BEFORE the echo, the evidence pipeline, and any detail event, so a
+  // refused response leaves no message, no plan event, and no completion behind it.
+  const invalidity = role.validateModelAuthored?.(outcome.value, invocation);
+  if (invalidity !== undefined) {
+    append({
+      type: "failed",
+      code: invalidity.code,
+      message: invalidity.message,
+      retryable: invalidity.retryable
+    });
+    return;
+  }
+
   append({
     type: "message",
     role: "assistant",
     text: redactSensitiveText(JSON.stringify(outcome.value)).slice(0, MESSAGE_TEXT_CEILING)
   });
 
-  // The role's evidence pipeline (plan Task 8): identity comes from the INVOCATION, content from
-  // the admitted model fields, provenance from the harness — prompt artifact, adapter, and the
-  // route the router actually resolved. The digest is recomputed as an admission gate before the
+  // The role's evidence pipeline (plan Tasks 8-9): identity comes from the INVOCATION, content
+  // from the admitted model fields, provenance from the harness — prompt artifact, adapter, and
+  // the route the router actually resolved. The build is awaited because the plan role computes
+  // its self-digest inside it. The digest is recomputed as an admission gate before the
   // completion may carry it; a mismatch here is a contradiction the role itself produced, so it
   // classifies as an internal error, never as model fault.
   const producedBy = StationProvenanceSchema.parse({
@@ -338,7 +353,7 @@ const runSession = async (context: NativeSessionContext): Promise<void> => {
     promptVersion: String(role.prompt.version),
     routeRef: selection.routeRef
   });
-  const document = role.buildDocument({
+  const document = await role.buildDocument({
     identity: { workspaceId: invocation.workspaceId, workItemId, runId: invocation.runId },
     modelAuthored: outcome.value,
     producedAt: deps.now(),
@@ -346,6 +361,12 @@ const runSession = async (context: NativeSessionContext): Promise<void> => {
   });
   const evidenceDigest = await role.digestDocument(document);
   await role.admitDocument(document, evidenceDigest);
+  // A role that declares structured plans announces the ADMITTED document's digest and summary
+  // as a `plan` detail event before the terminal — role-driven data, not per-role control flow.
+  const planEvent = role.planEvent?.(document);
+  if (planEvent !== undefined) {
+    append({ type: "plan", planDigest: planEvent.planDigest, summary: planEvent.summary });
+  }
   append({ type: "completed", evidenceDigests: [evidenceDigest] });
 };
 

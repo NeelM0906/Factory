@@ -1,4 +1,11 @@
-import { admitTriageReport, digestTriageReport, type TriageReport } from "@autostack/contracts";
+import {
+  admitPlanDocument,
+  admitTriageReport,
+  digestPlanDocument,
+  digestTriageReport,
+  type PlanDocument,
+  type TriageReport
+} from "@autostack/contracts";
 
 /**
  * Evidence wrappers for the native station roles: THIN delegations to the digest and admission
@@ -6,8 +13,7 @@ import { admitTriageReport, digestTriageReport, type TriageReport } from "@autos
  * canonicalization of its own — the contracts helpers are the single canonical authority, so a
  * digest computed through here can never drift from one computed anywhere else in the system.
  *
- * T9/T10 add the plan and review wrappers beside these when those roles leave the placeholder
- * digest domain.
+ * T10 adds the review wrappers beside these when that role leaves the placeholder digest domain.
  */
 
 /** Digests a triage report under the contracts' canonical form — `producedBy` INCLUDED (0.12). */
@@ -22,3 +28,19 @@ export const admitTriageEvidence = (
   report: unknown,
   expectedDigest: string
 ): Promise<TriageReport> => admitTriageReport(report, expectedDigest);
+
+/**
+ * Digests a plan document under the contracts' canonical form — `producedBy` and `producedAt`
+ * EXCLUDED (0.12), the exact opposite of the triage and review rules: the digest measures the
+ * approved content, so a prompt bump must not revoke an outstanding plan approval.
+ */
+export const digestPlanEvidence = (document: PlanDocument): Promise<string> =>
+  digestPlanDocument(document);
+
+/**
+ * Admits a plan document through the ONE-argument contracts admission, which recomputes the
+ * digest from the canonical fields and rejects a mismatch — the plan binds to its own
+ * self-`planDigest`, not to an upstream document.
+ */
+export const admitPlanEvidence = (document: unknown): Promise<PlanDocument> =>
+  admitPlanDocument(document);
