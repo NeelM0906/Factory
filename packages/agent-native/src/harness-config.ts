@@ -1,20 +1,14 @@
 import {
   AgentHarnessDescriptorSchema,
-  PlanDocumentSchema,
-  ReviewReportSchema,
-  TriageReportSchema,
   type AgentHarnessDescriptor,
   type AgentInvocationRequest,
   type ModelInferencePort,
-  type ModelRouteContext,
   type ModelRouterPort
 } from "@autostack/contracts";
-import type { z } from "zod";
 
 import type { NativeContextReader } from "./context-assembly.js";
 import { isPathInScope, type ContextScope } from "./context-scope.js";
-import { NATIVE_PROMPTS, type NativeAgentRole } from "./prompts/index.js";
-import { pickModelAuthoredShape } from "./prompts/prompt-artifact.js";
+import type { NativeAgentRole } from "./prompts/index.js";
 import type { StructuredOutputPolicy } from "./structured-output.js";
 
 /** One upstream document handed to a role for a single invocation. */
@@ -74,37 +68,6 @@ export interface NativeHarnessDeps {
   /** Resolves when the host is lost; the session then ends in `interrupted` (spec §15). */
   readonly hostLoss?: Promise<void>;
 }
-
-/** The station stage each native role bills its model routing under. */
-export const ROLE_STAGES: Readonly<Record<NativeAgentRole, ModelRouteContext["stage"]>> =
-  Object.freeze({
-    triage: "triage",
-    plan: "plan",
-    review: "isolated_review"
-  });
-
-/** Interim per-role output ceilings; T8's role configuration formalizes these. */
-export const ROLE_MAX_OUTPUT_TOKENS: Readonly<Record<NativeAgentRole, number>> = Object.freeze({
-  triage: 8_192,
-  plan: 32_768,
-  review: 16_384
-});
-
-/**
- * The model-authored subset of each role's output document schema — exactly the shape the role's
- * prompt asked for, derived from the same declaration so admission and prompt cannot drift.
- */
-export const ROLE_OUTPUT_SCHEMAS: Readonly<Record<NativeAgentRole, z.ZodType>> = Object.freeze({
-  triage: pickModelAuthoredShape(
-    TriageReportSchema.shape,
-    NATIVE_PROMPTS.triage.modelAuthoredFields
-  ),
-  plan: pickModelAuthoredShape(PlanDocumentSchema.shape, NATIVE_PROMPTS.plan.modelAuthoredFields),
-  review: pickModelAuthoredShape(
-    ReviewReportSchema.shape,
-    NATIVE_PROMPTS.review.modelAuthoredFields
-  )
-});
 
 /**
  * The descriptor is DERIVED from the configuration, never handed in, so a capability bit can only

@@ -13,6 +13,7 @@ export {
   type OutOfScopeRead
 } from "./context-assembly.js";
 export { isPathInScope, type ContextScope } from "./context-scope.js";
+export { admitTriageEvidence, digestTriageEvidence } from "./evidence.js";
 export {
   NATIVE_AGENT_FAILURES,
   NativeAgentError,
@@ -33,6 +34,13 @@ export {
   type NativeRoleInput,
   type NativeRoleInputsProvider
 } from "./native-harness.js";
+export {
+  NATIVE_ROLE_CONFIGS,
+  type NativeRoleConfig,
+  type NativeRoleDocumentIdentity,
+  type NativeRoleDocumentInput
+} from "./roles/role-config.js";
+export { TRIAGE_ROLE_CONFIG } from "./roles/triage-role.js";
 export {
   admitStructuredOutput,
   type StructuredOutputOutcome,

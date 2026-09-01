@@ -15,11 +15,8 @@ import {
   type AgentSessionStreamEvent,
   type ModelRouteSelection,
   type ModelRouterPort,
-  type RunId,
   type StationProvenance,
-  type TriageReport,
-  type WorkItemId,
-  type WorkspaceId
+  type TriageReport
 } from "@autostack/contracts";
 import {
   createFakeModelInference,
@@ -34,12 +31,14 @@ import {
 
 import type { NativeContextReader } from "../src/context-assembly.js";
 import type { ContextScope } from "../src/context-scope.js";
+import { admitTriageEvidence, digestTriageEvidence } from "../src/evidence.js";
 import {
   createNativeHarness,
   type NativeAgentHarness,
   type NativeHarnessConfig
 } from "../src/native-harness.js";
-import { NATIVE_PROMPTS, type NativePromptArtifact } from "../src/prompts/index.js";
+import { NATIVE_PROMPTS } from "../src/prompts/index.js";
+import { TRIAGE_ROLE_CONFIG } from "../src/roles/triage-role.js";
 
 /**
  * Task 8 (plan Steps 1-2): the triage role as DATA, consumed by the generic engine.
@@ -330,47 +329,6 @@ const noCompletedWasEmitted = (events: readonly AgentSessionStreamEvent[]): void
   expect(events.filter((event) => event.type === "completed")).toEqual([]);
 };
 
-// ---------------------------------------------------------------------------------------------
-// Phase-2 module surface, loaded dynamically so a missing module fails ONLY these tests instead
-// of masking the engine-behaviour assertions below with a file-level collection error.
-// ---------------------------------------------------------------------------------------------
-
-interface TriageRoleConfigSurface {
-  readonly role: "triage";
-  readonly prompt: NativePromptArtifact;
-  readonly stage: string;
-  readonly requiredCapabilities: readonly string[];
-  readonly maxOutputTokens: number;
-  readonly outputSchema: { safeParse(input: unknown): { readonly success: boolean } };
-  readonly buildDocument: (input: {
-    readonly identity: {
-      readonly workspaceId: WorkspaceId;
-      readonly workItemId: WorkItemId;
-      readonly runId: RunId;
-    };
-    readonly modelAuthored: unknown;
-    readonly producedAt: string;
-    readonly producedBy: StationProvenance;
-  }) => TriageReport;
-  readonly digestDocument: (document: TriageReport) => Promise<string>;
-  readonly admitDocument: (document: unknown, expectedDigest: string) => Promise<TriageReport>;
-}
-
-const loadTriageRoleConfig = async (): Promise<TriageRoleConfigSurface> => {
-  const module = (await import("../src/roles/triage-role.js")) as {
-    readonly TRIAGE_ROLE_CONFIG: TriageRoleConfigSurface;
-  };
-  return module.TRIAGE_ROLE_CONFIG;
-};
-
-interface TriageEvidenceSurface {
-  readonly digestTriageEvidence: (report: TriageReport) => Promise<string>;
-  readonly admitTriageEvidence: (report: unknown, expectedDigest: string) => Promise<TriageReport>;
-}
-
-const loadEvidence = async (): Promise<TriageEvidenceSurface> =>
-  (await import("../src/evidence.js")) as TriageEvidenceSurface;
-
 describe("triage route discipline", () => {
   it('resolves the triage route with stage "triage" and requiredCapabilities ["text", "structured_output"] (rejects the interim structured_output-only capability pin and a role that bills routing under another stage)', async () => {
     const built = buildTriageHarness();
@@ -650,7 +608,7 @@ describe("triage failure paths", () => {
 
 describe("the triage role configuration module (phase-2 surface)", () => {
   it("declares route discipline, output ceiling, and the registered prompt artifact as data on TRIAGE_ROLE_CONFIG (rejects an engine that keeps routing and ceilings hardcoded in control flow, so the roles differ in code instead of data)", async () => {
-    const config = await loadTriageRoleConfig();
+    const config = TRIAGE_ROLE_CONFIG;
     expect(config.role).toBe("triage");
     expect(config.stage).toBe("triage");
     expect(config.requiredCapabilities).toEqual(["text", "structured_output"]);
@@ -661,7 +619,7 @@ describe("the triage role configuration module (phase-2 surface)", () => {
   });
 
   it("builds the report from invocation identity, admitted model fields, and provenance, while the narrowed schema refuses model-supplied identity keys (rejects a builder that merges model identity and a schema that lets identity through)", async () => {
-    const config = await loadTriageRoleConfig();
+    const config = TRIAGE_ROLE_CONFIG;
 
     // Positive: the exact model-authored subset admits.
     expect(config.outputSchema.safeParse(triageModelFields()).success).toBe(true);
@@ -683,7 +641,7 @@ describe("the triage role configuration module (phase-2 surface)", () => {
   });
 
   it("digestDocument covers producedBy: mutating provenance changes the digest — the mirror of T9's plan-document exclusion (rejects an evidence wrapper that copies the plan rule and strips provenance before hashing)", async () => {
-    const config = await loadTriageRoleConfig();
+    const config = TRIAGE_ROLE_CONFIG;
     const report = expectedTriageReport();
     const base = await config.digestDocument(report);
 
@@ -699,7 +657,7 @@ describe("the triage role configuration module (phase-2 surface)", () => {
   });
 
   it("admitDocument is the two-argument digest-compare admission (rejects an admission that trusts the report without recomputing its digest, or one that binds triage to an upstream document it does not have)", async () => {
-    const config = await loadTriageRoleConfig();
+    const config = TRIAGE_ROLE_CONFIG;
     const report = expectedTriageReport();
     const digest = await digestTriageReport(report);
 
@@ -708,14 +666,11 @@ describe("the triage role configuration module (phase-2 surface)", () => {
   });
 
   it("evidence.ts wraps the contracts triage digest and admission without canonicalizing on its own (rejects a local re-canonicalization that could drift from station-evidence)", async () => {
-    const evidence = await loadEvidence();
     const report = expectedTriageReport();
     const digest = await digestTriageReport(report);
 
-    expect(await evidence.digestTriageEvidence(report)).toBe(digest);
-    await expect(evidence.admitTriageEvidence(report, digest)).resolves.toEqual(report);
-    await expect(evidence.admitTriageEvidence(report, "0".repeat(64))).rejects.toBeInstanceOf(
-      TypeError
-    );
+    expect(await digestTriageEvidence(report)).toBe(digest);
+    await expect(admitTriageEvidence(report, digest)).resolves.toEqual(report);
+    await expect(admitTriageEvidence(report, "0".repeat(64))).rejects.toBeInstanceOf(TypeError);
   });
 });

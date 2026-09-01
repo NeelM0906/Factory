@@ -7,7 +7,7 @@ import {
   AgentPermissionRequestSchema,
   ModelInferenceRequestSchema,
   ModelRouteContextSchema,
-  digestVersionedValue,
+  StationProvenanceSchema,
   redactSensitiveText,
   type AgentInvocationRequest,
   type AgentPermissionRequest,
@@ -22,25 +22,12 @@ import { assembleContext, type AssembledContext, type OutOfScopeRead } from "./c
 import { NativeAgentError, type NativeAgentFailure } from "./errors.js";
 import { classifyThrowable } from "./failure-classification.js";
 import {
-  ROLE_MAX_OUTPUT_TOKENS,
-  ROLE_OUTPUT_SCHEMAS,
-  ROLE_STAGES,
   type NativeHarnessConfig,
   type NativeHarnessDeps,
   type NativeRoleInput
 } from "./harness-config.js";
-import { NATIVE_PROMPTS } from "./prompts/index.js";
+import { NATIVE_ROLE_CONFIGS, type NativeRoleConfig } from "./roles/role-config.js";
 import { admitStructuredOutput } from "./structured-output.js";
-
-/**
- * INTERNAL-ONLY digest domain. The completed-evidence digest over the admitted document is a
- * placeholder-by-design: T8–T10 replace it with the per-role evidence digest functions once the
- * identity and provenance binding those digests require exists. The conformance suite checks only
- * digest presence and shape, which this satisfies honestly. The transcript digest, by contrast,
- * is permanent and comes from `digestSessionTranscript` — the single authority in
- * `@autostack/agent-runtime` both interruption owners share.
- */
-const STRUCTURED_OUTPUT_DIGEST_DOMAIN = "autostack.native-structured-output";
 
 /** Ceiling on echoed model text inside a `message` event; the full document travels as evidence. */
 const MESSAGE_TEXT_CEILING = 20_000;
@@ -226,8 +213,11 @@ const takeQueuedSteer = (context: NativeSessionContext, append: Appender): strin
   return instruction;
 };
 
-const resolveRoute = async (context: NativeSessionContext): Promise<ModelRouteSelection> => {
-  const { config, deps, invocation } = context;
+const resolveRoute = async (
+  context: NativeSessionContext,
+  role: NativeRoleConfig
+): Promise<ModelRouteSelection> => {
+  const { deps, invocation } = context;
   return deps.router.resolve(
     ModelRouteContextSchema.parse({
       schemaVersion: 1,
@@ -235,8 +225,8 @@ const resolveRoute = async (context: NativeSessionContext): Promise<ModelRouteSe
       workspaceId: invocation.workspaceId,
       runId: invocation.runId,
       stageRunId: invocation.stageRunId,
-      stage: ROLE_STAGES[config.role],
-      requiredCapabilities: ["structured_output"]
+      stage: role.stage,
+      requiredCapabilities: [...role.requiredCapabilities]
     })
   );
 };
@@ -250,9 +240,12 @@ const runSession = async (context: NativeSessionContext): Promise<void> => {
     state.transcript.push(relay.append(template));
   };
 
+  const role = NATIVE_ROLE_CONFIGS[config.role];
+
   // A station that writes a document carrying `workItemId` in its identity fails closed when it
   // is absent — the model must never supply identity for a document it authors (spec §14.1).
-  if (invocation.workItemId === undefined) {
+  const workItemId = invocation.workItemId;
+  if (workItemId === undefined) {
     throw new NativeAgentError("native_invocation_incomplete");
   }
 
@@ -280,13 +273,12 @@ const runSession = async (context: NativeSessionContext): Promise<void> => {
       : undefined;
 
   const inputs = await deps.roleInputs.forInvocation(invocation);
-  const prompt = NATIVE_PROMPTS[config.role];
-  const messages = prompt.render({
+  const messages = role.prompt.render({
     objective: invocation.objective,
     repositoryContext: buildRepositoryContext(assembled, inputs, steerText)
   });
 
-  const selection = await resolveRoute(context);
+  const selection = await resolveRoute(context, role);
   let attempts = 0;
   const invoke = async (invokeMessages: readonly ModelMessage[]): Promise<ModelInferenceResult> => {
     attempts += 1;
@@ -297,7 +289,7 @@ const runSession = async (context: NativeSessionContext): Promise<void> => {
         selection,
         messages: invokeMessages,
         options: {
-          maxOutputTokens: ROLE_MAX_OUTPUT_TOKENS[config.role],
+          maxOutputTokens: role.maxOutputTokens,
           responseFormat: "json"
         }
       })
@@ -314,7 +306,7 @@ const runSession = async (context: NativeSessionContext): Promise<void> => {
   const first = await invoke(messages);
   const outcome = await admitStructuredOutput({
     role: config.role,
-    schema: ROLE_OUTPUT_SCHEMAS[config.role],
+    schema: role.outputSchema,
     responseText: first.content,
     policy: deps.structuredOutput,
     reask: async (schemaPaths) => (await invoke(repairMessages(messages, schemaPaths))).content
@@ -335,10 +327,25 @@ const runSession = async (context: NativeSessionContext): Promise<void> => {
     text: redactSensitiveText(JSON.stringify(outcome.value)).slice(0, MESSAGE_TEXT_CEILING)
   });
 
-  const evidenceDigest = await digestVersionedValue(STRUCTURED_OUTPUT_DIGEST_DOMAIN, {
-    role: config.role,
-    document: outcome.value
+  // The role's evidence pipeline (plan Task 8): identity comes from the INVOCATION, content from
+  // the admitted model fields, provenance from the harness — prompt artifact, adapter, and the
+  // route the router actually resolved. The digest is recomputed as an admission gate before the
+  // completion may carry it; a mismatch here is a contradiction the role itself produced, so it
+  // classifies as an internal error, never as model fault.
+  const producedBy = StationProvenanceSchema.parse({
+    adapterId: config.adapterId,
+    promptRef: role.prompt.promptRef,
+    promptVersion: String(role.prompt.version),
+    routeRef: selection.routeRef
   });
+  const document = role.buildDocument({
+    identity: { workspaceId: invocation.workspaceId, workItemId, runId: invocation.runId },
+    modelAuthored: outcome.value,
+    producedAt: deps.now(),
+    producedBy
+  });
+  const evidenceDigest = await role.digestDocument(document);
+  await role.admitDocument(document, evidenceDigest);
   append({ type: "completed", evidenceDigests: [evidenceDigest] });
 };
 
