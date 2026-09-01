@@ -259,6 +259,18 @@ describe("AGENT_RUNTIME_FAILURES", () => {
     ]);
   });
 
+  it("pins the retryable split: only the re-runnable probe failure invites a retry", () => {
+    // Rejects an implementation that defaults every entry to one retryable value: the probe is
+    // environmental and re-runnable (a workbench refresh IS the retry), while the three
+    // registration failures and the four session failures are deterministic.
+    expect(AGENT_RUNTIME_FAILURES.agent_harness_probe_failed.retryable).toBe(true);
+    const deterministic = Object.entries(AGENT_RUNTIME_FAILURES)
+      .filter(([code]) => code !== "agent_harness_probe_failed")
+      .map(([, entry]) => entry.retryable);
+    expect(deterministic).toHaveLength(7);
+    expect(deterministic.every((retryable) => retryable === false)).toBe(true);
+  });
+
   it("every code parses under WorkflowFailureCodeSchema and lifts into WorkflowFailureSchema", () => {
     for (const [code, entry] of Object.entries(AGENT_RUNTIME_FAILURES)) {
       expect(WorkflowFailureCodeSchema.parse(code)).toBe(code);

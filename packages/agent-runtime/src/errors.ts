@@ -26,6 +26,22 @@ export const AGENT_RUNTIME_FAILURES = Object.freeze({
   agent_session_disposed: {
     message: "The agent session relay has been disposed.",
     retryable: false
+  },
+  agent_harness_already_registered: {
+    message: "An agent harness is already registered under this adapter id.",
+    retryable: false
+  },
+  agent_harness_not_registered: {
+    message: "No agent harness is registered under the requested adapter id.",
+    retryable: false
+  },
+  agent_harness_capability_mismatch: {
+    message: "The agent harness permission surface contradicts its declared capabilities.",
+    retryable: false
+  },
+  agent_harness_probe_failed: {
+    message: "The agent harness availability probe failed.",
+    retryable: true
   }
 } satisfies Readonly<Record<string, AgentRuntimeFailureEntry>>);
 
