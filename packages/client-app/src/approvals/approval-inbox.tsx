@@ -35,12 +35,10 @@ const EMPTY_MESSAGE = "No approvals are pending.";
 const GENERIC_DECISION_FAILURE_MESSAGE = "The decision could not be sent. Try again.";
 const STATUS_FILTER_ID = "approval-status-filter";
 /**
- * `ListApprovalsQuerySchema.status` has no wildcard member — it is one specific status, defaulting
- * server-side to `"pending"` when omitted (`packages/contracts/src/api.ts`). "All" is therefore a
- * UI-only sentinel meaning "send no `status` field"; at the server that is indistinguishable from
- * explicitly requesting `"pending"`, since that is what an omitted `status` resolves to. This is a
- * known limitation of the contract, not a bug in the filter — there is no query shape that asks
- * the server for every status in one call.
+ * `ListApprovalsQuerySchema.status` carries an explicit `"all"` wildcard (base commit db926c3):
+ * "All" SENDS `status: "all"`, and the route must treat it as unfiltered. The former caveat —
+ * omitting the field, which the server's `"pending"` default made indistinguishable from a
+ * pending filter, a filter UI that lies — is dead.
  */
 const ALL_STATUS_VALUE = "all";
 
@@ -117,7 +115,7 @@ export function ApprovalInbox({ client }: ApprovalInboxProps): ReactElement {
   // Starts on "pending" (not the "All" sentinel) so the select's displayed value always matches
   // what is actually shown — defaulting it to "All" while the inbox in fact shows only pending
   // approvals (the server's own default) would be misleading.
-  const [selectedStatus, setSelectedStatus] = useState<ApprovalSummary["status"] | undefined>(
+  const [selectedStatus, setSelectedStatus] = useState<ApprovalSummary["status"] | "all">(
     "pending"
   );
   const { state, loadMore, refresh } = useApprovals(client, selectedStatus);
@@ -130,7 +128,7 @@ export function ApprovalInbox({ client }: ApprovalInboxProps): ReactElement {
   const handleStatusFilterChange = useCallback((event: ChangeEvent<HTMLSelectElement>): void => {
     const raw = event.target.value;
     if (raw === ALL_STATUS_VALUE) {
-      setSelectedStatus(undefined);
+      setSelectedStatus(ALL_STATUS_VALUE);
       return;
     }
     // Schema-validated rather than cast: `raw` only ever equals a value this same <select>
@@ -189,11 +187,7 @@ export function ApprovalInbox({ client }: ApprovalInboxProps): ReactElement {
   const statusFilter = (
     <div className="approval-filter">
       <label htmlFor={STATUS_FILTER_ID}>Status</label>
-      <select
-        id={STATUS_FILTER_ID}
-        value={selectedStatus ?? ALL_STATUS_VALUE}
-        onChange={handleStatusFilterChange}
-      >
+      <select id={STATUS_FILTER_ID} value={selectedStatus} onChange={handleStatusFilterChange}>
         <option value={ALL_STATUS_VALUE}>All</option>
         {ApprovalSchema.shape.status.options.map((status) => (
           <option key={status} value={status}>

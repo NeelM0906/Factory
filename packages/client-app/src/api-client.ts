@@ -55,7 +55,7 @@ export class ApiResponseError extends Error {
 
 /** Query for `listApprovals`. Every field is optional; the server applies its own defaults. */
 export interface ListApprovalsQueryInput {
-  readonly status?: ApprovalSummary["status"];
+  readonly status?: ApprovalSummary["status"] | "all";
   readonly limit?: number;
   readonly cursor?: number;
 }

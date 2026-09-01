@@ -171,8 +171,9 @@ export function createMockApiServer(options: MockApiServerOptions): MockApiServe
           return errorResponse(400, "invalid_request", "The approvals query is invalid.");
         }
         const { status, limit, cursor } = parsedQuery.data;
+        // db926c3: "all" is the query's explicit wildcard — the route treats it as unfiltered.
         const matching = Array.from(state.approvals.values()).filter(
-          (approval) => approval.status === status
+          (approval) => status === "all" || approval.status === status
         );
         const offset = cursor ?? 0;
         const page = matching.slice(offset, offset + limit);

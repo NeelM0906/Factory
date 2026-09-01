@@ -46,7 +46,7 @@ export interface ApprovalsController {
  */
 export function useApprovals(
   client: AutoStackApiClient | null,
-  status?: ApprovalSummary["status"]
+  status?: ApprovalSummary["status"] | "all"
 ): ApprovalsController {
   const [state, setState] = useState<ApprovalsState>(
     client === null ? disconnectedState : loadingState

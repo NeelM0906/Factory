@@ -294,7 +294,7 @@ describe("ApprovalInbox: status filter", () => {
     );
   });
 
-  it('sends no status filter when "All" is selected', async () => {
+  it('sends the explicit "all" wildcard when "All" is selected (db926c3: the route treats it as unfiltered)', async () => {
     const client = makeApprovalsClient();
     vi.mocked(client.listApprovals).mockResolvedValue({ items: [] });
     render(<ApprovalInbox client={client} />);
@@ -308,7 +308,9 @@ describe("ApprovalInbox: status filter", () => {
     await waitFor(() => expect(client.listApprovals).toHaveBeenCalledTimes(3));
 
     const lastCall = vi.mocked(client.listApprovals).mock.calls.at(-1);
-    expect(lastCall?.[0]).toEqual({});
+    // Positive assertion: "All" SENDS status "all" — omitting the field would silently degrade to
+    // the server's "pending" default (the filter-UI-that-lies defect db926c3 names).
+    expect(lastCall?.[0]).toEqual({ status: "all" });
   });
 });
 
