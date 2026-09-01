@@ -27,6 +27,14 @@ export const AGENT_RUNTIME_FAILURES = Object.freeze({
     message: "The agent session relay has been disposed.",
     retryable: false
   },
+  agent_event_invalid: {
+    message: "The adapter emitted an event that does not parse as an agent session stream event.",
+    retryable: false
+  },
+  agent_session_already_supervised: {
+    message: "This agent session is already under supervision.",
+    retryable: false
+  },
   agent_harness_already_registered: {
     message: "An agent harness is already registered under this adapter id.",
     retryable: false

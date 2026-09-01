@@ -8,6 +8,7 @@ import {
   type AgentSessionSupervisor,
   type AgentSessionSupervisorDeps
 } from "../src/session-supervisor.js";
+import { deriveSessionSnapshot } from "../src/session-snapshot.js";
 
 import {
   buildFakeHarness,
@@ -54,6 +55,25 @@ const supervise = (
   const invocation = buildInvocation(harness.descriptor.adapterId, salt);
   return { supervisor, invocation, handle: supervisor.supervise(invocation) };
 };
+
+describe("deriveSessionSnapshot", () => {
+  it("fails closed to interrupted, never completed, for an ended session with no terminal memo (rejects a snapshot defaulting the missing memo to success — unreachable through the supervisor's own flows, so pinned at the unit)", () => {
+    // Supervisor invariants keep the memo set before the relay leaves "open"; this pins the pure
+    // function's default for any future caller that cannot prove that invariant.
+    expect(deriveSessionSnapshot({ state: "closed", lastSequence: 4 }, undefined)).toEqual({
+      state: "interrupted",
+      lastSequence: 4
+    });
+    expect(deriveSessionSnapshot({ state: "terminal", lastSequence: 4 }, undefined).state).not.toBe(
+      "completed"
+    );
+    // Positive companion: with the memo present the terminal kind is reported faithfully.
+    expect(deriveSessionSnapshot({ state: "terminal", lastSequence: 4 }, "completed")).toEqual({
+      state: "completed",
+      lastSequence: 4
+    });
+  });
+});
 
 describe("createAgentSessionSupervisor", () => {
   it("relays every adapter event and terminates an invalid one as failed with agent_event_invalid before it reaches a reader (rejects a supervisor that trusts adapter output and forwards events without re-validating them through AgentSessionStreamEventSchema)", async () => {

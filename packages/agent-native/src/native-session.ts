@@ -1,4 +1,8 @@
-import type { SessionEventRelay, SessionEventTemplate } from "@autostack/agent-runtime";
+import {
+  digestSessionTranscript,
+  type SessionEventRelay,
+  type SessionEventTemplate
+} from "@autostack/agent-runtime";
 import {
   AgentPermissionRequestSchema,
   ModelInferenceRequestSchema,
@@ -29,13 +33,14 @@ import { NATIVE_PROMPTS } from "./prompts/index.js";
 import { admitStructuredOutput } from "./structured-output.js";
 
 /**
- * INTERNAL-ONLY digest domains. The completed-evidence digest over the admitted document is a
+ * INTERNAL-ONLY digest domain. The completed-evidence digest over the admitted document is a
  * placeholder-by-design: T8–T10 replace it with the per-role evidence digest functions once the
  * identity and provenance binding those digests require exists. The conformance suite checks only
- * digest presence and shape, which this satisfies honestly.
+ * digest presence and shape, which this satisfies honestly. The transcript digest, by contrast,
+ * is permanent and comes from `digestSessionTranscript` — the single authority in
+ * `@autostack/agent-runtime` both interruption owners share.
  */
 const STRUCTURED_OUTPUT_DIGEST_DOMAIN = "autostack.native-structured-output";
-const TRANSCRIPT_DIGEST_DOMAIN = "autostack.agent-session-transcript";
 
 /** Ceiling on echoed model text inside a `message` event; the full document travels as evidence. */
 const MESSAGE_TEXT_CEILING = 20_000;
@@ -366,7 +371,7 @@ const watchHostLoss = (context: NativeSessionContext): void => {
   void hostLoss.then(async () => {
     const { relay, state } = context;
     if (relay.state !== "open") return;
-    const digest = await digestVersionedValue(TRANSCRIPT_DIGEST_DOMAIN, {
+    const digest = await digestSessionTranscript({
       sessionId: context.invocation.agentSessionId,
       events: state.transcript
     });

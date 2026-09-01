@@ -555,6 +555,14 @@ Register a real `createNativeHarness` in a real `createAgentHarnessRegistry`, su
 
 The test lives in `agent-native` because that is the package that depends on both; `agent-runtime` must not import `agent-native`, not even in tests.
 
+> **Carry-forward from T3 (2026-08-31):** the supervisor's duplicate-session guard
+> (`supervised` set) never releases an entry — a concluded session's `agentSessionId` stays
+> reserved for the supervisor's lifetime. Deliberately left open: releasing on conclusion would
+> let a re-supervise of a finished session masquerade as a resume, and the honest resume path
+> (through the SAME handle's relay cursor) is exactly what T13 composes and I1 wires. T13 must
+> assert whichever semantics it relies on; if I1 needs re-supervision, that is a supervisor
+> surface change, not a silent set-release.
+
 - [ ] **Step 2: Fix whatever it catches, verify, commit**
 
 Commit: `test(agent-native): compose the native harness with the runtime registry and supervisor`

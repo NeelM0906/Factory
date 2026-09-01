@@ -21,3 +21,14 @@ export {
   type SessionEventRelayOptions,
   type SessionEventTemplate
 } from "./session-event-relay.js";
+export {
+  AGENT_SESSION_TRANSCRIPT_DIGEST_DOMAIN,
+  digestSessionTranscript
+} from "./session-interruption.js";
+export { type AgentSessionSnapshot, type AgentSessionSnapshotState } from "./session-snapshot.js";
+export {
+  createAgentSessionSupervisor,
+  type AgentSessionSupervisionHandle,
+  type AgentSessionSupervisor,
+  type AgentSessionSupervisorDeps
+} from "./session-supervisor.js";
