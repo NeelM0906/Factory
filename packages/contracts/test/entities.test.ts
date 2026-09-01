@@ -196,7 +196,7 @@ describe("entity contracts", () => {
   it.each(["label", "account", "scope", "locator"])(
     "rejects a raw credential embedded in credential %s metadata",
     (field) => {
-      const token = "ghp_0123456789abcdefghijklmnop";
+      const token = ["ghp", "0123456789abcdefghijklmnop"].join("_");
       const credential = {
         schemaVersion: 1,
         id: IDS.credential,

@@ -12,6 +12,14 @@ import { StoredDomainEventSchema } from "./events.js";
 import { ApprovalIdSchema, RunIdSchema, WorkItemIdSchema } from "./ids.js";
 import { SafeMetadataStringSchema } from "./secret-safety.js";
 
+// Same per-module private convention as station-evidence.ts / agent.ts / integration.ts.
+const StableRefSchema = z
+  .string()
+  .trim()
+  .min(1)
+  .max(240)
+  .regex(/^[A-Za-z0-9._:/-]+$/);
+
 export const HealthResponseSchema = z
   .object({
     service: z.literal("autostack-control-plane"),
@@ -181,6 +189,30 @@ export const CancelRunResponseSchema = z
   .object({ runId: RunIdSchema, status: RunStatusSchema, requestedAt: z.iso.datetime() })
   .strict();
 
+/**
+ * Answers a pending clarification (`POST /v1/runs/:runId/clarifications/:clarificationRef/answer`).
+ * The request carries only what the caller legitimately supplies: the run and clarification are
+ * named by the path, `actorId` comes from the authenticated context, and idempotency is
+ * server-derived from the clarification ref and answer content — mirroring the approval-decision
+ * pattern, so a client cannot mint two distinct acts out of one answer. The durable record is
+ * `ClarificationResponseSchema` (station-evidence); this is only its wire-side request.
+ */
+export const AnswerClarificationRequestSchema = z
+  .object({
+    answer: SafeMetadataStringSchema.trim().min(1).max(20_000),
+    origin: OriginSchema
+  })
+  .strict();
+
+export const AnswerClarificationResponseSchema = z
+  .object({
+    runId: RunIdSchema,
+    clarificationRef: StableRefSchema,
+    answeredAt: z.iso.datetime(),
+    replayed: z.boolean()
+  })
+  .strict();
+
 export type ApprovalSummary = z.infer<typeof ApprovalSummarySchema>;
 export type ListApprovalsQuery = z.infer<typeof ListApprovalsQuerySchema>;
 export type ListApprovalsResponse = z.infer<typeof ListApprovalsResponseSchema>;
@@ -190,6 +222,8 @@ export type SteerRunRequest = z.infer<typeof SteerRunRequestSchema>;
 export type SteerRunResponse = z.infer<typeof SteerRunResponseSchema>;
 export type CancelRunRequest = z.infer<typeof CancelRunRequestSchema>;
 export type CancelRunResponse = z.infer<typeof CancelRunResponseSchema>;
+export type AnswerClarificationRequest = z.infer<typeof AnswerClarificationRequestSchema>;
+export type AnswerClarificationResponse = z.infer<typeof AnswerClarificationResponseSchema>;
 
 export type HealthResponse = z.infer<typeof HealthResponseSchema>;
 export type CreateRunRequestInput = z.input<typeof CreateRunRequestSchema>;

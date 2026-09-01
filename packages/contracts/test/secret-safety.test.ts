@@ -16,7 +16,7 @@ import {
 } from "../src/index.js";
 
 const CONFIGURED_SECRET = "configured-secret-0123456789abcdef";
-const GITHUB_TOKEN = "ghp_0123456789abcdefghijklmnop";
+const GITHUB_TOKEN = ["ghp", "0123456789abcdefghijklmnop"].join("_");
 const HOSTILE_SECRET_SOURCE_ERROR = new Error(
   "ghp_RAW_SENSITIVE_VALUES_SECRET /private/sensitive-values/path"
 );

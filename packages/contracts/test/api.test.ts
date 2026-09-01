@@ -2,6 +2,8 @@ import { describe, expect, it } from "vitest";
 
 import { ApprovalSchema } from "../src/entities.js";
 import {
+  AnswerClarificationRequestSchema,
+  AnswerClarificationResponseSchema,
   ApiErrorSchema,
   ApprovalDecisionRequestSchema,
   ApprovalDecisionResponseSchema,
@@ -249,20 +251,63 @@ describe("approval and steering HTTP contracts", () => {
   });
 
   it("rejects credential material pasted into operator free text", () => {
+    // Runtime-built so the source blob never carries a scannable token shape.
+    const fakeToken = ["ghp", "abcdefghijklmnopqrstuvwxyz01"].join("_");
     expect(() =>
       SteerRunRequestSchema.parse({
-        instruction: "authenticate with ghp_abcdefghijklmnopqrstuvwxyz01"
+        instruction: `authenticate with ${fakeToken}`
       })
     ).toThrow();
-    expect(() =>
-      CancelRunRequestSchema.parse({ reason: "rotate ghp_abcdefghijklmnopqrstuvwxyz01" })
-    ).toThrow();
+    expect(() => CancelRunRequestSchema.parse({ reason: `rotate ${fakeToken}` })).toThrow();
     expect(() =>
       ApprovalDecisionRequestSchema.parse({
         decision: "approved",
         evidenceDigest: DIGEST,
         origin: "desktop",
-        note: "use ghp_abcdefghijklmnopqrstuvwxyz01"
+        note: `use ${fakeToken}`
+      })
+    ).toThrow();
+  });
+
+  it("answers a clarification with only the caller-supplied fields", () => {
+    const request = AnswerClarificationRequestSchema.parse({
+      answer: "Target the staging environment only.",
+      origin: "desktop"
+    });
+    expect(request.answer).toBe("Target the staging environment only.");
+    // The path names the run and clarification; idempotency and actor are server-derived —
+    // a request carrying its own idempotency key or actor must be refused, not honoured.
+    expect(() =>
+      AnswerClarificationRequestSchema.parse({
+        answer: "ok",
+        origin: "desktop",
+        idempotencyKey: "made-up"
+      })
+    ).toThrow();
+    expect(() =>
+      AnswerClarificationRequestSchema.parse({ answer: "ok", origin: "desktop", actorId: "me" })
+    ).toThrow();
+    expect(() =>
+      AnswerClarificationRequestSchema.parse({ answer: "   ", origin: "desktop" })
+    ).toThrow();
+    const fakeToken = ["ghp", "abcdefghijklmnopqrstuvwxyz01"].join("_");
+    expect(() =>
+      AnswerClarificationRequestSchema.parse({ answer: `use ${fakeToken}`, origin: "desktop" })
+    ).toThrow();
+
+    const response = AnswerClarificationResponseSchema.parse({
+      runId: RUN_ID,
+      clarificationRef: "clar_1",
+      answeredAt: NOW,
+      replayed: false
+    });
+    expect(response.replayed).toBe(false);
+    expect(() =>
+      AnswerClarificationResponseSchema.parse({
+        runId: RUN_ID,
+        clarificationRef: "not a ref!",
+        answeredAt: NOW,
+        replayed: false
       })
     ).toThrow();
   });

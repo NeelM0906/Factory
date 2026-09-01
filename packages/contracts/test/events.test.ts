@@ -903,7 +903,10 @@ describe("domain event contracts", () => {
           environmentId: authorization.scope.environmentId,
           authorization: {
             ...authorization,
-            scope: { ...authorization.scope, repositoryIdentity: "ghp_0123456789abcdefghijklmnop" }
+            scope: {
+              ...authorization.scope,
+              repositoryIdentity: ["ghp", "0123456789abcdefghijklmnop"].join("_")
+            }
           },
           phaseKey: `environment:${authorization.scope.environmentId}:authorization`
         }

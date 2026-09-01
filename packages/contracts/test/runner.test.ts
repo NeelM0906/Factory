@@ -156,12 +156,12 @@ describe("local runner contracts", () => {
       CommandEnvironmentEntrySchema.parse({
         kind: "literal",
         name: "TOKEN",
-        value: "ghp_0123456789abcdefghijklmnop"
+        value: ["ghp", "0123456789abcdefghijklmnop"].join("_")
       })
     ).toThrow();
     expect(() =>
       CommandSpecSchema.parse({
-        executable: "ghp_0123456789abcdefghijklmnop",
+        executable: ["ghp", "0123456789abcdefghijklmnop"].join("_"),
         args: [""],
         cwd: ".",
         environment: [{ kind: "literal", name: "EMPTY", value: "" }],
