@@ -1,6 +1,10 @@
-import { useCallback, useState, type ReactElement } from "react";
+import { useCallback, useState, type ChangeEvent, type ReactElement } from "react";
 
-import type { ApprovalDecisionResponse, ApprovalSummary } from "@autostack/contracts";
+import {
+  ApprovalSchema,
+  type ApprovalDecisionResponse,
+  type ApprovalSummary
+} from "@autostack/contracts";
 
 import type { AutoStackApiClient } from "../api-client.js";
 import { ApiConflictError } from "../api-errors.js";
@@ -29,6 +33,16 @@ const STATUS_PRESENTATION: Record<ApprovalSummary["status"], StatusPresentation>
 
 const EMPTY_MESSAGE = "No approvals are pending.";
 const GENERIC_DECISION_FAILURE_MESSAGE = "The decision could not be sent. Try again.";
+const STATUS_FILTER_ID = "approval-status-filter";
+/**
+ * `ListApprovalsQuerySchema.status` has no wildcard member — it is one specific status, defaulting
+ * server-side to `"pending"` when omitted (`packages/contracts/src/api.ts`). "All" is therefore a
+ * UI-only sentinel meaning "send no `status` field"; at the server that is indistinguishable from
+ * explicitly requesting `"pending"`, since that is what an omitted `status` resolves to. This is a
+ * known limitation of the contract, not a bug in the filter — there is no query shape that asks
+ * the server for every status in one call.
+ */
+const ALL_STATUS_VALUE = "all";
 
 function truncateDigest(digest: string): string {
   return `${digest.slice(0, 8)}…${digest.slice(-4)}`;
@@ -100,12 +114,31 @@ export interface ApprovalInboxProps {
  * decision detectable server-side at all (D2).
  */
 export function ApprovalInbox({ client }: ApprovalInboxProps): ReactElement {
-  const { state, loadMore, refresh } = useApprovals(client);
+  // Starts on "pending" (not the "All" sentinel) so the select's displayed value always matches
+  // what is actually shown — defaulting it to "All" while the inbox in fact shows only pending
+  // approvals (the server's own default) would be misleading.
+  const [selectedStatus, setSelectedStatus] = useState<ApprovalSummary["status"] | undefined>(
+    "pending"
+  );
+  const { state, loadMore, refresh } = useApprovals(client, selectedStatus);
   const [pendingDecisions, setPendingDecisions] = useState<ReadonlySet<string>>(new Set());
   const [decisionErrors, setDecisionErrors] = useState<Readonly<Record<string, string>>>({});
   const [decidedOverrides, setDecidedOverrides] = useState<Readonly<Record<string, DecidedStatus>>>(
     {}
   );
+
+  const handleStatusFilterChange = useCallback((event: ChangeEvent<HTMLSelectElement>): void => {
+    const raw = event.target.value;
+    if (raw === ALL_STATUS_VALUE) {
+      setSelectedStatus(undefined);
+      return;
+    }
+    // Schema-validated rather than cast: `raw` only ever equals a value this same <select>
+    // rendered as one of its own <option>s, but that guarantee lives in the render code, not the
+    // type system — re-checking it against the contract avoids asserting it away with `as`.
+    const parsedStatus = ApprovalSchema.shape.status.safeParse(raw);
+    if (parsedStatus.success) setSelectedStatus(parsedStatus.data);
+  }, []);
 
   const decide = useCallback(
     async (approval: ApprovalSummary, decision: Decision): Promise<void> => {
@@ -151,63 +184,79 @@ export function ApprovalInbox({ client }: ApprovalInboxProps): ReactElement {
     [client, refresh]
   );
 
-  if (state.status === "loading" || state.status === "disconnected") {
-    return (
+  // The filter is always visible, independent of `state.status` — a user viewing an empty or
+  // failed status filter must still be able to switch back to one that has data.
+  const statusFilter = (
+    <div className="approval-filter">
+      <label htmlFor={STATUS_FILTER_ID}>Status</label>
+      <select
+        id={STATUS_FILTER_ID}
+        value={selectedStatus ?? ALL_STATUS_VALUE}
+        onChange={handleStatusFilterChange}
+      >
+        <option value={ALL_STATUS_VALUE}>All</option>
+        {ApprovalSchema.shape.status.options.map((status) => (
+          <option key={status} value={status}>
+            {STATUS_PRESENTATION[status].label}
+          </option>
+        ))}
+      </select>
+    </div>
+  );
+
+  const body: ReactElement =
+    state.status === "loading" || state.status === "disconnected" ? (
       <p role="status" aria-label="Loading approvals">
         Loading approvals…
       </p>
-    );
-  }
-
-  if (state.status === "error") {
-    return (
+    ) : state.status === "error" ? (
       <div className="error-state" role="alert">
         <p>{state.message}</p>
         <button type="button" onClick={() => void refresh()}>
           Retry
         </button>
       </div>
-    );
-  }
-
-  if (state.approvals.length === 0) {
-    return (
+    ) : state.approvals.length === 0 ? (
       <div className="empty-state">
         <strong>No approvals</strong>
         <p>{EMPTY_MESSAGE}</p>
       </div>
+    ) : (
+      <>
+        <ul className="approval-list">
+          {state.approvals.map((approval) => {
+            const decidedStatus = decidedOverrides[approval.approvalId];
+            const displayed: ApprovalSummary =
+              decidedStatus === undefined ? approval : { ...approval, status: decidedStatus };
+            const rowErrorMessage = decisionErrors[approval.approvalId];
+            return (
+              <ApprovalRow
+                key={approval.approvalId}
+                approval={displayed}
+                busy={pendingDecisions.has(approval.approvalId)}
+                {...(rowErrorMessage === undefined ? {} : { errorMessage: rowErrorMessage })}
+                onDecide={(decision) => void decide(displayed, decision)}
+              />
+            );
+          })}
+        </ul>
+        {state.paginationMessage === undefined ? null : (
+          <p className="error-state" role="alert">
+            {state.paginationMessage}
+          </p>
+        )}
+        {state.nextCursor === undefined ? null : (
+          <button type="button" disabled={state.loadingMore} onClick={() => void loadMore()}>
+            {state.loadingMore ? "Loading more approvals…" : "Load more approvals"}
+          </button>
+        )}
+      </>
     );
-  }
 
   return (
     <div className="approval-inbox">
-      <ul className="approval-list">
-        {state.approvals.map((approval) => {
-          const decidedStatus = decidedOverrides[approval.approvalId];
-          const displayed: ApprovalSummary =
-            decidedStatus === undefined ? approval : { ...approval, status: decidedStatus };
-          const rowErrorMessage = decisionErrors[approval.approvalId];
-          return (
-            <ApprovalRow
-              key={approval.approvalId}
-              approval={displayed}
-              busy={pendingDecisions.has(approval.approvalId)}
-              {...(rowErrorMessage === undefined ? {} : { errorMessage: rowErrorMessage })}
-              onDecide={(decision) => void decide(displayed, decision)}
-            />
-          );
-        })}
-      </ul>
-      {state.paginationMessage === undefined ? null : (
-        <p className="error-state" role="alert">
-          {state.paginationMessage}
-        </p>
-      )}
-      {state.nextCursor === undefined ? null : (
-        <button type="button" disabled={state.loadingMore} onClick={() => void loadMore()}>
-          {state.loadingMore ? "Loading more approvals…" : "Load more approvals"}
-        </button>
-      )}
+      {statusFilter}
+      {body}
     </div>
   );
 }

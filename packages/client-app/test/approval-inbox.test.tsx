@@ -258,6 +258,60 @@ describe("ApprovalInbox: rejecting and non-conflict failures", () => {
   });
 });
 
+describe("ApprovalInbox: status filter", () => {
+  it(
+    "offers every schema status plus All, sourced from the schema rather than a hand-written list " +
+      "(wrong impl: a hand-written options list)",
+    async () => {
+      const client = makeApprovalsClient();
+      vi.mocked(client.listApprovals).mockResolvedValueOnce({ items: [buildApprovalSummary()] });
+      render(<ApprovalInbox client={client} />);
+
+      await screen.findByRole("listitem");
+
+      const select = screen.getByRole("combobox", { name: /status/i });
+      const optionValues = within(select)
+        .getAllByRole("option")
+        .map((option) => option.getAttribute("value"));
+
+      expect(optionValues).toEqual(["all", ...ApprovalSchema.shape.status.options]);
+    }
+  );
+
+  it("sends the selected status as the query's status filter", async () => {
+    const client = makeApprovalsClient();
+    vi.mocked(client.listApprovals).mockResolvedValue({ items: [] });
+    render(<ApprovalInbox client={client} />);
+    await waitFor(() => expect(client.listApprovals).toHaveBeenCalledTimes(1));
+
+    const select = screen.getByRole("combobox", { name: /status/i });
+    fireEvent.change(select, { target: { value: "approved" } });
+
+    await waitFor(() => expect(client.listApprovals).toHaveBeenCalledTimes(2));
+    expect(client.listApprovals).toHaveBeenLastCalledWith(
+      expect.objectContaining({ status: "approved" }),
+      expect.anything()
+    );
+  });
+
+  it('sends no status filter when "All" is selected', async () => {
+    const client = makeApprovalsClient();
+    vi.mocked(client.listApprovals).mockResolvedValue({ items: [] });
+    render(<ApprovalInbox client={client} />);
+    await waitFor(() => expect(client.listApprovals).toHaveBeenCalledTimes(1));
+
+    const select = screen.getByRole("combobox", { name: /status/i });
+    fireEvent.change(select, { target: { value: "approved" } });
+    await waitFor(() => expect(client.listApprovals).toHaveBeenCalledTimes(2));
+
+    fireEvent.change(select, { target: { value: "all" } });
+    await waitFor(() => expect(client.listApprovals).toHaveBeenCalledTimes(3));
+
+    const lastCall = vi.mocked(client.listApprovals).mock.calls.at(-1);
+    expect(lastCall?.[0]).toEqual({});
+  });
+});
+
 describe("ApprovalInbox: busy row", () => {
   it(
     "disables a row's controls while its decision is in flight, without unmounting the row " +
