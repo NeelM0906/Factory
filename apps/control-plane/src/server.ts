@@ -11,9 +11,9 @@ import {
 } from "@autostack/contracts";
 import { openDatabase, SqliteDurableStore } from "@autostack/db";
 import {
+  createStageRetryAt,
   HandlerRegistry,
-  LocalWorkflowExecutor,
-  type RetryableJobError
+  LocalWorkflowExecutor
 } from "@autostack/workflow";
 
 import { createApp } from "./app.js";
@@ -91,11 +91,7 @@ const waitForListening = (server: Server): Promise<void> => {
   });
 };
 
-const retryAt = (error: RetryableJobError, attempt: number, now: string): string => {
-  void error;
-  const delayMs = Math.min(60_000, 1_000 * 2 ** Math.max(0, attempt - 1));
-  return new Date(Date.parse(now) + delayMs).toISOString();
-};
+const retryAt = createStageRetryAt({ random: Math.random });
 
 export async function startControlPlane(
   options: StartControlPlaneOptions = {}
@@ -152,7 +148,7 @@ export async function startControlPlane(
       leaseDurationMs: 30_000,
       pollIntervalMs: 1_000,
       sensitiveValues,
-      retryAt: (error, job, timestamp) => retryAt(error, job.attempt, timestamp),
+      retryAt,
       reportError: (error, job) => {
         log(
           JSON.stringify({
