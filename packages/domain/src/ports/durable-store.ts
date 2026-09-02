@@ -141,6 +141,7 @@ export interface DurableStore {
   heartbeat(request: HeartbeatRequest): Promise<void>;
   completeJob(request: CompleteJobRequest): Promise<CommitResult>;
   failJob(request: FailJobRequest): Promise<void>;
+  hasLeasedJobForRun(request: RunExistsRequest): Promise<boolean>;
   health(): Promise<StoreHealth>;
   close(): Promise<void>;
 }

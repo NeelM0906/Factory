@@ -5,6 +5,8 @@ import {
   ApiErrorSchema,
   ApprovalDecisionRequestSchema,
   ApprovalDecisionResponseSchema,
+  CancelRunRequestSchema,
+  CancelRunResponseSchema,
   CreateRunRequestSchema,
   HealthResponseSchema,
   ListApprovalsQuerySchema,
@@ -23,11 +25,14 @@ import {
   LocalPrepareResponseSchema,
   LocalStartRequestSchema,
   LocalStartResponseSchema,
+  SteerRunRequestSchema,
+  SteerRunResponseSchema,
   type WorkspaceId
 } from "@autostack/contracts";
 import {
   ApprovalDecisionConflictError,
   IneligibleApproverError,
+  InvalidRunTransitionError,
   OptimisticConcurrencyError,
   StaleApprovalEvidenceError,
   type DurableStore
@@ -35,6 +40,7 @@ import {
 import type { ExecutorStatus } from "@autostack/workflow";
 
 import { ApprovalNotFoundError, ApprovalService, CrossRunApprovalError } from "./approval-service.js";
+import { RunControlService, TerminalRunError } from "./run-control-service.js";
 import { createBearerAuth, createBearerAuthDigest } from "./auth.js";
 import { LocalExecutionService, LocalRunnerUnavailableError } from "./local-execution-service.js";
 import { IdempotencyConflictError, RunNotFoundError, RunService } from "./run-service.js";
@@ -118,6 +124,7 @@ export function createApp(dependencies: CreateAppDependencies): Hono {
   const app = new Hono();
   const service = new RunService(dependencies);
   const approvalService = new ApprovalService(dependencies);
+  const runControlService = new RunControlService(dependencies);
   const auth =
     dependencies.token === undefined
       ? createBearerAuthDigest(dependencies.tokenDigest!)
@@ -217,6 +224,44 @@ export function createApp(dependencies: CreateAppDependencies): Hono {
       body
     );
     return context.json(ApprovalDecisionResponseSchema.parse(response), response.replayed ? 200 : 200);
+  });
+
+  app.post("/v1/runs/:runId/steer", async (context) => {
+    const idempotencyKey = context.req.header("Idempotency-Key")?.trim();
+    if (idempotencyKey === undefined || idempotencyKey === "" || idempotencyKey.length > 200) {
+      throw new HttpProblem(
+        400,
+        "missing_idempotency_key",
+        "A valid Idempotency-Key header is required."
+      );
+    }
+    const rawBody = await readJsonBody(context.req.raw);
+    const body = SteerRunRequestSchema.parse(rawBody);
+    const response = await runControlService.steer(
+      context.req.param("runId"),
+      body,
+      idempotencyKey
+    );
+    return context.json(SteerRunResponseSchema.parse(response));
+  });
+
+  app.post("/v1/runs/:runId/cancel", async (context) => {
+    const idempotencyKey = context.req.header("Idempotency-Key")?.trim();
+    if (idempotencyKey === undefined || idempotencyKey === "" || idempotencyKey.length > 200) {
+      throw new HttpProblem(
+        400,
+        "missing_idempotency_key",
+        "A valid Idempotency-Key header is required."
+      );
+    }
+    const rawBody = await readJsonBody(context.req.raw);
+    const body = CancelRunRequestSchema.parse(rawBody);
+    const response = await runControlService.cancel(
+      context.req.param("runId"),
+      body,
+      idempotencyKey
+    );
+    return context.json(CancelRunResponseSchema.parse(response));
   });
 
   if (mode === "local") {
@@ -367,7 +412,13 @@ export function createApp(dependencies: CreateAppDependencies): Hono {
                               "run_not_found",
                               "The requested approval was not found."
                             )
-                          : new HttpProblem(500, "internal_error", "The request could not be completed.");
+                          : error instanceof TerminalRunError || error instanceof InvalidRunTransitionError
+                            ? new HttpProblem(
+                                409,
+                                "version_conflict",
+                                "The run is in a state that does not allow this operation."
+                              )
+                            : new HttpProblem(500, "internal_error", "The request could not be completed.");
 
     return context.json(
       ApiErrorSchema.parse({ error: { code: problem.code, message: problem.message } }),

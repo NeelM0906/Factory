@@ -472,6 +472,17 @@ export class SqliteDurableStore implements DurableStore {
     });
   }
 
+  async hasLeasedJobForRun(request: RunExistsRequest): Promise<boolean> {
+    const row = this.#connection
+      .prepare(
+        `SELECT 1 AS found FROM workflow_jobs
+         WHERE run_id = ? AND workspace_id = ? AND status = 'leased'
+         LIMIT 1`
+      )
+      .get(request.runId, request.workspaceId) as { found: number } | undefined;
+    return row !== undefined;
+  }
+
   async health(): Promise<StoreHealth> {
     return this.#database.health();
   }
