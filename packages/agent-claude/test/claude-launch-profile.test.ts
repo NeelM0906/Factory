@@ -172,6 +172,19 @@ describe("claude-launch-profile", () => {
       expect(profile.descriptor.adapterId).toBe("claude-code/batch");
       expect(profile.descriptor.kind).toBe("claude");
     });
+
+    it("supports model selection via --model flag", () => {
+      const profile = buildBatchProfile({
+        executable: EXECUTABLE,
+        objective: "test",
+        cwd: "/tmp/workspace",
+        model: "claude-sonnet-4-20250514"
+      });
+
+      const idx = profile.args.indexOf("--model");
+      expect(idx).toBeGreaterThan(-1);
+      expect(profile.args[idx + 1]).toBe("claude-sonnet-4-20250514");
+    });
   });
 
   describe("CLAUDE_AUTH_VARIABLES", () => {

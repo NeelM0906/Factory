@@ -189,6 +189,33 @@ describe("negotiateAcpCapabilities", () => {
     });
   });
 
+  describe("unparseable session result", () => {
+    it("falls back gracefully when session result fails validation", () => {
+      const garbageSession = { sessionId: 42 } as unknown as AcpSessionNewResult;
+      const result = negotiateAcpCapabilities(
+        fullInitResult,
+        garbageSession,
+        { permissionsConfigured: false }
+      );
+      // Should still produce a valid descriptor (init result is valid)
+      expect(result.descriptor.kind).toBe("acp");
+      // configOptions falls back to empty since session parse failed
+      expect(result.selection.modelSelection).toBe(false);
+      expect(result.selection.reasoningSelection).toBe(false);
+    });
+
+    it("permissionModes is empty when session parse fails and permissions configured", () => {
+      const garbageSession = { bad: true } as unknown as AcpSessionNewResult;
+      const result = negotiateAcpCapabilities(
+        fullInitResult,
+        garbageSession,
+        { permissionsConfigured: true }
+      );
+      // session is undefined due to failed parse, so modes is absent
+      expect(result.selection.permissionModes).toEqual([]);
+    });
+  });
+
   describe("distinct adapterId per negotiated profile", () => {
     it("full and minimal profiles have different adapterIds", () => {
       const full = negotiateAcpCapabilities(fullInitResult, fullSessionResult, {
@@ -198,6 +225,17 @@ describe("negotiateAcpCapabilities", () => {
         permissionsConfigured: false
       });
       expect(full.descriptor.adapterId).not.toBe(minimal.descriptor.adapterId);
+    });
+  });
+
+  describe("permissions without modes", () => {
+    it("permissionModes is empty when permissions configured but session has no modes", () => {
+      const result = negotiateAcpCapabilities(
+        fullInitResult,
+        minimalSessionResult,
+        { permissionsConfigured: true }
+      );
+      expect(result.selection.permissionModes).toEqual([]);
     });
   });
 });

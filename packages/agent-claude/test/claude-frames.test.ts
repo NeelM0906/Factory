@@ -62,6 +62,14 @@ describe("claude-frames", () => {
         "system/task_summary"
       );
     });
+
+    it("classifies system frame with no subtype as system/unknown", () => {
+      expect(classifyClaudeFrame({ type: "system" })).toBe("system/unknown");
+    });
+
+    it("classifies frame with no type as unknown", () => {
+      expect(classifyClaudeFrame({})).toBe("unknown");
+    });
   });
 
   describe("schema parsing", () => {

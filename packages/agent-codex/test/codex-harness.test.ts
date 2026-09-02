@@ -281,6 +281,87 @@ describe("codex-harness", () => {
     });
   });
 
+  describe("resume lifecycle", () => {
+    it("rejects resume on exec profile", async () => {
+      harness = createExecHarness("codex-completes");
+      const { AgentResumeRequestSchema } = await import("@autostack/contracts");
+      await expect(
+        (async () => {
+          for await (const _ of harness.resume(
+            AgentResumeRequestSchema.parse({
+              schemaVersion: 1,
+              idempotencyKey: "resume-1",
+              sessionId: SESSION_ID,
+              providerSessionRef: "thread-1",
+              objective: "Continue",
+              inputEvidenceDigests: [DIGEST]
+            })
+          )) {
+            // no-op
+          }
+        })()
+      ).rejects.toThrow(/does not support resume/);
+    });
+  });
+
+  describe("double start", () => {
+    it("rejects a second start call", async () => {
+      harness = createAppServerHarness("codex-completes");
+      const request = buildInvocationRequest();
+      // First start - consume all events
+      for await (const _ of harness.start(request)) {
+        // consume
+      }
+      // Second start should reject
+      await expect(
+        (async () => {
+          for await (const _ of harness.start(request)) {
+            // no-op
+          }
+        })()
+      ).rejects.toThrow(/already started/);
+    });
+  });
+
+  describe("steer on dead session", () => {
+    it("rejects steer when session has exited", async () => {
+      harness = createAppServerHarness("codex-completes");
+      const request = buildInvocationRequest();
+      // Run to completion
+      for await (const _ of harness.start(request)) {
+        // consume
+      }
+      await expect(
+        harness.steer(
+          AgentSteerRequestSchema.parse({
+            schemaVersion: 1,
+            idempotencyKey: "steer-dead",
+            sessionId: SESSION_ID,
+            instruction: "Continue",
+            evidenceDigest: DIGEST
+          })
+        )
+      ).rejects.toThrow(/No active session/);
+    });
+  });
+
+  describe("cancel after dispose", () => {
+    it("rejects cancel when disposed", async () => {
+      harness = createAppServerHarness("codex-completes");
+      await harness.dispose();
+      await expect(
+        harness.cancel(
+          AgentCancelRequestSchema.parse({
+            schemaVersion: 1,
+            idempotencyKey: "cancel-disposed",
+            sessionId: SESSION_ID,
+            reason: "Cleanup"
+          })
+        )
+      ).rejects.toThrow(/disposed/);
+    });
+  });
+
   describe("dispose", () => {
     it("rejects start after dispose", async () => {
       harness = createAppServerHarness("codex-completes");

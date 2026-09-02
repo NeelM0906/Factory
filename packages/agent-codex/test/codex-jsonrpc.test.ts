@@ -96,6 +96,76 @@ describe("codex-jsonrpc", () => {
       expect(notifications).toHaveLength(1);
       expect(notifications[0]!.method).toBe("item/started");
     });
+
+    it("includes emittedAtMs when present (lines 97-98)", () => {
+      const sink = createSink();
+      const notifications: CodexNotification[] = [];
+      const client = new CodexJsonRpcClient(sink.write, (n) => notifications.push(n));
+
+      client.handleFrame({
+        method: "item/started",
+        params: { item: { type: "agentMessage" } },
+        emittedAtMs: 999
+      });
+
+      expect(notifications[0]!.emittedAtMs).toBe(999);
+    });
+
+    it("omits emittedAtMs when not present (lines 93-97)", () => {
+      const sink = createSink();
+      const notifications: CodexNotification[] = [];
+      const client = new CodexJsonRpcClient(sink.write, (n) => notifications.push(n));
+
+      client.handleFrame({
+        method: "item/started",
+        params: { item: { type: "agentMessage" } }
+      });
+
+      expect(notifications).toHaveLength(1);
+      expect(notifications[0]!.method).toBe("item/started");
+      expect(notifications[0]!.emittedAtMs).toBeUndefined();
+    });
+
+    it("omits emittedAtMs when it is not a number (lines 93-97)", () => {
+      const sink = createSink();
+      const notifications: CodexNotification[] = [];
+      const client = new CodexJsonRpcClient(sink.write, (n) => notifications.push(n));
+
+      client.handleFrame({
+        method: "item/started",
+        params: {},
+        emittedAtMs: "not-a-number"
+      });
+
+      expect(notifications).toHaveLength(1);
+      expect(notifications[0]!.emittedAtMs).toBeUndefined();
+    });
+
+    it("defaults params to empty object when missing", () => {
+      const sink = createSink();
+      const notifications: CodexNotification[] = [];
+      const client = new CodexJsonRpcClient(sink.write, (n) => notifications.push(n));
+
+      client.handleFrame({
+        method: "item/started"
+      });
+
+      expect(notifications).toHaveLength(1);
+      expect(notifications[0]!.params).toEqual({});
+    });
+
+    it("does not route when no handler is provided", () => {
+      const sink = createSink();
+      const client = new CodexJsonRpcClient(sink.write);
+
+      // Should not throw even without a notification handler
+      expect(() => {
+        client.handleFrame({
+          method: "item/started",
+          params: { item: { type: "agentMessage" } }
+        });
+      }).not.toThrow();
+    });
   });
 
   describe("unknown response handling", () => {

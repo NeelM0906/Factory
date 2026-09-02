@@ -245,5 +245,304 @@ describe("claude-event-mapper", () => {
       );
       expect(events).toHaveLength(0);
     });
+
+    it("produces no events from unknown frame types (default case)", async () => {
+      const ctx = createContext();
+      const events = await mapClaudeFrame({ type: "future_frame_type" }, ctx);
+      expect(events).toHaveLength(0);
+    });
+  });
+
+  describe("safeParse failure paths", () => {
+    it("returns empty when system/init frame fails parsing", async () => {
+      const ctx = createContext();
+      // system/init without required session_id
+      const events = await mapClaudeFrame(
+        { type: "system", subtype: "init" },
+        ctx
+      );
+      expect(events).toHaveLength(0);
+    });
+
+    it("returns empty when assistant frame fails parsing", async () => {
+      const ctx = createContext();
+      // assistant frame without message
+      const events = await mapClaudeFrame(
+        { type: "assistant" },
+        ctx
+      );
+      expect(events).toHaveLength(0);
+    });
+
+    it("returns empty when user frame fails parsing", async () => {
+      const ctx = createContext();
+      // user frame without message
+      const events = await mapClaudeFrame(
+        { type: "user" },
+        ctx
+      );
+      expect(events).toHaveLength(0);
+    });
+
+    it("returns empty when result frame fails parsing", async () => {
+      const ctx = createContext();
+      // result frame without required fields
+      const events = await mapClaudeFrame(
+        { type: "result" },
+        ctx
+      );
+      expect(events).toHaveLength(0);
+    });
+
+    it("returns empty when permission request frame fails parsing", async () => {
+      const ctx = createContext();
+      // JSON-RPC frame with wrong method
+      const events = await mapClaudeFrame(
+        { jsonrpc: "2.0", method: "tools/call", id: 1, params: {} },
+        ctx
+      );
+      expect(events).toHaveLength(0);
+    });
+  });
+
+  describe("assistant frame edge cases", () => {
+    it("drops text blocks with empty text (sanitized to null)", async () => {
+      const ctx = createContext();
+      const events = await mapClaudeFrame({
+        type: "assistant",
+        message: {
+          role: "assistant",
+          content: [{ type: "text", text: "   " }]
+        }
+      }, ctx);
+      // Empty/whitespace text sanitizes to undefined, so no message event is emitted
+      const messages = events.filter((e) => e.type === "message");
+      expect(messages).toHaveLength(0);
+    });
+
+    it("drops thinking blocks and other unknown block types", async () => {
+      const ctx = createContext();
+      const events = await mapClaudeFrame({
+        type: "assistant",
+        message: {
+          role: "assistant",
+          content: [
+            { type: "thinking", thinking: "internal reasoning" },
+            { type: "server_tool_use", id: "st_1", name: "web_search" }
+          ]
+        }
+      }, ctx);
+      // Neither thinking nor server_tool_use produce events
+      const messages = events.filter((e) => e.type === "message");
+      const toolCalls = events.filter((e) => e.type === "tool_call");
+      expect(messages).toHaveLength(0);
+      expect(toolCalls).toHaveLength(0);
+    });
+
+    it("emits no usage event when assistant message has no usage", async () => {
+      const ctx = createContext();
+      const events = await mapClaudeFrame({
+        type: "assistant",
+        message: {
+          role: "assistant",
+          content: [{ type: "text", text: "Hello" }]
+        }
+      }, ctx);
+      const usageEvents = events.filter((e) => e.type === "usage");
+      expect(usageEvents).toHaveLength(0);
+      // Should still emit the message
+      const messages = events.filter((e) => e.type === "message");
+      expect(messages).toHaveLength(1);
+    });
+
+    it("reports unknown for missing token fields in per-message usage", async () => {
+      const ctx = createContext();
+      const events = await mapClaudeFrame({
+        type: "assistant",
+        message: {
+          role: "assistant",
+          content: [{ type: "text", text: "Hello" }],
+          usage: {}
+        }
+      }, ctx);
+      const usageEvents = events.filter((e) => e.type === "usage");
+      expect(usageEvents).toHaveLength(1);
+      const usage = usageEvents[0]!;
+      if (usage.type === "usage") {
+        expect(usage.tokens.input.state).toBe("unknown");
+        expect(usage.tokens.output.state).toBe("unknown");
+        expect(usage.tokens.cachedInput.state).toBe("unknown");
+        expect(usage.tokens.reasoning.state).toBe("unknown");
+        expect(usage.cost.state).toBe("unknown");
+      }
+    });
+
+    it("falls back to 'unknown' when tool name sanitizes to null", async () => {
+      const ctx = createContext();
+      const events = await mapClaudeFrame({
+        type: "assistant",
+        message: {
+          role: "assistant",
+          content: [{ type: "tool_use", id: "toolu_123", name: "   " }]
+        }
+      }, ctx);
+      const toolCalls = events.filter((e) => e.type === "tool_call");
+      expect(toolCalls).toHaveLength(1);
+      if (toolCalls[0]!.type === "tool_call") {
+        expect(toolCalls[0]!.name).toBe("unknown");
+      }
+    });
+  });
+
+  describe("user frame edge cases", () => {
+    it("skips tool_result blocks without tool_use_id", async () => {
+      const ctx = createContext();
+      const events = await mapClaudeFrame({
+        type: "user",
+        message: {
+          role: "user",
+          content: [{ type: "tool_result", content: "result text" }]
+        }
+      }, ctx);
+      const toolCalls = events.filter((e) => e.type === "tool_call");
+      expect(toolCalls).toHaveLength(0);
+    });
+
+    it("maps tool_result with is_error to tool_call failed", async () => {
+      const ctx = createContext();
+      const events = await mapClaudeFrame({
+        type: "user",
+        message: {
+          role: "user",
+          content: [
+            { type: "tool_result", tool_use_id: "toolu_err", is_error: true, content: "command failed" }
+          ]
+        }
+      }, ctx);
+      const toolCalls = events.filter((e) => e.type === "tool_call");
+      expect(toolCalls).toHaveLength(1);
+      if (toolCalls[0]!.type === "tool_call") {
+        expect(toolCalls[0]!.phase).toBe("failed");
+        expect(toolCalls[0]!.toolCallRef).toBe("toolu_err");
+      }
+    });
+
+    it("skips non-tool_result content blocks", async () => {
+      const ctx = createContext();
+      const events = await mapClaudeFrame({
+        type: "user",
+        message: {
+          role: "user",
+          content: [{ type: "text", text: "user typed something" }]
+        }
+      }, ctx);
+      const toolCalls = events.filter((e) => e.type === "tool_call");
+      expect(toolCalls).toHaveLength(0);
+    });
+  });
+
+  describe("result frame edge cases", () => {
+    it("reports unknown tokens and cost when result has no usage", async () => {
+      const ctx = createContext();
+      const events = await mapClaudeFrame({
+        type: "result",
+        subtype: "success",
+        is_error: false,
+        result: "done"
+      }, ctx);
+      const usageEvents = events.filter((e) => e.type === "usage");
+      expect(usageEvents).toHaveLength(1);
+      const usage = usageEvents[0]!;
+      if (usage.type === "usage") {
+        expect(usage.tokens.input.state).toBe("unknown");
+        expect(usage.tokens.output.state).toBe("unknown");
+        expect(usage.tokens.cachedInput.state).toBe("unknown");
+        expect(usage.tokens.reasoning.state).toBe("unknown");
+        expect(usage.cost.state).toBe("unknown");
+      }
+    });
+
+    it("reports unknown reasoning when thinking_tokens is absent", async () => {
+      const ctx = createContext();
+      const events = await mapClaudeFrame({
+        type: "result",
+        subtype: "success",
+        is_error: false,
+        result: "done",
+        total_cost_usd: 0.01,
+        usage: {
+          input_tokens: 100,
+          output_tokens: 50,
+          cache_read_input_tokens: 10
+        }
+      }, ctx);
+      const usageEvents = events.filter((e) => e.type === "usage");
+      expect(usageEvents).toHaveLength(1);
+      const usage = usageEvents[0]!;
+      if (usage.type === "usage") {
+        expect(usage.tokens.input.state).toBe("reported");
+        expect(usage.tokens.output.state).toBe("reported");
+        expect(usage.tokens.cachedInput.state).toBe("reported");
+        expect(usage.tokens.reasoning.state).toBe("unknown");
+        expect(usage.cost.state).toBe("reported");
+      }
+    });
+
+    it("reports unknown cost when total_cost_usd is absent", async () => {
+      const ctx = createContext();
+      const events = await mapClaudeFrame({
+        type: "result",
+        subtype: "success",
+        is_error: false,
+        result: "done",
+        usage: {
+          input_tokens: 100,
+          output_tokens: 50,
+          output_tokens_details: { thinking_tokens: 10 }
+        }
+      }, ctx);
+      const usageEvents = events.filter((e) => e.type === "usage");
+      expect(usageEvents).toHaveLength(1);
+      const usage = usageEvents[0]!;
+      if (usage.type === "usage") {
+        expect(usage.tokens.reasoning.state).toBe("reported");
+        if (usage.tokens.reasoning.state === "reported") {
+          expect(usage.tokens.reasoning.value).toBe(10);
+        }
+        expect(usage.cost.state).toBe("unknown");
+      }
+    });
+
+    it("uses fallback message when result is_error with non-string result", async () => {
+      const ctx = createContext();
+      const events = await mapClaudeFrame({
+        type: "result",
+        subtype: "error_during_execution",
+        is_error: true,
+        result: { error: "structured error" }
+      }, ctx);
+      const failed = events.find((e) => e.type === "failed");
+      expect(failed).toBeDefined();
+      if (failed?.type === "failed") {
+        expect(failed.message).toContain("error_during_execution");
+      }
+    });
+
+    it("sanitizes error result text in failed message", async () => {
+      const ctx = createContext();
+      const events = await mapClaudeFrame({
+        type: "result",
+        subtype: "error_max_turns",
+        is_error: true,
+        result: "Max turns exceeded"
+      }, ctx);
+      const failed = events.find((e) => e.type === "failed");
+      expect(failed).toBeDefined();
+      if (failed?.type === "failed") {
+        expect(failed.message).toContain("Max turns exceeded");
+        expect(failed.code).toBe("provider_turn_limit");
+        expect(failed.retryable).toBe(false);
+      }
+    });
   });
 });

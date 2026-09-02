@@ -740,3 +740,457 @@ describe("schema validation boundary", () => {
     }
   });
 });
+
+// ---- Frame dispatch: unknown / missing method ----
+
+describe("frame dispatch edge cases", () => {
+  it("drops frames with an unknown notification method", async () => {
+    const ctx = makeContext();
+    const events = await mapAcpFrame(
+      { jsonrpc: "2.0", method: "session/unknown_method", params: {} },
+      ctx
+    );
+    expect(events).toHaveLength(0);
+  });
+
+  it("drops frames with no method and no result/error", async () => {
+    const ctx = makeContext();
+    const events = await mapAcpFrame({ jsonrpc: "2.0" }, ctx);
+    expect(events).toHaveLength(0);
+  });
+
+  it("drops result frames that have no stopReason", async () => {
+    const ctx = makeContext();
+    const events = await mapAcpFrame(
+      { jsonrpc: "2.0", id: 1, result: { sessionId: "sess_abc" } },
+      ctx
+    );
+    expect(events).toHaveLength(0);
+  });
+});
+
+// ---- session/update edge cases ----
+
+describe("session/update edge cases", () => {
+  it("drops when params is missing", async () => {
+    const ctx = makeContext();
+    const events = await mapAcpFrame(
+      { jsonrpc: "2.0", method: "session/update" },
+      ctx
+    );
+    expect(events).toHaveLength(0);
+  });
+
+  it("drops when params.update is missing", async () => {
+    const ctx = makeContext();
+    const events = await mapAcpFrame(
+      { jsonrpc: "2.0", method: "session/update", params: {} },
+      ctx
+    );
+    expect(events).toHaveLength(0);
+  });
+
+  it("emits output for an unknown sessionUpdate type", async () => {
+    const ctx = makeContext();
+    const events = await mapAcpFrame(
+      {
+        jsonrpc: "2.0",
+        method: "session/update",
+        params: {
+          sessionId: "sess_01k9m3q4r5s6t7u8v9w0x1y2",
+          update: {
+            sessionUpdate: "completely_unknown_type",
+            data: { foo: "bar" }
+          }
+        }
+      },
+      ctx
+    );
+    expect(events).toHaveLength(1);
+    expect(events[0]!.type).toBe("output");
+    expect(events[0]).toHaveProperty("stream", "structured");
+    expect(() => AgentSessionStreamEventSchema.parse(events[0]!)).not.toThrow();
+  });
+});
+
+// ---- Empty / null text branches ----
+
+describe("empty text after sanitization → dropped", () => {
+  it("drops agent_message_chunk when text is empty", async () => {
+    const ctx = makeContext();
+    const events = await mapAcpFrame(
+      {
+        jsonrpc: "2.0",
+        method: "session/update",
+        params: {
+          sessionId: "s",
+          update: {
+            sessionUpdate: "agent_message_chunk",
+            content: { type: "text", text: "" }
+          }
+        }
+      },
+      ctx
+    );
+    expect(events).toHaveLength(0);
+  });
+
+  it("drops agent_message_chunk when content has no text field", async () => {
+    const ctx = makeContext();
+    const events = await mapAcpFrame(
+      {
+        jsonrpc: "2.0",
+        method: "session/update",
+        params: {
+          sessionId: "s",
+          update: {
+            sessionUpdate: "agent_message_chunk",
+            content: { type: "text" }
+          }
+        }
+      },
+      ctx
+    );
+    expect(events).toHaveLength(0);
+  });
+
+  it("drops agent_thought_chunk when text is whitespace-only", async () => {
+    const ctx = makeContext();
+    const events = await mapAcpFrame(
+      {
+        jsonrpc: "2.0",
+        method: "session/update",
+        params: {
+          sessionId: "s",
+          update: {
+            sessionUpdate: "agent_thought_chunk",
+            content: { type: "text", text: "   " }
+          }
+        }
+      },
+      ctx
+    );
+    expect(events).toHaveLength(0);
+  });
+
+  it("drops user_message_chunk when text is empty", async () => {
+    const ctx = makeContext();
+    const events = await mapAcpFrame(
+      {
+        jsonrpc: "2.0",
+        method: "session/update",
+        params: {
+          sessionId: "s",
+          update: {
+            sessionUpdate: "user_message_chunk",
+            content: { type: "text", text: "" }
+          }
+        }
+      },
+      ctx
+    );
+    expect(events).toHaveLength(0);
+  });
+
+  it("drops stderr when text is empty", async () => {
+    const ctx = makeContext();
+    const events = await mapAcpFrame({ kind: "stderr", text: "" }, ctx);
+    expect(events).toHaveLength(0);
+  });
+});
+
+// ---- tool_call edge cases ----
+
+describe("tool_call edge cases", () => {
+  it("drops tool_call when toolCallId is missing", async () => {
+    const ctx = makeContext();
+    const events = await mapAcpFrame(
+      {
+        jsonrpc: "2.0",
+        method: "session/update",
+        params: {
+          sessionId: "s",
+          update: {
+            sessionUpdate: "tool_call",
+            title: "Read file",
+            kind: "read",
+            status: "in_progress"
+          }
+        }
+      },
+      ctx
+    );
+    expect(events).toHaveLength(0);
+  });
+
+  it("drops tool_call when title is missing", async () => {
+    const ctx = makeContext();
+    const events = await mapAcpFrame(
+      {
+        jsonrpc: "2.0",
+        method: "session/update",
+        params: {
+          sessionId: "s",
+          update: {
+            sessionUpdate: "tool_call",
+            toolCallId: "call_no_title",
+            kind: "read",
+            status: "in_progress"
+          }
+        }
+      },
+      ctx
+    );
+    expect(events).toHaveLength(0);
+  });
+});
+
+// ---- tool_call_update edge cases ----
+
+describe("tool_call_update edge cases", () => {
+  it("drops tool_call_update when toolCallId is missing", async () => {
+    const ctx = makeContext();
+    const events = await mapAcpFrame(
+      {
+        jsonrpc: "2.0",
+        method: "session/update",
+        params: {
+          sessionId: "s",
+          update: {
+            sessionUpdate: "tool_call_update",
+            status: "completed",
+            content: []
+          }
+        }
+      },
+      ctx
+    );
+    expect(events).toHaveLength(0);
+  });
+
+  it("maps tool_call_update with status 'failed' to phase 'failed'", async () => {
+    const ctx = makeContext();
+    const events = await mapAcpFrame(
+      {
+        jsonrpc: "2.0",
+        method: "session/update",
+        params: {
+          sessionId: "s",
+          update: {
+            sessionUpdate: "tool_call_update",
+            toolCallId: "call_failed",
+            status: "failed",
+            content: []
+          }
+        }
+      },
+      ctx
+    );
+    expect(events).toHaveLength(1);
+    expect(events[0]!.type).toBe("tool_call");
+    expect(events[0]).toHaveProperty("phase", "failed");
+  });
+
+  it("maps unknown status to phase 'completed' by default", async () => {
+    const ctx = makeContext();
+    const events = await mapAcpFrame(
+      {
+        jsonrpc: "2.0",
+        method: "session/update",
+        params: {
+          sessionId: "s",
+          update: {
+            sessionUpdate: "tool_call_update",
+            toolCallId: "call_weird",
+            status: "something_unexpected"
+          }
+        }
+      },
+      ctx
+    );
+    expect(events).toHaveLength(1);
+    expect(events[0]!.type).toBe("tool_call");
+    expect(events[0]).toHaveProperty("phase", "completed");
+  });
+
+  it("emits only tool_call when content is null", async () => {
+    const ctx = makeContext();
+    const events = await mapAcpFrame(
+      {
+        jsonrpc: "2.0",
+        method: "session/update",
+        params: {
+          sessionId: "s",
+          update: {
+            sessionUpdate: "tool_call_update",
+            toolCallId: "call_no_content",
+            status: "completed"
+          }
+        }
+      },
+      ctx
+    );
+    expect(events).toHaveLength(1);
+    expect(events[0]!.type).toBe("tool_call");
+    expect(events[0]).toHaveProperty("phase", "completed");
+  });
+
+  it("skips diff items with no path", async () => {
+    const ctx = makeContext();
+    const events = await mapAcpFrame(
+      {
+        jsonrpc: "2.0",
+        method: "session/update",
+        params: {
+          sessionId: "s",
+          update: {
+            sessionUpdate: "tool_call_update",
+            toolCallId: "call_no_path",
+            status: "completed",
+            content: [{ type: "diff", oldText: "a", newText: "b" }]
+          }
+        }
+      },
+      ctx
+    );
+    const fileChanges = events.filter(e => e.type === "file_change");
+    expect(fileChanges).toHaveLength(0);
+    expect(events.some(e => e.type === "tool_call")).toBe(true);
+  });
+
+  it("skips non-diff content items", async () => {
+    const ctx = makeContext();
+    const events = await mapAcpFrame(
+      {
+        jsonrpc: "2.0",
+        method: "session/update",
+        params: {
+          sessionId: "s",
+          update: {
+            sessionUpdate: "tool_call_update",
+            toolCallId: "call_non_diff",
+            status: "completed",
+            content: [
+              { type: "content", content: { type: "text", text: "result" } },
+              { type: "image", data: "base64..." }
+            ]
+          }
+        }
+      },
+      ctx
+    );
+    const fileChanges = events.filter(e => e.type === "file_change");
+    expect(fileChanges).toHaveLength(0);
+    expect(events.some(e => e.type === "tool_call")).toBe(true);
+  });
+});
+
+// ---- classifyChange: deleted case ----
+
+describe("file deletion detection", () => {
+  it("maps oldText present / newText null to change: deleted", async () => {
+    const ctx = makeContext();
+    const events = await mapAcpFrame(
+      {
+        jsonrpc: "2.0",
+        method: "session/update",
+        params: {
+          sessionId: "s",
+          update: {
+            sessionUpdate: "tool_call_update",
+            toolCallId: "call_delete",
+            status: "completed",
+            content: [{
+              type: "diff",
+              path: "/tmp/agent-workspace/old-file.txt",
+              oldText: "old content",
+              newText: null
+            }]
+          }
+        }
+      },
+      ctx
+    );
+    const fileChanges = events.filter(e => e.type === "file_change");
+    expect(fileChanges).toHaveLength(1);
+    expect(fileChanges[0]).toHaveProperty("change", "deleted");
+  });
+});
+
+// ---- plan edge case: missing entries ----
+
+describe("plan edge cases", () => {
+  it("drops plan when entries is missing", async () => {
+    const ctx = makeContext();
+    const events = await mapAcpFrame(
+      {
+        jsonrpc: "2.0",
+        method: "session/update",
+        params: {
+          sessionId: "s",
+          update: { sessionUpdate: "plan" }
+        }
+      },
+      ctx
+    );
+    expect(events).toHaveLength(0);
+  });
+});
+
+// ---- session/request_permission edge cases ----
+
+describe("session/request_permission edge cases", () => {
+  it("drops when params is missing", async () => {
+    const ctx = makeContext();
+    const events = await mapAcpFrame(
+      { jsonrpc: "2.0", method: "session/request_permission" },
+      ctx
+    );
+    expect(events).toHaveLength(0);
+  });
+
+  it("drops when toolCall is missing", async () => {
+    const ctx = makeContext();
+    const events = await mapAcpFrame(
+      {
+        jsonrpc: "2.0",
+        method: "session/request_permission",
+        params: {
+          options: [{ optionId: "a", name: "Allow", kind: "allow_once" }]
+        }
+      },
+      ctx
+    );
+    expect(events).toHaveLength(0);
+  });
+
+  it("drops when options is missing", async () => {
+    const ctx = makeContext();
+    const events = await mapAcpFrame(
+      {
+        jsonrpc: "2.0",
+        method: "session/request_permission",
+        params: {
+          toolCall: { toolCallId: "c1", title: "Write" }
+        }
+      },
+      ctx
+    );
+    expect(events).toHaveLength(0);
+  });
+});
+
+// ---- JSON-RPC error edge cases ----
+
+describe("JSON-RPC error edge cases", () => {
+  it("uses defaults when error has no code or message", async () => {
+    const ctx = makeContext();
+    const events = await mapAcpFrame(
+      { jsonrpc: "2.0", id: 1, error: {} },
+      ctx
+    );
+    expect(events).toHaveLength(1);
+    expect(events[0]!.type).toBe("failed");
+    expect(() => AgentSessionStreamEventSchema.parse(events[0]!)).not.toThrow();
+  });
+});

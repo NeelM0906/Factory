@@ -68,4 +68,28 @@ describe("availability", () => {
       expect(typeof result.detail).toBe("string");
     }
   });
+
+  it("omits detail when probe produces no output", async () => {
+    // /usr/bin/true exits 0 with no stdout/stderr, so detail is undefined
+    const result = await probeClaudeAvailability({
+      executable: "/usr/bin/true",
+      timeoutMs: 5_000
+    });
+    expect(result.installed).toBe(true);
+    expect(result.authenticated).toBe(true);
+    expect(result.detail).toBeUndefined();
+  });
+
+  it("reports not installed with detail for non-ENOENT spawn errors", async () => {
+    // /dev/null exists but is not executable, so spawn throws EACCES
+    const result = await probeClaudeAvailability({
+      executable: "/dev/null",
+      timeoutMs: 5_000
+    });
+    expect(result.installed).toBe(false);
+    expect(result.authenticated).toBe(false);
+    // The detail should contain the sanitized error message (not "not found")
+    expect(result.detail).toBeDefined();
+    expect(result.detail).not.toContain("not found");
+  });
 });
