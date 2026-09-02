@@ -29,6 +29,8 @@ export interface ChildSessionOptions {
   readonly progressTimeoutMs: number;
   /** Grace period in milliseconds before SIGKILL escalation. */
   readonly terminationGraceMs: number;
+  /** Minimum wall-clock time quiesce() waits while the child is alive (default 200ms). */
+  readonly quiesceFloorMs?: number;
 }
 
 export type ChildSessionEvent =
@@ -300,6 +302,71 @@ export class ChildSession {
         clearInterval(interval);
       }, timeoutMs + 100);
     });
+  }
+
+  /**
+   * Quiesce: wait until the transport is genuinely idle.
+   *
+   * The algorithm (from the plan):
+   * 1. Loop, recording (observedBytes, emittedFrames) at each turn:
+   *    - await one full event-loop iteration reaching the poll phase
+   *      (setTimeout(0) for timers phase, then setImmediate for check phase;
+   *       setImmediate alone skips poll entirely, where socket readable data arrives)
+   *    - continue while any counter changed since the previous turn
+   * 2. Require two consecutive no-change turns.
+   * 3. While the child is alive, do not resolve before the wall-clock floor.
+   * 4. Bound the total turns and wall clock.
+   */
+  async quiesce(): Promise<void> {
+    const floorMs = this.#options.quiesceFloorMs ?? 200;
+    const maxTurns = 200;
+    const maxWallMs = 10_000;
+
+    const start = Date.now();
+    let stableTurns = 0;
+    let turns = 0;
+    let prevBytes = this.#observedBytes;
+    let prevFrames = this.#emittedFrames;
+
+    while (turns < maxTurns) {
+      if (Date.now() - start > maxWallMs) {
+        throw new Error("quiesce() exceeded its wall-clock bound.");
+      }
+
+      // One full event-loop iteration reaching the poll phase:
+      // setTimeout(0) fires in the timers phase; setImmediate fires in the check phase.
+      // Between timers and check, the event loop services the poll phase, where socket
+      // readable data (child stdout) arrives.
+      await new Promise<void>((resolve) => setTimeout(resolve, 0));
+      await new Promise<void>((resolve) => setImmediate(resolve));
+
+      turns++;
+
+      const currentBytes = this.#observedBytes;
+      const currentFrames = this.#emittedFrames;
+
+      if (currentBytes !== prevBytes || currentFrames !== prevFrames) {
+        stableTurns = 0;
+        prevBytes = currentBytes;
+        prevFrames = currentFrames;
+      } else {
+        stableTurns++;
+      }
+
+      // Require two consecutive no-change turns
+      if (stableTurns >= 2) {
+        // If the child is still alive, enforce the wall-clock floor
+        if (!this.#exited) {
+          const elapsed = Date.now() - start;
+          if (elapsed < floorMs) {
+            await new Promise<void>((resolve) => setTimeout(resolve, floorMs - elapsed));
+          }
+        }
+        return;
+      }
+    }
+
+    throw new Error("quiesce() exceeded its turn limit.");
   }
 
   /** Async iterator for consuming events from the session. */
