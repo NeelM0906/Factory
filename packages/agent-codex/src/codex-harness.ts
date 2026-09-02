@@ -313,9 +313,14 @@ export class CodexHarness implements AgentHarnessPort {
       this.#injectedEvents.push(messageEvent);
     }
 
-    // Send turn/steer to Codex
-    await this.#rpcClient!.request("turn/steer", {
-      instruction: request.instruction
+    // Send turn/steer to Codex — fire-and-forget. The response (if any)
+    // arrives asynchronously via the streaming loop. We must not await
+    // the RPC response here because the streaming generator is the one
+    // that calls handleFrame, and it is paused while the caller awaits us.
+    await this.#writeJson({
+      jsonrpc: "2.0",
+      method: "turn/steer",
+      params: { instruction: request.instruction }
     });
   }
 
