@@ -15,8 +15,6 @@ import {
   digestEnvironmentAuthorization,
   digestPlanDocument,
   digestPublishScope,
-  digestReviewReport,
-  digestVerificationReport,
   digestVersionedValue,
   type Actor,
   type Approval,
@@ -89,7 +87,8 @@ const CONFIGURATION: ProjectExecutionConfiguration = {
   resourceLimits: { cpu: 2, memoryMb: 4_096, durationSeconds: 900 },
   allowedPermissionKinds: ["filesystem_write", "network_egress"],
   allowedCredentialRefIds: [],
-  eligibleApproverIds: ["local-user"]
+  eligibleApproverIds: ["local-user"],
+  repositoryFullName: REPOSITORY_FULL_NAME
 };
 
 const VERIFICATION_COMMANDS: VerificationCommand[] = [
@@ -356,7 +355,6 @@ const publishingRun = async (): Promise<readonly StoredDomainEvent[]> => {
   const publishApprovalEvidence = await buildPublishApprovalEvidence();
   const approval = await buildApproval();
   const planDocument = await buildPlanDocument();
-  const publishScope = await buildPublishScope();
   return [
     stored(
       "run.created",
@@ -496,8 +494,7 @@ const publishingRun = async (): Promise<readonly StoredDomainEvent[]> => {
         runId: RUN_ID,
         jobId: JOB_ID,
         attempt: 1,
-        evidence: publishApprovalEvidence,
-        document: { kind: "publish_scope", scope: publishScope }
+        evidence: publishApprovalEvidence
       },
       { kind: "run", id: RUN_ID },
       18

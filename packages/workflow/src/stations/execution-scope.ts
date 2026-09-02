@@ -41,7 +41,9 @@ export const ProjectExecutionConfigurationSchema = z
     resourceLimits: ResourceLimitsSchema,
     allowedPermissionKinds: z.array(PlanPermissionKindSchema).max(PLAN_PERMISSION_KINDS.length),
     allowedCredentialRefIds: z.array(CredentialRefIdSchema).max(128),
-    eligibleApproverIds: z.array(z.string().trim().min(1).max(240)).min(1).max(200)
+    eligibleApproverIds: z.array(z.string().trim().min(1).max(240)).min(1).max(200),
+    /** GitHub `owner/repo` name — required by the publish station for the draft-PR scope. */
+    repositoryFullName: z.string().regex(/^[^/\s]+\/[^/\s]+$/).optional()
   })
   .strict();
 
