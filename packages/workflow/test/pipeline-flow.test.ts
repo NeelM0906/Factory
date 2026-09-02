@@ -16,12 +16,10 @@ import { afterEach, describe, expect, it } from "vitest";
 import {
   ArtifactDescriptorSchema,
   ArtifactIdSchema,
-  CommandIdSchema,
   SourceAuthorizationPolicySchema,
   WorkspaceIdSchema,
   createIdFactory,
   digestExecutionScope,
-  digestPlanDocument,
   digestPublishScope,
   digestVersionedValue,
   type AgentHarnessPort,
@@ -184,53 +182,6 @@ const implementScript: FakeHarnessScript = [
   },
   { kind: "emit", event: { type: "completed", evidenceDigests: [digestOf("e")] } }
 ];
-
-const verifyHarnessScript: FakeHarnessScript = [
-  { kind: "emit", event: { type: "started" } },
-  { kind: "emit", event: { type: "completed", evidenceDigests: [digestOf("e")] } }
-];
-
-const publishHarnessScript: FakeHarnessScript = [
-  { kind: "emit", event: { type: "started" } },
-  { kind: "emit", event: { type: "completed", evidenceDigests: [digestOf("e")] } }
-];
-
-// ---------------------------------------------------------------------------
-// Multi-session harness: one harness that handles start() across stations
-// ---------------------------------------------------------------------------
-
-const createMultiSessionHarness = (
-  scripts: readonly FakeHarnessScript[],
-  now: () => string
-): AgentHarnessPort => {
-  let sessionIndex = 0;
-  const inners: AgentHarnessPort[] = scripts.map((script) =>
-    createFakeAgentHarness({ script, now, providerSessionRef: () => "provider-session" })
-  );
-
-  return {
-    descriptor: inners[0]!.descriptor,
-    start: (request: AgentInvocationRequest): AsyncIterable<AgentSessionStreamEvent> => {
-      const index = sessionIndex++;
-      if (index >= inners.length) {
-        throw new Error(`Multi-session harness exhausted: no script for session ${index}.`);
-      }
-      return inners[index]!.start(request);
-    },
-    resume: (request) => {
-      if (sessionIndex === 0) throw new Error("No session to resume.");
-      return inners[sessionIndex - 1]!.resume(request);
-    },
-    steer: async (request) => {
-      if (sessionIndex === 0) throw new Error("No session to steer.");
-      return inners[sessionIndex - 1]!.steer(request);
-    },
-    cancel: async (request) => {
-      if (sessionIndex === 0) throw new Error("No session to cancel.");
-      return inners[sessionIndex - 1]!.cancel(request);
-    }
-  };
-};
 
 // ---------------------------------------------------------------------------
 // Runner: supports inspectRepository, prepareEnvironment, startCommand,
@@ -593,7 +544,6 @@ describe("pipeline end-to-end flow", () => {
 
     // Stage 1: TRIAGE
     const triageResult = await executor.runOnce();
-    if (triageResult === "failed") console.error("TRIAGE ERRORS:", JSON.stringify(errors, null, 2));
     expect(triageResult).toBe("completed");
 
     // Stage 2: PLAN
@@ -717,7 +667,6 @@ describe("pipeline end-to-end flow", () => {
 
     // Stage 3: IMPLEMENT
     const implementResult = await executor.runOnce();
-    if (implementResult === "failed") console.error("IMPLEMENT ERRORS:", JSON.stringify(errors, null, 2));
     expect(implementResult).toBe("completed");
 
     // Stage 4: VERIFY
@@ -732,7 +681,6 @@ describe("pipeline end-to-end flow", () => {
 
     // Stage 5: REVIEW
     const reviewResult = await executor.runOnce();
-    if (reviewResult === "failed") console.error("REVIEW ERRORS:", JSON.stringify(errors, null, 2));
     expect(reviewResult).toBe("completed");
 
     // After review: run is in awaiting_publish_approval with no queued jobs.
@@ -754,13 +702,6 @@ describe("pipeline end-to-end flow", () => {
           occurredAt: event.occurredAt
         }).run;
       }
-    }
-    // Debug: show all transitions
-    const allTransitions = eventsAfterReview
-      .filter((e) => e.type === "run.transitioned" && e.stream.id === runId)
-      .map((e) => `${(e.payload as any).from} -> ${(e.payload as any).to}: ${(e.payload as any).reason}`);
-    if (runAfterReview.status !== "awaiting_publish_approval") {
-      console.error("RUN STATUS:", runAfterReview.status, "\nTRANSITIONS:", allTransitions);
     }
     expect(runAfterReview.status).toBe("awaiting_publish_approval");
 
