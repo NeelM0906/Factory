@@ -375,6 +375,7 @@ export class ClaudeHarness implements AgentHarnessPort {
         const mapped = await this.#handleStdout(event.line, ctx);
         for (const e of mapped) {
           this.#trackEvidence(e);
+          this.#syncPermissionDigest(e);
           yield e;
 
           if (e.type === "completed" || e.type === "failed" || e.type === "cancelled") {
@@ -524,6 +525,25 @@ export class ClaudeHarness implements AgentHarnessPort {
   #trackEvidence(event: AgentSessionStreamEvent): void {
     if (EVIDENCE_TYPES.has(event.type)) {
       this.#hasEvidence = true;
+    }
+  }
+
+  /**
+   * Sync the evidence digest from a permission_requested event to the captured
+   * pending permission. The mapper records evidence and generates the real digest;
+   * the capture sets a placeholder. This keeps them consistent so
+   * admitAgentPermissionResponse's digest check passes.
+   */
+  #syncPermissionDigest(event: AgentSessionStreamEvent): void {
+    if (
+      event.type === "permission_requested" &&
+      this.#pendingPermission != null &&
+      this.#pendingPermission.permissionRef === event.permissionRef
+    ) {
+      this.#pendingPermission = {
+        ...this.#pendingPermission,
+        evidenceDigest: event.evidenceDigest
+      } as AgentPermissionRequest;
     }
   }
 
