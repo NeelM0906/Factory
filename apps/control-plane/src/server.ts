@@ -9,14 +9,17 @@ import {
   createIdFactory,
   type ControlPlaneBootstrap
 } from "@autostack/contracts";
-import { openDatabase, SqliteDurableStore } from "@autostack/db";
+import { createSqliteIngressQueue, openDatabase, SqliteDurableStore } from "@autostack/db";
 import {
   createStageRetryAt,
   HandlerRegistry,
-  LocalWorkflowExecutor
+  LocalWorkflowExecutor,
+  registerPipelineStations,
+  type RegisterPipelineStationsDependencies
 } from "@autostack/workflow";
 
 import { createApp } from "./app.js";
+import { createChannelBindingStore, type ChannelBindingStore } from "./channel-binding-store.js";
 import { CommandReconciler } from "./command-reconciler.js";
 import {
   createControlPlaneDesktopDispatcher,
@@ -32,6 +35,8 @@ import { publishControlPlaneReadiness, type ReadinessWriter } from "./readiness.
 import { CommandReconciliationSupervisor } from "./reconciliation-supervisor.js";
 import { ControlPlaneShutdown } from "./shutdown.js";
 
+export { createChannelBindingStore } from "./channel-binding-store.js";
+export type { ChannelBindingStore } from "./channel-binding-store.js";
 export { createControlPlaneDesktopDispatcher } from "./desktop-dispatcher.js";
 export type {
   ControlPlaneDesktopDispatcher,
@@ -52,6 +57,13 @@ export interface StartControlPlaneOptions {
   readonly hostFetch?: typeof globalThis.fetch;
   readonly readinessWriter?: ReadinessWriter;
   readonly repositoryPaths?: ControlPlaneDesktopDispatcherDependencies["repositoryPaths"];
+  /**
+   * When provided, registers the six pipeline station handlers on the internal `HandlerRegistry`
+   * so that the `LocalWorkflowExecutor` can drive triage → plan → implement → verify → review →
+   * publish. The caller (typically the desktop runtime) is responsible for constructing the
+   * concrete `AgentHarnessPort`, `RunnerProvider`, and `DeliveryIntegrationPort`.
+   */
+  readonly pipelineStations?: RegisterPipelineStationsDependencies;
 }
 
 export interface ControlPlaneRuntime {
@@ -59,6 +71,8 @@ export interface ControlPlaneRuntime {
   readonly executor: LocalWorkflowExecutor;
   readonly localExecution?: LocalExecutionService;
   readonly desktopDispatcher?: ControlPlaneDesktopDispatcher;
+  readonly ingressQueue: import("@autostack/db").IngressQueue;
+  readonly channelBindings: ChannelBindingStore;
   quiesce(): Promise<void>;
   drain(): Promise<void>;
   retireHostGeneration(): Promise<void>;
@@ -140,6 +154,11 @@ export async function startControlPlane(
     const sensitiveValues =
       bootstrap === undefined ? [effectiveConfig.token] : [bootstrap.hostToken];
     const registry = new HandlerRegistry({ sensitiveValues });
+    if (options.pipelineStations !== undefined) {
+      registerPipelineStations(registry, options.pipelineStations);
+    }
+    const ingressQueue = createSqliteIngressQueue(database.connection);
+    const channelBindings = createChannelBindingStore();
     const runtimeExecutor = new LocalWorkflowExecutor({
       store,
       registry,
@@ -208,6 +227,7 @@ export async function startControlPlane(
         : { tokenDigest: bootstrap.apiTokenDigest }),
       workspaceId,
       now,
+      ids: { job: ids.job },
       mode: localExecution === undefined ? "hosted" : "local",
       ...(localExecution === undefined ? {} : { localExecution }),
       ingress: { isOpen: () => ingressOpen }
@@ -287,6 +307,8 @@ export async function startControlPlane(
     return {
       app,
       executor: runtimeExecutor,
+      ingressQueue,
+      channelBindings,
       ...(localExecution === undefined ? {} : { localExecution }),
       ...(desktopDispatcher === undefined ? {} : { desktopDispatcher }),
       quiesce: () => shutdown.quiesce(),

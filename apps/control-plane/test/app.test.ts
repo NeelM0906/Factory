@@ -77,7 +77,7 @@ describe("control-plane health", () => {
       service: "autostack-control-plane",
       version: "0.1.0",
       status: "ok",
-      storage: { status: "ok", journalMode: "wal", schemaVersion: 4 },
+      storage: { status: "ok", journalMode: "wal", schemaVersion: 5 },
       executor: { status: "idle" }
     });
     expect(JSON.stringify(health)).not.toContain("sqlite");

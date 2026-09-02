@@ -69,7 +69,10 @@ export class ApprovalService {
       limit: 10_000
     });
     const projected = projectApprovals(events);
-    const filtered = projected.filter((entry) => entry.approval.status === query.status);
+    const filtered =
+      query.status === "all"
+        ? projected
+        : projected.filter((entry) => entry.approval.status === query.status);
 
     // Paginate: items after the cursor, limited to the requested page size.
     const actualStart =

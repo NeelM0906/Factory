@@ -223,6 +223,33 @@ describe("approval inbox (GET /v1/approvals)", () => {
     expect(kinds).toEqual(["permission", "plan"]);
     await store.close();
   });
+
+  it("returns all approvals regardless of status when status=all", async () => {
+    const { authenticated, store, createRun, seedApproval } = await makeHarness();
+    const { runId } = await createRun("Build the foundation");
+    const { approvalId: decidedId, evidenceDigest } = await seedApproval(runId, "plan");
+    await seedApproval(runId, "permission");
+
+    // Decide one approval so we have both pending and approved items.
+    await authenticated(`/v1/runs/${runId}/approvals/${decidedId}/decision`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        decision: "approved",
+        evidenceDigest,
+        origin: "desktop"
+      })
+    });
+
+    const response = await authenticated("/v1/approvals?status=all");
+    expect(response.status).toBe(200);
+    const body = ListApprovalsResponseSchema.parse(await response.json());
+    // Both the decided (approved) and the still-pending approval must appear.
+    expect(body.items).toHaveLength(2);
+    const statuses = body.items.map((item) => item.status).sort();
+    expect(statuses).toEqual(["approved", "pending"]);
+    await store.close();
+  });
 });
 
 // ---------------------------------------------------------------------------

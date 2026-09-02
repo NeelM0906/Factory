@@ -477,7 +477,7 @@ describe("local surface availability", () => {
   it("keeps health reachable while ingress is closed", async () => {
     const app = createApp({
       store: {
-        health: async () => ({ status: "ok", journalMode: "wal", schemaVersion: 4 })
+        health: async () => ({ status: "ok", journalMode: "wal", schemaVersion: 5 })
       } as never,
       executor: { getStatus: () => "idle" as const },
       token: TOKEN,

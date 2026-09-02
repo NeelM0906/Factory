@@ -28,13 +28,13 @@ afterEach(async () => {
 });
 
 describe("AutoStack SQLite database", () => {
-  it("opens a file in WAL mode with foreign keys and schema version 4", async () => {
+  it("opens a file in WAL mode with foreign keys and schema version 5", async () => {
     const database = openDatabase({ filePath: await temporaryDatabasePath() });
 
     expect(database.health()).toEqual({
       status: "ok",
       journalMode: "wal",
-      schemaVersion: 4
+      schemaVersion: 5
     });
     expect(database.connection.prepare("PRAGMA foreign_keys").get()).toEqual({ foreign_keys: 1 });
 
@@ -50,6 +50,7 @@ describe("AutoStack SQLite database", () => {
     expect(rows.map(({ name }) => name)).toEqual([
       "events",
       "idempotency_records",
+      "ingress_queue",
       "run_summaries",
       "schema_migrations",
       "sqlite_sequence",
@@ -67,7 +68,7 @@ describe("AutoStack SQLite database", () => {
       .prepare("SELECT COUNT(*) AS count FROM schema_migrations")
       .get() as { count: number };
 
-    expect(row.count).toBe(4);
+    expect(row.count).toBe(5);
     reopened.close();
   });
 
@@ -97,7 +98,7 @@ describe("AutoStack SQLite database", () => {
     const columns = upgraded.connection
       .prepare("PRAGMA table_info(idempotency_records)")
       .all() as Array<{ name: string }>;
-    expect(upgraded.health().schemaVersion).toBe(4);
+    expect(upgraded.health().schemaVersion).toBe(5);
     expect(columns.map(({ name }) => name)).toEqual(
       expect.arrayContaining([
         "operation_kind",
@@ -131,13 +132,13 @@ describe("AutoStack SQLite database", () => {
     database.connection.exec("CREATE TABLE concurrent_migration_probe (id TEXT PRIMARY KEY)");
     database.connection
       .prepare("INSERT INTO schema_migrations (version, name, applied_at) VALUES (?, ?, ?)")
-      .run(5, "concurrent_test_migration", "2026-08-20T12:00:00.000Z");
+      .run(6, "concurrent_test_migration", "2026-08-20T12:00:00.000Z");
     database.connection.exec("COMMIT");
 
     expect(await nextMessage()).toEqual({ status: "completed" });
     expect(
       database.connection
-        .prepare("SELECT COUNT(*) AS count FROM schema_migrations WHERE version = 5")
+        .prepare("SELECT COUNT(*) AS count FROM schema_migrations WHERE version = 6")
         .get()
     ).toEqual({ count: 1 });
     await worker.terminate();
@@ -269,7 +270,7 @@ describe("AutoStack SQLite database", () => {
   it("rolls back every statement from a failed migration", async () => {
     const database = openDatabase({ filePath: await temporaryDatabasePath() });
     const invalidMigration: Migration = {
-      version: 5,
+      version: 6,
       name: "invalid_test_migration",
       statements: ["CREATE TABLE migration_probe (id TEXT PRIMARY KEY)", "THIS IS NOT VALID SQL"]
     };
@@ -285,7 +286,7 @@ describe("AutoStack SQLite database", () => {
       .prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'migration_probe'")
       .get();
 
-    expect(version.version).toBe(4);
+    expect(version.version).toBe(5);
     expect(probe).toBeUndefined();
     database.close();
   });

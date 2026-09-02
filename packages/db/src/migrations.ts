@@ -99,6 +99,21 @@ export const MIGRATIONS: readonly Migration[] = [
       `CREATE INDEX run_summaries_workspace_page_idx
         ON run_summaries (workspace_id, last_global_sequence DESC)`
     ]
+  },
+  {
+    version: 5,
+    name: "ingress_queue",
+    statements: [
+      `CREATE TABLE ingress_queue (
+        rowid INTEGER PRIMARY KEY AUTOINCREMENT,
+        envelope_id TEXT NOT NULL,
+        payload_json TEXT NOT NULL,
+        enqueued_at TEXT NOT NULL,
+        status TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending', 'processing'))
+      )`,
+      `CREATE INDEX ingress_queue_pending_idx
+        ON ingress_queue (status, rowid) WHERE status = 'pending'`
+    ]
   }
 ] as const;
 

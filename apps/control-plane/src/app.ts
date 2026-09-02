@@ -2,6 +2,8 @@ import { Hono } from "hono";
 import { ZodError } from "zod";
 
 import {
+  AnswerClarificationRequestSchema,
+  AnswerClarificationResponseSchema,
   ApiErrorSchema,
   ApprovalDecisionRequestSchema,
   ApprovalDecisionResponseSchema,
@@ -27,6 +29,7 @@ import {
   LocalStartResponseSchema,
   SteerRunRequestSchema,
   SteerRunResponseSchema,
+  type IdFactory,
   type WorkspaceId
 } from "@autostack/contracts";
 import {
@@ -40,6 +43,7 @@ import {
 import type { ExecutorStatus } from "@autostack/workflow";
 
 import { ApprovalNotFoundError, ApprovalService, CrossRunApprovalError } from "./approval-service.js";
+import { ClarificationNotFoundError, ClarificationService, RunNotInClarificationError } from "./clarification-service.js";
 import { RunControlService, TerminalRunError } from "./run-control-service.js";
 import { createBearerAuth, createBearerAuthDigest } from "./auth.js";
 import { LocalExecutionService, LocalRunnerUnavailableError } from "./local-execution-service.js";
@@ -52,6 +56,7 @@ export interface CreateAppDependencies {
   readonly tokenDigest?: string;
   readonly workspaceId: WorkspaceId;
   readonly now: () => string;
+  readonly ids?: Pick<IdFactory, "job">;
   readonly mode?: "local" | "hosted";
   readonly localExecution?: LocalExecutionService;
   readonly ingress?: { readonly isOpen: () => boolean };
@@ -72,6 +77,7 @@ class HttpProblem extends Error {
     | "authorization_expired"
     | "unsupported_policy"
     | "local_runner_unavailable"
+    | "clarification_not_found"
     | "internal_error";
 
   constructor(status: HttpProblem["status"], code: HttpProblem["code"], message: string) {
@@ -83,7 +89,7 @@ class HttpProblem extends Error {
 }
 
 const MAX_REQUEST_BYTES = 128 * 1_024;
-const CURRENT_STORAGE_SCHEMA_VERSION = 4;
+const CURRENT_STORAGE_SCHEMA_VERSION = 5;
 
 const readJsonBody = async (request: Request): Promise<unknown> => {
   const declaredLength = request.headers.get("content-length");
@@ -125,6 +131,10 @@ export function createApp(dependencies: CreateAppDependencies): Hono {
   const service = new RunService(dependencies);
   const approvalService = new ApprovalService(dependencies);
   const runControlService = new RunControlService(dependencies);
+  const clarificationService =
+    dependencies.ids === undefined
+      ? undefined
+      : new ClarificationService({ ...dependencies, ids: dependencies.ids });
   const auth =
     dependencies.token === undefined
       ? createBearerAuthDigest(dependencies.tokenDigest!)
@@ -263,6 +273,25 @@ export function createApp(dependencies: CreateAppDependencies): Hono {
     );
     return context.json(CancelRunResponseSchema.parse(response));
   });
+
+  if (clarificationService !== undefined) {
+    app.post(
+      "/v1/runs/:runId/clarifications/:clarificationRef/answer",
+      async (context) => {
+        const rawBody = await readJsonBody(context.req.raw);
+        const body = AnswerClarificationRequestSchema.parse(rawBody);
+        const response = await clarificationService.answer(
+          context.req.param("runId"),
+          context.req.param("clarificationRef"),
+          body
+        );
+        return context.json(
+          AnswerClarificationResponseSchema.parse(response),
+          200
+        );
+      }
+    );
+  }
 
   if (mode === "local") {
     const local = dependencies.localExecution!;
@@ -418,7 +447,19 @@ export function createApp(dependencies: CreateAppDependencies): Hono {
                                 "version_conflict",
                                 "The run is in a state that does not allow this operation."
                               )
-                            : new HttpProblem(500, "internal_error", "The request could not be completed.");
+                            : error instanceof ClarificationNotFoundError
+                              ? new HttpProblem(
+                                  404,
+                                  "clarification_not_found",
+                                  error.message
+                                )
+                              : error instanceof RunNotInClarificationError
+                                ? new HttpProblem(
+                                    409,
+                                    "version_conflict",
+                                    error.message
+                                  )
+                                : new HttpProblem(500, "internal_error", "The request could not be completed.");
 
     return context.json(
       ApiErrorSchema.parse({ error: { code: problem.code, message: problem.message } }),
