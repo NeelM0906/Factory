@@ -27,3 +27,26 @@ export {
 } from "./tracer.js";
 
 export { toOtlpSpan, type OtlpSpan } from "./otlp.js";
+
+export {
+  createMeter,
+  noopMeter,
+  INSTRUMENT_REGISTRY,
+  type CounterInstrument,
+  type CreateMeterOptions,
+  type HistogramInstrument,
+  type Meter,
+  type MetricKind,
+  type MetricRecord,
+  type MetricSink,
+  type UpDownCounterInstrument
+} from "./metrics.js";
+
+export {
+  createLogger,
+  type CreateLoggerOptions,
+  type LogRecord,
+  type LogSeverity,
+  type LogSink,
+  type Logger
+} from "./logger.js";
