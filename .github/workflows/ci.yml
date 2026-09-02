@@ -49,6 +49,13 @@ jobs:
       - name: Install locked dependencies
         run: pnpm install --frozen-lockfile
 
+      - name: Audit dependencies for known vulnerabilities
+        # Spec 17.5: dependency scanning. Uses `--audit-level=high` so that moderate advisories
+        # produce warnings (visible in the log) but do not block the pipeline -- only high and
+        # critical findings fail the step. `--no-optional` avoids noise from platform-specific
+        # optional deps that may not resolve on Linux.
+        run: pnpm audit --audit-level=high --no-optional
+
       - name: Check formatting
         run: pnpm format:check
 

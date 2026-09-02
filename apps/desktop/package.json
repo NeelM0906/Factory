@@ -11,12 +11,14 @@
     "test": "vitest run",
     "test:coverage": "vitest run --coverage",
     "rebuild:native": "node scripts/rebuild-native.mjs",
-    "runtime:manifest": "node scripts/build-runtime-manifest.mjs"
+    "runtime:manifest": "node scripts/build-runtime-manifest.mjs",
+    "pack": "electron-builder --config electron-builder.config.cjs",
+    "pack:dir": "electron-builder --config electron-builder.config.cjs --dir"
   },
   "dependencies": {
     "@autostack/client-app": "workspace:*",
-    "@autostack/control-plane": "workspace:*",
     "@autostack/contracts": "workspace:*",
+    "@autostack/control-plane": "workspace:*",
     "@autostack/host-daemon": "workspace:*",
     "@autostack/runner-local": "workspace:*",
     "@autostack/ui": "workspace:*",
@@ -29,6 +31,7 @@
     "@autostack/db": "workspace:*",
     "@autostack/domain": "workspace:*",
     "@axe-core/playwright": "4.12.1",
+    "@electron/notarize": "^2.5.0",
     "@electron/rebuild": "4.0.2",
     "@playwright/test": "1.62.1",
     "@testing-library/jest-dom": "^6.8.0",
@@ -36,6 +39,7 @@
     "@types/react": "^19.1.10",
     "@types/react-dom": "^19.1.7",
     "@vitejs/plugin-react": "^5.0.2",
+    "electron-builder": "^26.15.3",
     "electron-vite": "5.0.0",
     "jsdom": "^26.1.0",
     "playwright": "1.62.1",

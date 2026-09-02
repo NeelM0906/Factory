@@ -8,6 +8,7 @@
     "./testing": "./src/testing/index.ts"
   },
   "scripts": {
+    "build": "tsc -p tsconfig.json --noEmit",
     "check": "tsc -p tsconfig.json --noEmit",
     "test": "vitest run",
     "test:coverage": "vitest run --coverage"
