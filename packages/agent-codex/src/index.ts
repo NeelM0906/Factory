@@ -21,3 +21,19 @@ export {
   type CodexFailureProcessLost,
   type CodexFailureMalformed
 } from "./codex-failures.js";
+
+export {
+  mapCodexNotification,
+  type CodexMapperContext
+} from "./codex-event-mapper.js";
+
+export {
+  CodexHarness,
+  type CodexHarnessOptions
+} from "./codex-harness.js";
+
+export {
+  probeCodexAvailability,
+  type AvailabilityResult,
+  type AvailabilityProbeOptions
+} from "./availability.js";
