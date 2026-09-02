@@ -2,7 +2,7 @@ import { defineConfig } from "@playwright/test";
 
 export default defineConfig({
   testDir: "./e2e",
-  testMatch: "local-execution.spec.ts",
+  testMatch: /.*\.spec\.ts$/,
   fullyParallel: false,
   workers: 1,
   retries: 0,

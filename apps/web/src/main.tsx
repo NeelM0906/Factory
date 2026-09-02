@@ -5,6 +5,7 @@ import "@autostack/ui/tokens.css";
 import "@autostack/ui/shell.css";
 import "./app.css";
 
+import { ThemeProvider } from "@autostack/ui";
 import { App } from "./app.js";
 
 const rootElement = document.querySelector("#root");
@@ -12,6 +13,8 @@ if (rootElement === null) throw new TypeError("AutoStack root element is missing
 
 createRoot(rootElement).render(
   <StrictMode>
-    <App />
+    <ThemeProvider storage={window.localStorage}>
+      <App />
+    </ThemeProvider>
   </StrictMode>
 );

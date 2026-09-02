@@ -51,7 +51,7 @@
 }
 
 @media (prefers-color-scheme: dark) {
-  :root {
+  :root:not([data-theme="light"]) {
     --as-canvas: var(--as-graphite-950);
     --as-surface: var(--as-graphite-900);
     --as-surface-raised: var(--as-graphite-850);
@@ -63,18 +63,60 @@
   }
 }
 
+:root[data-theme="light"] {
+  color-scheme: light;
+}
+
+:root[data-theme="dark"] {
+  color-scheme: dark;
+  --as-canvas: var(--as-graphite-950);
+  --as-surface: var(--as-graphite-900);
+  --as-surface-raised: var(--as-graphite-850);
+  --as-text: var(--as-graphite-100);
+  --as-text-muted: var(--as-graphite-400);
+  --as-border: var(--as-graphite-800);
+  --as-border-strong: var(--as-graphite-700);
+  --as-signal-text: #ff9a66;
+}
+
+/*
+ * Motion has the same three-state shape as theme: the system preference applies unless the
+ * operator has pinned a choice. `:not([data-motion="full"])` is what makes the "full" option
+ * mean something — without it, pinning full while the OS prefers reduce would silently do
+ * nothing, and a control that offers a choice it does not honour is worse than no control.
+ */
 @media (prefers-reduced-motion: reduce) {
-  :root {
+  :root:not([data-motion="full"]) {
     --as-duration-fast: 0ms;
     --as-duration-standard: 0ms;
   }
 
-  *,
-  *::before,
-  *::after {
+  :root:not([data-motion="full"]) *,
+  :root:not([data-motion="full"]) *::before,
+  :root:not([data-motion="full"]) *::after {
     scroll-behavior: auto !important;
     animation-duration: 0.01ms !important;
     animation-iteration-count: 1 !important;
     transition-duration: 0.01ms !important;
   }
+}
+
+/*
+ * Pinned reduce must suppress exactly as hard as the system preference does. Zeroing only the
+ * duration tokens would leave any animation that does not read them — a hardcoded keyframe, a
+ * third-party widget — still moving, so an operator who pins "reduced" in the workbench would
+ * get weaker suppression than one whose OS asks for it. Mirrors the media block above verbatim.
+ */
+:root[data-motion="reduced"] {
+  --as-duration-fast: 0ms;
+  --as-duration-standard: 0ms;
+}
+
+:root[data-motion="reduced"] *,
+:root[data-motion="reduced"] *::before,
+:root[data-motion="reduced"] *::after {
+  scroll-behavior: auto !important;
+  animation-duration: 0.01ms !important;
+  animation-iteration-count: 1 !important;
+  transition-duration: 0.01ms !important;
 }

@@ -3,6 +3,7 @@ import { createRoot } from "react-dom/client";
 
 import { App, createDesktopApiClient } from "@autostack/client-app";
 import "@autostack/client-app/app.css";
+import { ThemeProvider } from "@autostack/ui";
 import "@autostack/ui/shell.css";
 import "@autostack/ui/tokens.css";
 
@@ -20,6 +21,8 @@ const root = document.getElementById("root");
 if (root === null) throw new Error("desktop renderer root is missing");
 createRoot(root).render(
   <React.StrictMode>
-    <App client={desktopClient} executionAuthorityDisclosure runtimeBridge={window.autostack} />
+    <ThemeProvider storage={window.localStorage}>
+      <App client={desktopClient} executionAuthorityDisclosure runtimeBridge={window.autostack} />
+    </ThemeProvider>
   </React.StrictMode>
 );
