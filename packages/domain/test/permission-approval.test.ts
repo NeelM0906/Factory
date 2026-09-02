@@ -1,4 +1,5 @@
 import {
+  ApprovalIdSchema,
   ApprovalSchema,
   CommandScopeSchema,
   JobIdSchema,
@@ -30,7 +31,7 @@ const LATER = "2026-08-28T12:05:00.000Z";
 const WORKSPACE_ID = WorkspaceIdSchema.parse("ws_123e4567-e89b-42d3-a456-426614174000");
 const RUN_ID = RunIdSchema.parse("run_123e4567-e89b-42d3-a456-426614174001");
 const WORK_ITEM_ID = WorkItemIdSchema.parse("wi_123e4567-e89b-42d3-a456-426614174002");
-const APPROVAL_ID = "apr_123e4567-e89b-42d3-a456-426614174010";
+const APPROVAL_ID = ApprovalIdSchema.parse("apr_123e4567-e89b-42d3-a456-426614174010");
 const JOB_ID = "job_123e4567-e89b-42d3-a456-426614174011";
 const CORRELATION_ID = "123e4567-e89b-42d3-a456-426614174012";
 const ACTOR: Actor = { kind: "user", id: "local-user", displayName: "Local User" };
@@ -139,10 +140,11 @@ describe("requestPermissionApproval", () => {
     const result = await requestPermissionApproval(requestCommand(), requestDeps());
 
     expect(result.appends).toHaveLength(1);
-    expect(result.appends[0].stream).toEqual({ kind: "run", id: RUN_ID });
-    expect(result.appends[0].expectedVersion).toBe(5);
+    const append = result.appends[0]!;
+    expect(append.stream).toEqual({ kind: "run", id: RUN_ID });
+    expect(append.expectedVersion).toBe(5);
 
-    const types = result.appends[0].events.map((e) => e.type);
+    const types = append.events.map((e) => e.type);
     expect(types).toContain("approval.requested");
     expect(types).toContain("run.transitioned");
   });
@@ -205,7 +207,7 @@ describe("decidePermissionApproval — approved", () => {
     const decision = await decidePermissionApproval(await decisionCommand({ actionScope: scope }), decisionDeps());
 
     expect(decision.jobs).toHaveLength(1);
-    const job = decision.jobs[0];
+    const job = decision.jobs[0]!;
     expect(job.handler).toBe("pipeline.implement");
     expect(job.stage).toBe("implement");
     // The resume job's payload must name the same action digest the approval accepted.
@@ -224,8 +226,9 @@ describe("decidePermissionApproval — approved", () => {
     const decision = await decidePermissionApproval(await decisionCommand(), decisionDeps());
 
     expect(decision.appends).toHaveLength(1);
-    expect(decision.appends[0].expectedVersion).toBe(8);
-    const types = decision.appends[0].events.map((e) => e.type);
+    const append = decision.appends[0]!;
+    expect(append.expectedVersion).toBe(8);
+    const types = append.events.map((e) => e.type);
     expect(types).toContain("approval.decided");
     expect(types).toContain("run.transitioned");
   });
@@ -277,12 +280,13 @@ describe("decidePermissionApproval — rejected", () => {
     correlationId: CORRELATION_ID
   });
 
-  it("transitions the run toward planning and enqueues nothing — the action is never performed", async () => {
+  it("fails the run and enqueues nothing — the action is never performed", async () => {
     // This is the test that matters most (plan Task 8 Step 1): a rejected permission
-    // NEVER executes the action, and the run replans.
+    // NEVER executes the action. The plan says "replans or fails", but from implementing
+    // there is no declared edge to planning, so the run fails.
     const decision = await decidePermissionApproval(await rejectedCommand(), decisionDeps());
 
-    expect(decision.run.status).toBe("planning");
+    expect(decision.run.status).toBe("failed");
     expect(decision.jobs).toEqual([]);
   });
 
