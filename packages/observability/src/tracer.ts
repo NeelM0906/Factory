@@ -6,7 +6,7 @@
  */
 
 import { safeAttributes, type AttributeValue, type Attributes } from "./attributes.js";
-import type { IdFactory } from "./correlation.js";
+import { currentCorrelation, type IdFactory } from "./correlation.js";
 
 export type SpanKind = "internal" | "server" | "client" | "producer" | "consumer";
 
@@ -98,7 +98,8 @@ export function createTracer(options: CreateTracerOptions = {}): Tracer {
 
   return {
     startSpan(name: string, spanOptions: StartSpanOptions): Span {
-      const traceId = ids.traceId();
+      const correlation = currentCorrelation();
+      const traceId = correlation?.traceId ?? ids.traceId();
       const spanId = ids.spanId();
       const startedAt = now();
       const attrs: Record<string, AttributeValue> = Object.create(null) as Record<
