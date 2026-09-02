@@ -25,9 +25,18 @@ export interface AppShellProps {
   readonly sidebar: ReactNode;
   readonly inspector?: ReactNode;
   readonly children: ReactNode;
+  readonly disabledDestinations?: ReadonlySet<NavigationDestination>;
+  readonly disabledDescriptions?: Readonly<Partial<Record<NavigationDestination, string>>>;
 }
 
-export function AppShell({ activeDestination, sidebar, inspector, children }: AppShellProps) {
+export function AppShell({
+  activeDestination,
+  sidebar,
+  inspector,
+  children,
+  disabledDestinations,
+  disabledDescriptions
+}: AppShellProps) {
   return (
     <div className="as-shell">
       <a className="as-skip-link" href="#autostack-main">
@@ -41,20 +50,30 @@ export function AppShell({ activeDestination, sidebar, inspector, children }: Ap
           <span>AutoStack</span>
         </a>
         <ul className="as-rail__list">
-          {NAVIGATION_DESTINATIONS.map((destination) => (
-            <li key={destination}>
-              <a
-                className="as-rail__link"
-                href={`#${destination}`}
-                aria-current={destination === activeDestination ? "page" : undefined}
-              >
-                <span className="as-rail__glyph" aria-hidden="true">
-                  {NAVIGATION_LABELS[destination].slice(0, 1)}
-                </span>
-                <span>{NAVIGATION_LABELS[destination]}</span>
-              </a>
-            </li>
-          ))}
+          {NAVIGATION_DESTINATIONS.map((destination) => {
+            const isDisabled = disabledDestinations?.has(destination) === true;
+            const description = isDisabled
+              ? disabledDescriptions?.[destination]
+              : undefined;
+            return (
+              <li key={destination}>
+                <a
+                  className="as-rail__link"
+                  href={isDisabled ? undefined : `#${destination}`}
+                  aria-current={destination === activeDestination ? "page" : undefined}
+                  {...(isDisabled ? { "aria-disabled": "true" as const } : {})}
+                  {...(description !== undefined
+                    ? { "aria-description": description }
+                    : {})}
+                >
+                  <span className="as-rail__glyph" aria-hidden="true">
+                    {NAVIGATION_LABELS[destination].slice(0, 1)}
+                  </span>
+                  <span>{NAVIGATION_LABELS[destination]}</span>
+                </a>
+              </li>
+            );
+          })}
         </ul>
       </nav>
       <aside className="as-sidebar" aria-label="Project and run navigation">
