@@ -121,6 +121,8 @@ const buildAuthorization = async (): Promise<EnvironmentAuthorization> => {
 };
 
 const buildPlanApprovalEvidence = async (): Promise<PipelineEvidence> => {
+  const scope = executionScope();
+  const scopeDigest = await digestExecutionScope(scope);
   const envelope = {
     schemaVersion: 1,
     workspaceId: WORKSPACE_ID,
@@ -130,7 +132,7 @@ const buildPlanApprovalEvidence = async (): Promise<PipelineEvidence> => {
     artifactIds: [],
     approvalId: "apr_123e4567-e89b-42d3-a456-426614174030",
     decision: "approved",
-    approvedEvidenceDigest: digestOf("x"),
+    approvedEvidenceDigest: scopeDigest,
     actorId: "local-user",
     producedAt: NOW
   };
@@ -265,7 +267,7 @@ const implementingRun = async (): Promise<readonly StoredDomainEvent[]> => {
         environmentId: ENVIRONMENT_ID,
         authorization,
         phaseKey: `environment:${ENVIRONMENT_ID}:authorization`,
-        phaseDigest: digestOf("p")
+        phaseDigest: digestOf("a")
       },
       { kind: "run", id: RUN_ID },
       8
