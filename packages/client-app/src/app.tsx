@@ -120,7 +120,7 @@ export function App({
       factory={factory}
       client={activeClient}
       executionAuthorityDisclosure={executionAuthorityDisclosure}
-      {...(desktopRuntimeStatus !== undefined ? { desktopRuntimeStatus } : {})}
+      desktopRuntimeStatus={desktopRuntimeStatus}
     />
   );
 }

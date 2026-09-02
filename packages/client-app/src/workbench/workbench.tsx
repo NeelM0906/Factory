@@ -6,6 +6,7 @@ import {
   LifecycleStrip,
   MetricCard,
   RunStatusBadge,
+  ThemeControl,
   type LifecycleStageView,
   type NavigationDestination
 } from "@autostack/ui";
@@ -60,7 +61,7 @@ export interface WorkbenchProps {
   readonly factory: FactoryController;
   readonly client: AutoStackApiClient;
   readonly executionAuthorityDisclosure?: boolean;
-  readonly desktopRuntimeStatus?: DesktopRuntimeStatus;
+  readonly desktopRuntimeStatus?: DesktopRuntimeStatus | undefined;
 }
 
 const lifecycleView = (
@@ -137,6 +138,15 @@ function PlaceholderPanel({
   );
 }
 
+function SettingsPanel(): ReactElement {
+  return (
+    <section className="settings-panel">
+      <h2>Settings</h2>
+      <ThemeControl />
+    </section>
+  );
+}
+
 function FactoryPanel({
   factory,
   executionAuthorityDisclosure = false,
@@ -144,7 +154,7 @@ function FactoryPanel({
 }: {
   readonly factory: FactoryController;
   readonly executionAuthorityDisclosure?: boolean;
-  readonly desktopRuntimeStatus?: DesktopRuntimeStatus;
+  readonly desktopRuntimeStatus?: DesktopRuntimeStatus | undefined;
 }): ReactElement {
   const [title, setTitle] = useState("");
   const [description, setDescription] = useState("");
@@ -352,6 +362,8 @@ export function Workbench({
         executionAuthorityDisclosure={executionAuthorityDisclosure}
         {...(desktopRuntimeStatus !== undefined ? { desktopRuntimeStatus } : {})}
       />
+    ) : activeDestination === "settings" ? (
+      <SettingsPanel />
     ) : (
       <PlaceholderPanel destination={activeDestination} />
     );
