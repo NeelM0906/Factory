@@ -335,6 +335,12 @@ importers:
         specifier: workspace:*
         version: link:../domain
 
+  packages/observability:
+    dependencies:
+      '@autostack/contracts':
+        specifier: workspace:*
+        version: link:../contracts
+
   packages/runner-local:
     dependencies:
       '@autostack/contracts':
