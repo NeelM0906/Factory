@@ -1,0 +1,196 @@
+{
+  "provenance": {
+    "source": "conformance",
+    "cli": "claude",
+    "version": "2.1.228",
+    "stability": "synthetic",
+    "notes": "Conformance-only permission transcript. The first awaitStdin consumes start()'s objective. The JSON-RPC approve is emitted, then a second awaitStdin blocks until the permission decision arrives via respondToPermission(). The assistant tool_use frame appears AFTER the decision, so no tool_call event is emitted before permission_resolved (D-3). This is the allow path: the tool_result has is_error false and the tool was executed."
+  },
+  "scenario": "requests_permission",
+  "frames": [
+    {
+      "kind": "awaitStdin",
+      "match": { "type": "user" }
+    },
+    {
+      "kind": "emit",
+      "value": {
+        "type": "system",
+        "subtype": "init",
+        "cwd": "/tmp/agent-workspace",
+        "session_id": "11111111-2222-4333-8444-777777777777",
+        "tools": ["Bash", "Edit", "Read", "Write"],
+        "mcp_servers": [],
+        "model": "claude-opus-5[1m]",
+        "permissionMode": "default",
+        "slash_commands": [],
+        "apiKeySource": "none",
+        "claude_code_version": "2.1.228",
+        "output_style": "default",
+        "agents": [],
+        "skills": [],
+        "plugins": [],
+        "capabilities": [],
+        "analytics_disabled": false,
+        "product_feedback_disabled": false,
+        "uuid": "a335d9ac-262f-4ef2-8234-62aa9f98f904",
+        "memory_paths": {},
+        "fast_mode_state": "off",
+        "fast_mode_disabled_reason": "sdk_opt_in_required"
+      }
+    },
+    {
+      "kind": "emit",
+      "value": {
+        "jsonrpc": "2.0",
+        "id": 2,
+        "method": "tools/call",
+        "params": {
+          "name": "approve",
+          "arguments": {
+            "tool_name": "Write",
+            "input": {
+              "file_path": "/tmp/agent-workspace/notes.txt",
+              "content": "hello\n"
+            },
+            "tool_use_id": "toolu_01ABN8frqqE4AY1GFpqWqqjq"
+          },
+          "_meta": {
+            "claudecode/toolUseId": "toolu_01ABN8frqqE4AY1GFpqWqqjq",
+            "progressToken": 2
+          }
+        }
+      }
+    },
+    {
+      "kind": "awaitStdin",
+      "match": { "jsonrpc": "2.0", "id": 2 }
+    },
+    {
+      "kind": "emit",
+      "value": {
+        "type": "assistant",
+        "message": {
+          "model": "claude-opus-5",
+          "id": "msg_011CeU7DxvYoFMmtozuRvJjk",
+          "type": "message",
+          "role": "assistant",
+          "content": [
+            {
+              "type": "tool_use",
+              "id": "toolu_01ABN8frqqE4AY1GFpqWqqjq",
+              "name": "Write",
+              "input": {
+                "file_path": "/tmp/agent-workspace/notes.txt",
+                "content": "hello\n"
+              },
+              "caller": { "type": "direct" }
+            }
+          ],
+          "stop_reason": null,
+          "stop_sequence": null,
+          "stop_details": null,
+          "usage": {
+            "input_tokens": 2,
+            "cache_creation_input_tokens": 0,
+            "cache_read_input_tokens": 0,
+            "output_tokens": 17,
+            "service_tier": "standard"
+          },
+          "diagnostics": null,
+          "context_management": null
+        },
+        "parent_tool_use_id": null,
+        "session_id": "11111111-2222-4333-8444-777777777777",
+        "uuid": "2b444a63-f850-482d-a64a-be03df2bb513",
+        "timestamp": "2026-08-27T23:18:39.326Z"
+      }
+    },
+    {
+      "kind": "emit",
+      "value": {
+        "type": "user",
+        "message": {
+          "role": "user",
+          "content": [
+            {
+              "type": "tool_result",
+              "content": "File written successfully.",
+              "is_error": false,
+              "tool_use_id": "toolu_01ABN8frqqE4AY1GFpqWqqjq"
+            }
+          ]
+        },
+        "parent_tool_use_id": null,
+        "session_id": "11111111-2222-4333-8444-777777777777",
+        "uuid": "ba98e5fe-ff99-4519-8658-6b654e9d4537",
+        "timestamp": "2026-08-27T23:18:39.336Z"
+      }
+    },
+    {
+      "kind": "emit",
+      "value": {
+        "type": "assistant",
+        "message": {
+          "model": "claude-opus-5",
+          "id": "msg_011CeU7EAX4JJGYNCpxS33RU",
+          "type": "message",
+          "role": "assistant",
+          "content": [
+            {
+              "type": "text",
+              "text": "Done. I wrote the file at /tmp/agent-workspace/notes.txt."
+            }
+          ],
+          "stop_reason": null,
+          "stop_sequence": null,
+          "stop_details": null,
+          "usage": {
+            "input_tokens": 2,
+            "cache_creation_input_tokens": 0,
+            "cache_read_input_tokens": 0,
+            "output_tokens": 2,
+            "service_tier": "standard"
+          },
+          "diagnostics": null,
+          "context_management": null
+        },
+        "parent_tool_use_id": null,
+        "session_id": "11111111-2222-4333-8444-777777777777",
+        "uuid": "0c509366-30c3-4ef2-871f-7e74e17ed9fa",
+        "timestamp": "2026-08-27T23:18:42.113Z"
+      }
+    },
+    {
+      "kind": "emit",
+      "value": {
+        "is_error": false,
+        "duration_api_ms": 6380,
+        "num_turns": 2,
+        "stop_reason": "end_turn",
+        "session_id": "11111111-2222-4333-8444-777777777777",
+        "total_cost_usd": 0.321,
+        "usage": {
+          "input_tokens": 4,
+          "cache_creation_input_tokens": 0,
+          "cache_read_input_tokens": 0,
+          "output_tokens": 203,
+          "output_tokens_details": { "thinking_tokens": 31 },
+          "service_tier": "standard"
+        },
+        "permission_denials": [],
+        "terminal_reason": "completed",
+        "subtype": "success",
+        "result": "Done. I wrote the file at /tmp/agent-workspace/notes.txt.",
+        "type": "result",
+        "duration_ms": 6887,
+        "uuid": "7cc42ed6-09e1-46b4-a490-4010ff965b65"
+      }
+    },
+    {
+      "kind": "exit",
+      "code": 0,
+      "signal": null
+    }
+  ]
+}

@@ -1,0 +1,397 @@
+{
+  "provenance": {
+    "source": "recorded",
+    "cli": "codex",
+    "version": "0.150.1",
+    "recordedAt": "2026-08-27T23:22:06.921Z",
+    "argv": ["/opt/homebrew/bin/codex", "app-server", "-c", "mcp_servers={}"],
+    "stability": "experimental",
+    "notes": "Recorded from `codex app-server` 0.150.1 driven live over stdio JSON-RPC against a disposable git repository under TMPDIR, never the AutoStack checkout. Machine-specific values are normalized to TRANSCRIPT_PLACEHOLDERS in both the frames and the recorded argv: the temp repository to /tmp/agent-workspace, the home directory to /home/agent, the username to agent. `-c mcp_servers={}` is part of every recorded argv because the operator's own MCP servers otherwise spam `mcpServer/startupStatus/updated` notifications and stderr auth failures into the transcript; it is the Codex analogue of Claude's `--setting-sources project`. WIRE SHAPE, VERBATIM: Codex app-server responses and notifications carry NO `jsonrpc` member -- responses are {\"id\":n,\"result\":{...}} and notifications are {\"method\":...,\"params\":...,\"emittedAtMs\":n}. Only the CLIENT's outbound messages carry \"jsonrpc\":\"2.0\" in the recorded driver. A parser that requires `jsonrpc` on inbound frames will reject every real Codex frame. `initialize` returns {userAgent, codexHome, platformFamily, platformOs} and negotiates NOTHING: unlike ACP, Codex advertises no capabilities, so the Codex descriptor must be derived from the launch profile (app-server versus exec) rather than negotiated. `turn/completed` is a TURN boundary, not a session boundary -- `completed` is minted on session end, exactly as for Claude's `result`. Response ids are as recorded (initialize 0, thread/start 1, turn/start 2), so a replaying client must mint request ids in the same order; the awaitStdin matches are structural subsets on `method`, so they do not pin ids the client mints. The `awaitStdin` frame is what makes this a genuine pause rather than a slow run: the provider produces nothing further until a `turn/steer` arrives on stdin. `turn/steer` and `turn/interrupt` are confirmed present in the 0.150.1 protocol schema; the live probe drove start, approval and resume only, so the steer round trip here is scripted from the schema rather than observed."
+  },
+  "scenario": "pauses",
+  "frames": [
+    {
+      "kind": "awaitStdin",
+      "match": {
+        "method": "initialize"
+      }
+    },
+    {
+      "kind": "emit",
+      "value": {
+        "id": 0,
+        "result": {
+          "userAgent": "autostack-probe/0.150.1 (Mac OS 26.5.0; arm64) unknown (autostack-probe; 0.0.1)",
+          "codexHome": "/home/agent/.codex",
+          "platformFamily": "unix",
+          "platformOs": "macos"
+        }
+      }
+    },
+    {
+      "kind": "emit",
+      "value": {
+        "method": "remoteControl/status/changed",
+        "params": {
+          "status": "disabled",
+          "serverName": "agent-host",
+          "installationId": "e2429c5b-855e-4975-99f2-f96c87337d7c",
+          "environmentId": null
+        },
+        "emittedAtMs": 1787872922768
+      }
+    },
+    {
+      "kind": "awaitStdin",
+      "match": {
+        "method": "thread/start"
+      }
+    },
+    {
+      "kind": "emit",
+      "value": {
+        "id": 1,
+        "result": {
+          "thread": {
+            "id": "01a04587-ce2e-7ca3-8e9e-ed05d8c37760",
+            "extra": null,
+            "sessionId": "01a04587-ce2e-7ca3-8e9e-ed05d8c37760",
+            "forkedFromId": null,
+            "parentThreadId": null,
+            "preview": "",
+            "ephemeral": false,
+            "section": null,
+            "sectionEnteredAt": null,
+            "projectId": null,
+            "historyMode": "legacy",
+            "modelProvider": "openai",
+            "createdAt": 1787872923,
+            "updatedAt": 1787872923,
+            "recencyAt": 1787872923,
+            "status": {
+              "type": "idle"
+            },
+            "path": "/home/agent/.codex/sessions/2026/08/27/rollout-2026-08-27T19-22-03-01a04587-ce2e-7ca3-8e9e-ed05d8c37760.jsonl",
+            "cwd": "/tmp/agent-workspace",
+            "cliVersion": "0.150.1",
+            "source": "vscode",
+            "canAcceptDirectInput": true,
+            "threadSource": null,
+            "agentNickname": null,
+            "agentRole": null,
+            "gitInfo": null,
+            "name": null,
+            "turns": []
+          },
+          "model": "gpt-5.6-luna",
+          "modelProvider": "openai",
+          "serviceTier": "default",
+          "cwd": "/tmp/agent-workspace",
+          "runtimeWorkspaceRoots": ["/tmp/agent-workspace"],
+          "instructionSources": [],
+          "approvalPolicy": "on-request",
+          "approvalsReviewer": "user",
+          "sandbox": {
+            "type": "dangerFullAccess"
+          },
+          "activePermissionProfile": null,
+          "reasoningEffort": "low",
+          "multiAgentMode": "explicitRequestOnly"
+        }
+      }
+    },
+    {
+      "kind": "emit",
+      "value": {
+        "method": "thread/started",
+        "params": {
+          "thread": {
+            "id": "01a04587-ce2e-7ca3-8e9e-ed05d8c37760",
+            "extra": null,
+            "sessionId": "01a04587-ce2e-7ca3-8e9e-ed05d8c37760",
+            "forkedFromId": null,
+            "parentThreadId": null,
+            "preview": "",
+            "ephemeral": false,
+            "section": null,
+            "sectionEnteredAt": null,
+            "projectId": null,
+            "historyMode": "legacy",
+            "modelProvider": "openai",
+            "createdAt": 1787872923,
+            "updatedAt": 1787872923,
+            "recencyAt": 1787872923,
+            "status": {
+              "type": "idle"
+            },
+            "path": "/home/agent/.codex/sessions/2026/08/27/rollout-2026-08-27T19-22-03-01a04587-ce2e-7ca3-8e9e-ed05d8c37760.jsonl",
+            "cwd": "/tmp/agent-workspace",
+            "cliVersion": "0.150.1",
+            "source": "vscode",
+            "canAcceptDirectInput": true,
+            "threadSource": null,
+            "agentNickname": null,
+            "agentRole": null,
+            "gitInfo": null,
+            "name": null,
+            "turns": []
+          }
+        },
+        "emittedAtMs": 1787872923318
+      }
+    },
+    {
+      "kind": "awaitStdin",
+      "match": {
+        "method": "turn/start"
+      }
+    },
+    {
+      "kind": "emit",
+      "value": {
+        "id": 2,
+        "result": {
+          "turn": {
+            "id": "01a04587-ceb8-7373-bcfa-340a24f463d4",
+            "items": [],
+            "itemsView": "notLoaded",
+            "status": "inProgress",
+            "error": null,
+            "startedAt": null,
+            "completedAt": null,
+            "durationMs": null
+          }
+        }
+      }
+    },
+    {
+      "kind": "emit",
+      "value": {
+        "method": "thread/status/changed",
+        "params": {
+          "threadId": "01a04587-ce2e-7ca3-8e9e-ed05d8c37760",
+          "status": {
+            "type": "active",
+            "activeFlags": []
+          }
+        },
+        "emittedAtMs": 1787872923362
+      }
+    },
+    {
+      "kind": "emit",
+      "value": {
+        "method": "turn/started",
+        "params": {
+          "threadId": "01a04587-ce2e-7ca3-8e9e-ed05d8c37760",
+          "turn": {
+            "id": "01a04587-ceb8-7373-bcfa-340a24f463d4",
+            "items": [],
+            "itemsView": "notLoaded",
+            "status": "inProgress",
+            "error": null,
+            "startedAt": 1787872923,
+            "completedAt": null,
+            "durationMs": null
+          }
+        },
+        "emittedAtMs": 1787872923362
+      }
+    },
+    {
+      "kind": "emit",
+      "value": {
+        "method": "warning",
+        "params": {
+          "threadId": "01a04587-ce2e-7ca3-8e9e-ed05d8c37760",
+          "message": "Skill descriptions were shortened to fit the skills context budget. Codex can still see every skill, but some descriptions are shorter. Disable unused skills or plugins to leave more room for the rest."
+        },
+        "emittedAtMs": 1787872925752
+      }
+    },
+    {
+      "kind": "emit",
+      "value": {
+        "method": "item/started",
+        "params": {
+          "item": {
+            "type": "userMessage",
+            "id": "01a04587-d8ba-72f1-b4de-64e91f2ca4fd",
+            "clientId": null,
+            "content": [
+              {
+                "type": "text",
+                "text": "Reply with the single word APPLE and nothing else.",
+                "text_elements": []
+              }
+            ]
+          },
+          "threadId": "01a04587-ce2e-7ca3-8e9e-ed05d8c37760",
+          "turnId": "01a04587-ceb8-7373-bcfa-340a24f463d4",
+          "startedAtMs": 1787872925882
+        },
+        "emittedAtMs": 1787872925882
+      }
+    },
+    {
+      "kind": "emit",
+      "value": {
+        "method": "item/completed",
+        "params": {
+          "item": {
+            "type": "userMessage",
+            "id": "01a04587-d8ba-72f1-b4de-64e91f2ca4fd",
+            "clientId": null,
+            "content": [
+              {
+                "type": "text",
+                "text": "Reply with the single word APPLE and nothing else.",
+                "text_elements": []
+              }
+            ]
+          },
+          "threadId": "01a04587-ce2e-7ca3-8e9e-ed05d8c37760",
+          "turnId": "01a04587-ceb8-7373-bcfa-340a24f463d4",
+          "completedAtMs": 1787872925882
+        },
+        "emittedAtMs": 1787872925882
+      }
+    },
+    {
+      "kind": "awaitStdin",
+      "match": {
+        "method": "turn/steer"
+      }
+    },
+    {
+      "kind": "emit",
+      "value": {
+        "method": "item/started",
+        "params": {
+          "item": {
+            "type": "agentMessage",
+            "id": "msg_038289f947b695b8016a90c69ec04887d1a303307c6e52715f",
+            "text": "",
+            "phase": "final_answer",
+            "memoryCitation": null,
+            "delivery": null
+          },
+          "threadId": "01a04587-ce2e-7ca3-8e9e-ed05d8c37760",
+          "turnId": "01a04587-ceb8-7373-bcfa-340a24f463d4",
+          "startedAtMs": 1787872926756
+        },
+        "emittedAtMs": 1787872926757
+      }
+    },
+    {
+      "kind": "emit",
+      "value": {
+        "method": "item/agentMessage/delta",
+        "params": {
+          "threadId": "01a04587-ce2e-7ca3-8e9e-ed05d8c37760",
+          "turnId": "01a04587-ceb8-7373-bcfa-340a24f463d4",
+          "itemId": "msg_038289f947b695b8016a90c69ec04887d1a303307c6e52715f",
+          "delta": "APPLE"
+        },
+        "emittedAtMs": 1787872926762
+      }
+    },
+    {
+      "kind": "emit",
+      "value": {
+        "method": "item/completed",
+        "params": {
+          "item": {
+            "type": "agentMessage",
+            "id": "msg_038289f947b695b8016a90c69ec04887d1a303307c6e52715f",
+            "text": "APPLE",
+            "phase": "final_answer",
+            "memoryCitation": null,
+            "delivery": null
+          },
+          "threadId": "01a04587-ce2e-7ca3-8e9e-ed05d8c37760",
+          "turnId": "01a04587-ceb8-7373-bcfa-340a24f463d4",
+          "completedAtMs": 1787872926833
+        },
+        "emittedAtMs": 1787872926833
+      }
+    },
+    {
+      "kind": "emit",
+      "value": {
+        "method": "thread/tokenUsage/updated",
+        "params": {
+          "threadId": "01a04587-ce2e-7ca3-8e9e-ed05d8c37760",
+          "turnId": "01a04587-ceb8-7373-bcfa-340a24f463d4",
+          "tokenUsage": {
+            "total": {
+              "totalTokens": 18010,
+              "inputTokens": 18005,
+              "cachedInputTokens": 9984,
+              "cacheWriteInputTokens": 0,
+              "outputTokens": 5,
+              "reasoningOutputTokens": 0
+            },
+            "last": {
+              "totalTokens": 18010,
+              "inputTokens": 18005,
+              "cachedInputTokens": 9984,
+              "cacheWriteInputTokens": 0,
+              "outputTokens": 5,
+              "reasoningOutputTokens": 0
+            },
+            "modelContextWindow": 258400
+          }
+        },
+        "emittedAtMs": 1787872926875
+      }
+    },
+    {
+      "kind": "emit",
+      "value": {
+        "method": "thread/status/changed",
+        "params": {
+          "threadId": "01a04587-ce2e-7ca3-8e9e-ed05d8c37760",
+          "status": {
+            "type": "idle"
+          }
+        },
+        "emittedAtMs": 1787872926921
+      }
+    },
+    {
+      "kind": "emit",
+      "value": {
+        "method": "turn/completed",
+        "params": {
+          "threadId": "01a04587-ce2e-7ca3-8e9e-ed05d8c37760",
+          "turn": {
+            "id": "01a04587-ceb8-7373-bcfa-340a24f463d4",
+            "items": [
+              {
+                "type": "agentMessage",
+                "id": "msg_038289f947b695b8016a90c69ec04887d1a303307c6e52715f",
+                "text": "APPLE",
+                "phase": "final_answer",
+                "memoryCitation": null,
+                "delivery": null
+              }
+            ],
+            "itemsView": "summary",
+            "status": "completed",
+            "error": null,
+            "startedAt": 1787872923,
+            "completedAt": 1787872926,
+            "durationMs": 3597
+          }
+        },
+        "emittedAtMs": 1787872926921
+      }
+    },
+    {
+      "kind": "exit",
+      "code": 0,
+      "signal": null
+    }
+  ]
+}

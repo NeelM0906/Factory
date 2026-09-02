@@ -1,0 +1,128 @@
+{
+  "scenario": "conformance-full-requests_permission",
+  "frames": [
+    { "kind": "awaitStdin", "match": { "method": "initialize" } },
+    {
+      "kind": "emit",
+      "value": {
+        "jsonrpc": "2.0",
+        "id": 1,
+        "result": {
+          "protocolVersion": 1,
+          "agentInfo": { "name": "conformance-acp-agent", "version": "1.0.0" },
+          "agentCapabilities": {
+            "loadSession": true,
+            "promptCapabilities": { "image": false, "audio": false, "embeddedContext": false },
+            "mcpCapabilities": { "http": false, "sse": false },
+            "sessionCapabilities": { "list": {}, "close": {} },
+            "auth": { "logout": {} }
+          }
+        }
+      }
+    },
+    { "kind": "awaitStdin", "match": { "method": "session/new" } },
+    {
+      "kind": "emit",
+      "value": {
+        "jsonrpc": "2.0",
+        "id": 2,
+        "result": {
+          "sessionId": "sess_conf_full_perm"
+        }
+      }
+    },
+    { "kind": "awaitStdin", "match": { "method": "session/prompt" } },
+    {
+      "kind": "emit",
+      "value": {
+        "jsonrpc": "2.0",
+        "method": "session/update",
+        "params": {
+          "sessionId": "sess_conf_full_perm",
+          "update": {
+            "sessionUpdate": "agent_message_chunk",
+            "content": { "type": "text", "text": "Planning to create notes.txt." }
+          }
+        }
+      }
+    },
+    {
+      "kind": "emit",
+      "value": {
+        "jsonrpc": "2.0",
+        "id": 1,
+        "method": "session/request_permission",
+        "params": {
+          "sessionId": "sess_conf_full_perm",
+          "toolCall": {
+            "toolCallId": "call_perm_01",
+            "title": "Create notes.txt",
+            "kind": "edit",
+            "status": "pending",
+            "locations": [{ "path": "/tmp/agent-workspace/notes.txt" }],
+            "rawInput": { "path": "/tmp/agent-workspace/notes.txt", "content": "hello\n" }
+          },
+          "options": [
+            { "optionId": "allow-once", "name": "Allow once", "kind": "allow_once" },
+            { "optionId": "deny-once", "name": "Deny once", "kind": "deny_once" }
+          ]
+        }
+      }
+    },
+    {
+      "kind": "awaitStdin",
+      "match": { "method": "session/respond_permission" }
+    },
+    {
+      "kind": "emit",
+      "value": {
+        "jsonrpc": "2.0",
+        "method": "session/update",
+        "params": {
+          "sessionId": "sess_conf_full_perm",
+          "update": {
+            "sessionUpdate": "tool_call",
+            "toolCallId": "call_perm_01",
+            "title": "Create notes.txt",
+            "kind": "edit",
+            "status": "in_progress",
+            "locations": [{ "path": "/tmp/agent-workspace/notes.txt" }],
+            "rawInput": { "path": "/tmp/agent-workspace/notes.txt", "content": "hello\n" }
+          }
+        }
+      }
+    },
+    {
+      "kind": "emit",
+      "value": {
+        "jsonrpc": "2.0",
+        "method": "session/update",
+        "params": {
+          "sessionId": "sess_conf_full_perm",
+          "update": {
+            "sessionUpdate": "tool_call_update",
+            "toolCallId": "call_perm_01",
+            "status": "completed",
+            "content": [
+              {
+                "type": "diff",
+                "path": "/tmp/agent-workspace/notes.txt",
+                "oldText": null,
+                "newText": "hello\n"
+              }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "kind": "emit",
+      "value": {
+        "jsonrpc": "2.0",
+        "id": 3,
+        "result": { "stopReason": "end_turn" }
+      }
+    },
+    { "kind": "exit", "code": 0, "signal": null }
+  ]
+}

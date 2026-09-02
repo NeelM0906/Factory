@@ -1,0 +1,67 @@
+{
+  "scenario": "conformance-full-fails",
+  "frames": [
+    { "kind": "awaitStdin", "match": { "method": "initialize" } },
+    {
+      "kind": "emit",
+      "value": {
+        "jsonrpc": "2.0",
+        "id": 1,
+        "result": {
+          "protocolVersion": 1,
+          "agentInfo": { "name": "conformance-acp-agent", "version": "1.0.0" },
+          "agentCapabilities": {
+            "loadSession": true,
+            "promptCapabilities": { "image": false, "audio": false, "embeddedContext": false },
+            "mcpCapabilities": { "http": false, "sse": false },
+            "sessionCapabilities": { "list": {}, "close": {} },
+            "auth": { "logout": {} }
+          }
+        }
+      }
+    },
+    { "kind": "awaitStdin", "match": { "method": "session/new" } },
+    {
+      "kind": "emit",
+      "value": {
+        "jsonrpc": "2.0",
+        "id": 2,
+        "result": {
+          "sessionId": "sess_conf_full_fails"
+        }
+      }
+    },
+    { "kind": "awaitStdin", "match": { "method": "session/prompt" } },
+    {
+      "kind": "emit",
+      "value": {
+        "jsonrpc": "2.0",
+        "method": "session/update",
+        "params": {
+          "sessionId": "sess_conf_full_fails",
+          "update": {
+            "sessionUpdate": "agent_message_chunk",
+            "content": { "type": "text", "text": "Starting work." }
+          }
+        }
+      }
+    },
+    {
+      "kind": "emitStderr",
+      "text": "acp-agent: model backend returned 500, aborting turn\n"
+    },
+    {
+      "kind": "emit",
+      "value": {
+        "jsonrpc": "2.0",
+        "id": 3,
+        "error": {
+          "code": -32603,
+          "message": "Internal error: model backend unavailable",
+          "data": { "sessionId": "sess_conf_full_fails" }
+        }
+      }
+    },
+    { "kind": "exit", "code": 1, "signal": null }
+  ]
+}

@@ -1,0 +1,70 @@
+{
+  "scenario": "conformance-full-interrupted",
+  "frames": [
+    { "kind": "awaitStdin", "match": { "method": "initialize" } },
+    {
+      "kind": "emit",
+      "value": {
+        "jsonrpc": "2.0",
+        "id": 1,
+        "result": {
+          "protocolVersion": 1,
+          "agentInfo": { "name": "conformance-acp-agent", "version": "1.0.0" },
+          "agentCapabilities": {
+            "loadSession": true,
+            "promptCapabilities": { "image": false, "audio": false, "embeddedContext": false },
+            "mcpCapabilities": { "http": false, "sse": false },
+            "sessionCapabilities": { "list": {}, "close": {} },
+            "auth": { "logout": {} }
+          }
+        }
+      }
+    },
+    { "kind": "awaitStdin", "match": { "method": "session/new" } },
+    {
+      "kind": "emit",
+      "value": {
+        "jsonrpc": "2.0",
+        "id": 2,
+        "result": {
+          "sessionId": "sess_conf_full_interrupted"
+        }
+      }
+    },
+    { "kind": "awaitStdin", "match": { "method": "session/prompt" } },
+    {
+      "kind": "emit",
+      "value": {
+        "jsonrpc": "2.0",
+        "method": "session/update",
+        "params": {
+          "sessionId": "sess_conf_full_interrupted",
+          "update": {
+            "sessionUpdate": "agent_message_chunk",
+            "content": { "type": "text", "text": "Starting work on the task." }
+          }
+        }
+      }
+    },
+    {
+      "kind": "emit",
+      "value": {
+        "jsonrpc": "2.0",
+        "method": "session/update",
+        "params": {
+          "sessionId": "sess_conf_full_interrupted",
+          "update": {
+            "sessionUpdate": "tool_call",
+            "toolCallId": "call_int_01",
+            "title": "Read file",
+            "kind": "read",
+            "status": "in_progress",
+            "locations": [{ "path": "/tmp/agent-workspace/README.md" }],
+            "rawInput": { "path": "/tmp/agent-workspace/README.md" }
+          }
+        }
+      }
+    },
+    { "kind": "exit", "code": null, "signal": "SIGTERM" }
+  ]
+}

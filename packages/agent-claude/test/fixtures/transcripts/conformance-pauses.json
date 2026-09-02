@@ -1,0 +1,193 @@
+{
+  "provenance": {
+    "source": "conformance",
+    "cli": "claude",
+    "version": "2.1.228",
+    "stability": "synthetic",
+    "notes": "Conformance-only variant of claude-pauses. The first awaitStdin consumes the initial objective from start(), so the second awaitStdin genuinely blocks until steer() writes its instruction. The existing claude-pauses transcript never truly pauses because start()'s objective satisfies its only awaitStdin immediately."
+  },
+  "scenario": "pauses",
+  "frames": [
+    {
+      "kind": "awaitStdin",
+      "match": { "type": "user" }
+    },
+    {
+      "kind": "emit",
+      "value": {
+        "type": "system",
+        "subtype": "init",
+        "cwd": "/tmp/agent-workspace",
+        "session_id": "11111111-2222-4333-8444-888888888888",
+        "tools": ["Bash", "Edit", "Read", "Write"],
+        "mcp_servers": [],
+        "model": "claude-opus-5[1m]",
+        "permissionMode": "default",
+        "slash_commands": [],
+        "apiKeySource": "none",
+        "claude_code_version": "2.1.228",
+        "output_style": "default",
+        "agents": [],
+        "skills": [],
+        "plugins": [],
+        "capabilities": [],
+        "analytics_disabled": false,
+        "product_feedback_disabled": false,
+        "uuid": "0768d06f-0e95-4c7b-8d20-c1d3f10c8f4a",
+        "memory_paths": {},
+        "fast_mode_state": "off",
+        "fast_mode_disabled_reason": "sdk_opt_in_required"
+      }
+    },
+    {
+      "kind": "emit",
+      "value": {
+        "type": "assistant",
+        "message": {
+          "model": "claude-opus-5",
+          "id": "msg_conf_pauses_turn1",
+          "type": "message",
+          "role": "assistant",
+          "content": [
+            { "type": "text", "text": "APPLE" }
+          ],
+          "stop_reason": null,
+          "stop_sequence": null,
+          "stop_details": null,
+          "usage": {
+            "input_tokens": 2,
+            "cache_creation_input_tokens": 0,
+            "cache_read_input_tokens": 0,
+            "output_tokens": 1,
+            "service_tier": "standard"
+          },
+          "diagnostics": null,
+          "context_management": null
+        },
+        "parent_tool_use_id": null,
+        "session_id": "11111111-2222-4333-8444-888888888888",
+        "uuid": "a444feef-b44a-4ac7-b13e-13109ae63658",
+        "timestamp": "2026-08-27T23:19:37.261Z"
+      }
+    },
+    {
+      "kind": "emit",
+      "value": {
+        "is_error": false,
+        "duration_api_ms": 2730,
+        "num_turns": 1,
+        "stop_reason": "end_turn",
+        "session_id": "11111111-2222-4333-8444-888888888888",
+        "total_cost_usd": 0.077,
+        "usage": {
+          "input_tokens": 2,
+          "cache_creation_input_tokens": 0,
+          "cache_read_input_tokens": 0,
+          "output_tokens": 6,
+          "output_tokens_details": { "thinking_tokens": 0 },
+          "service_tier": "standard"
+        },
+        "permission_denials": [],
+        "terminal_reason": "completed",
+        "subtype": "success",
+        "result": "APPLE",
+        "type": "result",
+        "duration_ms": 4822,
+        "uuid": "e3fa6046-9f70-4d58-b6c9-883a76ab7e51"
+      }
+    },
+    {
+      "kind": "awaitStdin",
+      "match": { "type": "user", "message": { "role": "user" } }
+    },
+    {
+      "kind": "emit",
+      "value": {
+        "type": "system",
+        "subtype": "init",
+        "cwd": "/tmp/agent-workspace",
+        "session_id": "11111111-2222-4333-8444-888888888888",
+        "tools": ["Bash", "Edit", "Read", "Write"],
+        "mcp_servers": [],
+        "model": "claude-opus-5[1m]",
+        "permissionMode": "default",
+        "slash_commands": [],
+        "apiKeySource": "none",
+        "claude_code_version": "2.1.228",
+        "output_style": "default",
+        "agents": [],
+        "skills": [],
+        "plugins": [],
+        "capabilities": [],
+        "analytics_disabled": false,
+        "product_feedback_disabled": false,
+        "uuid": "3b1e321c-f7a0-49ff-ad07-5cfdb0a8ee2a",
+        "memory_paths": {},
+        "fast_mode_state": "off",
+        "fast_mode_disabled_reason": "sdk_opt_in_required"
+      }
+    },
+    {
+      "kind": "emit",
+      "value": {
+        "type": "assistant",
+        "message": {
+          "model": "claude-opus-5",
+          "id": "msg_conf_pauses_turn2",
+          "type": "message",
+          "role": "assistant",
+          "content": [
+            { "type": "text", "text": "BANANA" }
+          ],
+          "stop_reason": null,
+          "stop_sequence": null,
+          "stop_details": null,
+          "usage": {
+            "input_tokens": 2,
+            "cache_creation_input_tokens": 0,
+            "cache_read_input_tokens": 0,
+            "output_tokens": 1,
+            "service_tier": "standard"
+          },
+          "diagnostics": null,
+          "context_management": null
+        },
+        "parent_tool_use_id": null,
+        "session_id": "11111111-2222-4333-8444-888888888888",
+        "uuid": "fff93803-49f6-4cce-ae42-79bdaea38806",
+        "timestamp": "2026-08-27T23:19:41.840Z"
+      }
+    },
+    {
+      "kind": "emit",
+      "value": {
+        "is_error": false,
+        "duration_api_ms": 4699,
+        "num_turns": 1,
+        "stop_reason": "end_turn",
+        "session_id": "11111111-2222-4333-8444-888888888888",
+        "total_cost_usd": 0.102,
+        "usage": {
+          "input_tokens": 2,
+          "cache_creation_input_tokens": 0,
+          "cache_read_input_tokens": 0,
+          "output_tokens": 6,
+          "output_tokens_details": { "thinking_tokens": 0 },
+          "service_tier": "standard"
+        },
+        "permission_denials": [],
+        "terminal_reason": "completed",
+        "subtype": "success",
+        "result": "BANANA",
+        "type": "result",
+        "duration_ms": 4012,
+        "uuid": "6b8081f6-416b-4800-83b0-d32639581640"
+      }
+    },
+    {
+      "kind": "exit",
+      "code": 0,
+      "signal": null
+    }
+  ]
+}

@@ -1,0 +1,610 @@
+{
+  "provenance": {
+    "source": "recorded",
+    "cli": "claude",
+    "version": "2.1.228",
+    "recordedAt": "2026-08-27T23:15:10.179Z",
+    "argv": [
+      "/opt/homebrew/bin/claude",
+      "-p",
+      "--output-format",
+      "stream-json",
+      "--input-format",
+      "stream-json",
+      "--verbose",
+      "--session-id",
+      "11111111-2222-4333-8444-888888888888",
+      "--setting-sources",
+      "project"
+    ],
+    "stability": "stable",
+    "notes": "Recorded from Claude Code 2.1.228 driving a disposable git repository under TMPDIR, never the AutoStack checkout. Machine-specific values are normalized to TRANSCRIPT_PLACEHOLDERS in both the frames and the recorded argv: the temp repository to /tmp/agent-workspace, the home directory to /home/agent, the username to agent. The `system/init` frame carries the operator's global hooks, plugins, skills, agents, slash commands and connected MCP servers, which are machine shape rather than protocol shape; those six keys are replaced by the values observed on the clean `--setting-sources project` re-run of the same session, and every other init field (session_id, uuid, cwd, model, permissionMode, claude_code_version) is the recording's own. `result` is a TURN boundary, not a session boundary: a steered session emits one `result` per turn, so `completed` must be minted on session end. This is the recorded steering session: with `--input-format stream-json` the process stays alive after a `result` frame and genuinely blocks on the open stdin until another user message arrives, which is what the `awaitStdin` frame represents -- the provider blocks rather than merely being slow. Two turns were driven in one session (APPLE, then a mid-session injection producing BANANA) under one session id, and Claude emits a fresh `system/init` frame at the start of each turn."
+  },
+  "scenario": "pauses",
+  "frames": [
+    {
+      "kind": "emit",
+      "value": {
+        "type": "system",
+        "subtype": "init",
+        "cwd": "/tmp/agent-workspace",
+        "session_id": "11111111-2222-4333-8444-888888888888",
+        "tools": [
+          "Task",
+          "Artifact",
+          "Bash",
+          "CronCreate",
+          "CronDelete",
+          "CronList",
+          "DesignSync",
+          "Edit",
+          "EnterWorktree",
+          "ExitWorktree",
+          "ListAgents",
+          "Monitor",
+          "NotebookEdit",
+          "PushNotification",
+          "Read",
+          "RemoteTrigger",
+          "ReportFindings",
+          "ScheduleWakeup",
+          "SendMessage",
+          "ShareOnboardingGuide",
+          "Skill",
+          "TaskCreate",
+          "TaskGet",
+          "TaskList",
+          "TaskOutput",
+          "TaskStop",
+          "TaskUpdate",
+          "ToolSearch",
+          "WebFetch",
+          "WebSearch",
+          "Workflow",
+          "Write"
+        ],
+        "mcp_servers": [],
+        "model": "claude-opus-5[1m]",
+        "permissionMode": "default",
+        "slash_commands": [
+          "deep-research",
+          "design-sync",
+          "dataviz",
+          "artifact-design",
+          "artifact-diagramming",
+          "artifact-capabilities",
+          "update-config",
+          "verify",
+          "debug",
+          "code-review",
+          "simplify",
+          "batch",
+          "fewer-permission-prompts",
+          "doctor",
+          "loop",
+          "schedule",
+          "claude-api",
+          "run",
+          "run-skill-generator",
+          "agents",
+          "auto-mode-setup",
+          "autocompact",
+          "clear",
+          "color",
+          "compact",
+          "config",
+          "context",
+          "effort",
+          "fast",
+          "heapdump",
+          "init",
+          "mcp",
+          "import",
+          "model",
+          "__remote-workflow",
+          "workflow-launch-exec",
+          "reload-skills",
+          "rename",
+          "security-review",
+          "usage-credits",
+          "extra-usage",
+          "usage",
+          "insights",
+          "recap",
+          "goal",
+          "design",
+          "design-consent",
+          "design-revoke",
+          "list-agents",
+          "team-onboarding"
+        ],
+        "apiKeySource": "none",
+        "claude_code_version": "2.1.228",
+        "output_style": "default",
+        "agents": [
+          "claude",
+          "claude-code-guide",
+          "Explore",
+          "general-purpose",
+          "Plan",
+          "statusline-setup"
+        ],
+        "skills": [
+          "deep-research",
+          "design-sync",
+          "dataviz",
+          "artifact-design",
+          "artifact-diagramming",
+          "artifact-capabilities",
+          "update-config",
+          "verify",
+          "debug",
+          "code-review",
+          "simplify",
+          "batch",
+          "fewer-permission-prompts",
+          "doctor",
+          "loop",
+          "schedule",
+          "claude-api",
+          "run",
+          "run-skill-generator"
+        ],
+        "plugins": [],
+        "capabilities": ["interrupt_receipt_v1", "interrupt_cancel_queued_v1", "msg_lifecycle_v1"],
+        "analytics_disabled": false,
+        "product_feedback_disabled": false,
+        "uuid": "0768d06f-0e95-4c7b-8d20-c1d3f10c8f4a",
+        "memory_paths": {
+          "auto": "/home/agent/.claude/projects/-tmp-agent-workspace/memory/"
+        },
+        "messaging_socket_path": "/tmp/agent-workspace/cc-sock/claude.sock",
+        "fast_mode_state": "off",
+        "fast_mode_disabled_reason": "sdk_opt_in_required"
+      }
+    },
+    {
+      "kind": "emit",
+      "value": {
+        "type": "rate_limit_event",
+        "rate_limit_info": {
+          "status": "allowed",
+          "resetsAt": 1787874000,
+          "rateLimitType": "five_hour",
+          "overageStatus": "allowed",
+          "overageResetsAt": 1788220800,
+          "isUsingOverage": false
+        },
+        "uuid": "8f41c171-b988-415b-9039-3b737c214c2c",
+        "session_id": "11111111-2222-4333-8444-888888888888"
+      }
+    },
+    {
+      "kind": "emit",
+      "value": {
+        "type": "assistant",
+        "message": {
+          "model": "claude-opus-5",
+          "id": "msg_011CeU7JH9mrhyUFG878Xjdy",
+          "type": "message",
+          "role": "assistant",
+          "content": [
+            {
+              "type": "text",
+              "text": "APPLE"
+            }
+          ],
+          "stop_reason": null,
+          "stop_sequence": null,
+          "stop_details": null,
+          "usage": {
+            "input_tokens": 2,
+            "cache_creation_input_tokens": 6536,
+            "cache_read_input_tokens": 21965,
+            "cache_creation": {
+              "ephemeral_5m_input_tokens": 0,
+              "ephemeral_1h_input_tokens": 6536
+            },
+            "output_tokens": 1,
+            "service_tier": "standard",
+            "inference_geo": "not_available"
+          },
+          "diagnostics": null,
+          "context_management": null
+        },
+        "parent_tool_use_id": null,
+        "session_id": "11111111-2222-4333-8444-888888888888",
+        "uuid": "a444feef-b44a-4ac7-b13e-13109ae63658",
+        "timestamp": "2026-08-27T23:19:37.261Z",
+        "request_id": "req_011CeU7JGR8Acb2unX5ZfjBK"
+      }
+    },
+    {
+      "kind": "emit",
+      "value": {
+        "type": "system",
+        "subtype": "post_turn_summary",
+        "summarizes_uuid": "a444feef-b44a-4ac7-b13e-13109ae63658",
+        "status_category": "review_ready",
+        "status_detail": "initializing; reading task",
+        "needs_action": "",
+        "uuid": "d68ea9c0-e9d8-4315-b2e3-e840c435c963",
+        "session_id": "11111111-2222-4333-8444-888888888888"
+      }
+    },
+    {
+      "kind": "emit",
+      "value": {
+        "is_error": false,
+        "duration_api_ms": 2730,
+        "num_turns": 1,
+        "stop_reason": "end_turn",
+        "session_id": "11111111-2222-4333-8444-888888888888",
+        "total_cost_usd": 0.0770885,
+        "usage": {
+          "input_tokens": 2,
+          "cache_creation_input_tokens": 6536,
+          "cache_read_input_tokens": 21965,
+          "output_tokens": 6,
+          "output_tokens_details": {
+            "thinking_tokens": 0
+          },
+          "server_tool_use": {
+            "web_search_requests": 0,
+            "web_fetch_requests": 0
+          },
+          "service_tier": "standard",
+          "cache_creation": {
+            "ephemeral_1h_input_tokens": 6536,
+            "ephemeral_5m_input_tokens": 0
+          },
+          "inference_geo": "not_available",
+          "iterations": [
+            {
+              "input_tokens": 2,
+              "output_tokens": 6,
+              "cache_read_input_tokens": 21965,
+              "cache_creation_input_tokens": 6536,
+              "cache_creation": {
+                "ephemeral_5m_input_tokens": 0,
+                "ephemeral_1h_input_tokens": 6536
+              },
+              "type": "message"
+            }
+          ],
+          "speed": "standard"
+        },
+        "modelUsage": {
+          "claude-haiku-4-5-20251001": {
+            "inputTokens": 526,
+            "outputTokens": 12,
+            "cacheReadInputTokens": 0,
+            "cacheCreationInputTokens": 0,
+            "webSearchRequests": 0,
+            "costUSD": 0.000586,
+            "contextWindow": 200000,
+            "maxOutputTokens": 32000,
+            "canonicalModel": "claude-haiku-4-5",
+            "provider": "firstParty"
+          },
+          "claude-opus-5[1m]": {
+            "inputTokens": 2,
+            "outputTokens": 6,
+            "cacheReadInputTokens": 21965,
+            "cacheCreationInputTokens": 6536,
+            "webSearchRequests": 0,
+            "costUSD": 0.0765025,
+            "contextWindow": 1000000,
+            "maxOutputTokens": 64000,
+            "canonicalModel": "claude-opus-5",
+            "provider": "firstParty"
+          }
+        },
+        "permission_denials": [],
+        "terminal_reason": "completed",
+        "fast_mode_state": "off",
+        "fast_mode_disabled_reason": "sdk_opt_in_required",
+        "subtype": "success",
+        "api_error_status": null,
+        "result": "APPLE",
+        "ttft_ms": 2223,
+        "ttft_stream_ms": 1624,
+        "time_to_request_ms": 225,
+        "type": "result",
+        "duration_ms": 4822,
+        "uuid": "e3fa6046-9f70-4d58-b6c9-883a76ab7e51"
+      }
+    },
+    {
+      "kind": "awaitStdin",
+      "match": {
+        "type": "user",
+        "message": {
+          "role": "user"
+        }
+      }
+    },
+    {
+      "kind": "emit",
+      "value": {
+        "type": "system",
+        "subtype": "init",
+        "cwd": "/tmp/agent-workspace",
+        "session_id": "11111111-2222-4333-8444-888888888888",
+        "tools": [
+          "Task",
+          "Artifact",
+          "Bash",
+          "CronCreate",
+          "CronDelete",
+          "CronList",
+          "DesignSync",
+          "Edit",
+          "EnterWorktree",
+          "ExitWorktree",
+          "ListAgents",
+          "Monitor",
+          "NotebookEdit",
+          "PushNotification",
+          "Read",
+          "RemoteTrigger",
+          "ReportFindings",
+          "ScheduleWakeup",
+          "SendMessage",
+          "ShareOnboardingGuide",
+          "Skill",
+          "TaskCreate",
+          "TaskGet",
+          "TaskList",
+          "TaskOutput",
+          "TaskStop",
+          "TaskUpdate",
+          "ToolSearch",
+          "WebFetch",
+          "WebSearch",
+          "Workflow",
+          "Write"
+        ],
+        "mcp_servers": [],
+        "model": "claude-opus-5[1m]",
+        "permissionMode": "default",
+        "slash_commands": [
+          "deep-research",
+          "design-sync",
+          "dataviz",
+          "artifact-design",
+          "artifact-diagramming",
+          "artifact-capabilities",
+          "update-config",
+          "verify",
+          "debug",
+          "code-review",
+          "simplify",
+          "batch",
+          "fewer-permission-prompts",
+          "doctor",
+          "loop",
+          "schedule",
+          "claude-api",
+          "run",
+          "run-skill-generator",
+          "agents",
+          "auto-mode-setup",
+          "autocompact",
+          "clear",
+          "color",
+          "compact",
+          "config",
+          "context",
+          "effort",
+          "fast",
+          "heapdump",
+          "init",
+          "mcp",
+          "import",
+          "model",
+          "__remote-workflow",
+          "workflow-launch-exec",
+          "reload-skills",
+          "rename",
+          "security-review",
+          "usage-credits",
+          "extra-usage",
+          "usage",
+          "insights",
+          "recap",
+          "goal",
+          "design",
+          "design-consent",
+          "design-revoke",
+          "list-agents",
+          "team-onboarding"
+        ],
+        "apiKeySource": "none",
+        "claude_code_version": "2.1.228",
+        "output_style": "default",
+        "agents": [
+          "claude",
+          "claude-code-guide",
+          "Explore",
+          "general-purpose",
+          "Plan",
+          "statusline-setup"
+        ],
+        "skills": [
+          "deep-research",
+          "design-sync",
+          "dataviz",
+          "artifact-design",
+          "artifact-diagramming",
+          "artifact-capabilities",
+          "update-config",
+          "verify",
+          "debug",
+          "code-review",
+          "simplify",
+          "batch",
+          "fewer-permission-prompts",
+          "doctor",
+          "loop",
+          "schedule",
+          "claude-api",
+          "run",
+          "run-skill-generator"
+        ],
+        "plugins": [],
+        "capabilities": ["interrupt_receipt_v1", "interrupt_cancel_queued_v1", "msg_lifecycle_v1"],
+        "analytics_disabled": false,
+        "product_feedback_disabled": false,
+        "uuid": "3b1e321c-f7a0-49ff-ad07-5cfdb0a8ee2a",
+        "memory_paths": {
+          "auto": "/home/agent/.claude/projects/-tmp-agent-workspace/memory/"
+        },
+        "messaging_socket_path": "/tmp/agent-workspace/cc-sock/claude.sock",
+        "fast_mode_state": "off",
+        "fast_mode_disabled_reason": "sdk_opt_in_required"
+      }
+    },
+    {
+      "kind": "emit",
+      "value": {
+        "type": "assistant",
+        "message": {
+          "model": "claude-opus-5",
+          "id": "msg_011CeU7JcpxH755wSSrTWrNJ",
+          "type": "message",
+          "role": "assistant",
+          "content": [
+            {
+              "type": "text",
+              "text": "BANANA"
+            }
+          ],
+          "stop_reason": null,
+          "stop_sequence": null,
+          "stop_details": null,
+          "usage": {
+            "input_tokens": 2,
+            "cache_creation_input_tokens": 1083,
+            "cache_read_input_tokens": 28501,
+            "cache_creation": {
+              "ephemeral_5m_input_tokens": 0,
+              "ephemeral_1h_input_tokens": 1083
+            },
+            "output_tokens": 1,
+            "service_tier": "standard",
+            "inference_geo": "not_available"
+          },
+          "diagnostics": null,
+          "context_management": null
+        },
+        "parent_tool_use_id": null,
+        "session_id": "11111111-2222-4333-8444-888888888888",
+        "uuid": "fff93803-49f6-4cce-ae42-79bdaea38806",
+        "timestamp": "2026-08-27T23:19:41.840Z",
+        "request_id": "req_011CeU7Jbyc7NzdDrbNTM44a"
+      }
+    },
+    {
+      "kind": "emit",
+      "value": {
+        "type": "system",
+        "subtype": "post_turn_summary",
+        "summarizes_uuid": "fff93803-49f6-4cce-ae42-79bdaea38806",
+        "status_category": "review_ready",
+        "status_detail": "starting work",
+        "needs_action": "",
+        "uuid": "435eb08b-fc10-4c8e-8330-b4d8b1b0b38b",
+        "session_id": "11111111-2222-4333-8444-888888888888"
+      }
+    },
+    {
+      "kind": "emit",
+      "value": {
+        "is_error": false,
+        "duration_api_ms": 4699,
+        "num_turns": 1,
+        "stop_reason": "end_turn",
+        "session_id": "11111111-2222-4333-8444-888888888888",
+        "total_cost_usd": 0.102329,
+        "usage": {
+          "input_tokens": 2,
+          "cache_creation_input_tokens": 1083,
+          "cache_read_input_tokens": 28501,
+          "output_tokens": 6,
+          "output_tokens_details": {
+            "thinking_tokens": 0
+          },
+          "server_tool_use": {
+            "web_search_requests": 0,
+            "web_fetch_requests": 0
+          },
+          "service_tier": "standard",
+          "cache_creation": {
+            "ephemeral_1h_input_tokens": 1083,
+            "ephemeral_5m_input_tokens": 0
+          },
+          "inference_geo": "not_available",
+          "iterations": [
+            {
+              "input_tokens": 2,
+              "output_tokens": 6,
+              "cache_read_input_tokens": 28501,
+              "cache_creation_input_tokens": 1083,
+              "cache_creation": {
+                "ephemeral_5m_input_tokens": 0,
+                "ephemeral_1h_input_tokens": 1083
+              },
+              "type": "message"
+            }
+          ],
+          "speed": "standard"
+        },
+        "modelUsage": {
+          "claude-haiku-4-5-20251001": {
+            "inputTokens": 526,
+            "outputTokens": 12,
+            "cacheReadInputTokens": 0,
+            "cacheCreationInputTokens": 0,
+            "webSearchRequests": 0,
+            "costUSD": 0.000586,
+            "contextWindow": 200000,
+            "maxOutputTokens": 32000,
+            "canonicalModel": "claude-haiku-4-5",
+            "provider": "firstParty"
+          },
+          "claude-opus-5[1m]": {
+            "inputTokens": 4,
+            "outputTokens": 12,
+            "cacheReadInputTokens": 50466,
+            "cacheCreationInputTokens": 7619,
+            "webSearchRequests": 0,
+            "costUSD": 0.101743,
+            "contextWindow": 1000000,
+            "maxOutputTokens": 64000,
+            "canonicalModel": "claude-opus-5",
+            "provider": "firstParty"
+          }
+        },
+        "permission_denials": [],
+        "terminal_reason": "completed",
+        "fast_mode_state": "off",
+        "fast_mode_disabled_reason": "sdk_opt_in_required",
+        "subtype": "success",
+        "api_error_status": null,
+        "result": "BANANA",
+        "ttft_ms": 1976,
+        "ttft_stream_ms": 1188,
+        "time_to_request_ms": 29,
+        "type": "result",
+        "duration_ms": 4012,
+        "uuid": "6b8081f6-416b-4800-83b0-d32639581640"
+      }
+    },
+    {
+      "kind": "exit",
+      "code": 0,
+      "signal": null
+    }
+  ]
+}
