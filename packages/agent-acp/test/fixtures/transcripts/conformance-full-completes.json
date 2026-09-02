@@ -1,0 +1,110 @@
+{
+  "scenario": "conformance-full-completes",
+  "frames": [
+    { "kind": "awaitStdin", "match": { "method": "initialize" } },
+    {
+      "kind": "emit",
+      "value": {
+        "jsonrpc": "2.0",
+        "id": 1,
+        "result": {
+          "protocolVersion": 1,
+          "agentInfo": { "name": "conformance-acp-agent", "version": "1.0.0" },
+          "agentCapabilities": {
+            "loadSession": true,
+            "promptCapabilities": { "image": false, "audio": false, "embeddedContext": false },
+            "mcpCapabilities": { "http": false, "sse": false },
+            "sessionCapabilities": { "list": {}, "close": {} },
+            "auth": { "logout": {} }
+          }
+        }
+      }
+    },
+    { "kind": "awaitStdin", "match": { "method": "session/new" } },
+    {
+      "kind": "emit",
+      "value": {
+        "jsonrpc": "2.0",
+        "id": 2,
+        "result": {
+          "sessionId": "sess_conf_full_completes"
+        }
+      }
+    },
+    { "kind": "awaitStdin", "match": { "method": "session/prompt" } },
+    {
+      "kind": "emit",
+      "value": {
+        "jsonrpc": "2.0",
+        "method": "session/update",
+        "params": {
+          "sessionId": "sess_conf_full_completes",
+          "update": {
+            "sessionUpdate": "agent_message_chunk",
+            "content": { "type": "text", "text": "Reading the approved plan." }
+          }
+        }
+      }
+    },
+    {
+      "kind": "emit",
+      "value": {
+        "jsonrpc": "2.0",
+        "method": "session/update",
+        "params": {
+          "sessionId": "sess_conf_full_completes",
+          "update": {
+            "sessionUpdate": "tool_call",
+            "toolCallId": "call_conf_01",
+            "title": "Read README.md",
+            "kind": "read",
+            "status": "in_progress",
+            "locations": [{ "path": "/tmp/agent-workspace/README.md" }],
+            "rawInput": { "path": "/tmp/agent-workspace/README.md" }
+          }
+        }
+      }
+    },
+    {
+      "kind": "emit",
+      "value": {
+        "jsonrpc": "2.0",
+        "method": "session/update",
+        "params": {
+          "sessionId": "sess_conf_full_completes",
+          "update": {
+            "sessionUpdate": "tool_call_update",
+            "toolCallId": "call_conf_01",
+            "status": "completed",
+            "content": [
+              { "type": "content", "content": { "type": "text", "text": "hello from workspace" } }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "kind": "emit",
+      "value": {
+        "jsonrpc": "2.0",
+        "method": "session/update",
+        "params": {
+          "sessionId": "sess_conf_full_completes",
+          "update": {
+            "sessionUpdate": "agent_message_chunk",
+            "content": { "type": "text", "text": "Done reading." }
+          }
+        }
+      }
+    },
+    {
+      "kind": "emit",
+      "value": {
+        "jsonrpc": "2.0",
+        "id": 3,
+        "result": { "stopReason": "end_turn" }
+      }
+    },
+    { "kind": "exit", "code": 0, "signal": null }
+  ]
+}
