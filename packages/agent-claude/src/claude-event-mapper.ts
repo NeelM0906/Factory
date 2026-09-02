@@ -361,35 +361,11 @@ const mapResult = async (
         ctx
       )
     );
-  } else {
-    // Successful turn completion — record transcript evidence
-    const transcriptBytes = Buffer.from(
-      JSON.stringify({
-        subtype: resultFrame.subtype,
-        stopReason: resultFrame.stop_reason,
-        completedAt: now()
-      }),
-      "utf8"
-    );
-    const { digest } = await ctx.evidenceSink.record({
-      kind: "transcript",
-      bytes: new Uint8Array(transcriptBytes)
-    });
-
-    const completedCtx = buildContext(ctx);
-    ctx.sequencer.markTerminal();
-
-    events.push(
-      safeEmit(
-        {
-          ...completedCtx,
-          type: "completed",
-          evidenceDigests: [digest]
-        },
-        ctx
-      )
-    );
   }
+  // Successful result (is_error: false) does NOT emit completed.
+  // `result` is a TURN boundary, not a session boundary: a steered session emits
+  // one `result` per turn, so `completed` must be minted on session end (process exit).
+  // The harness handles completed on normal exit.
 
   return events;
 };

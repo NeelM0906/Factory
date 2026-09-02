@@ -100,10 +100,11 @@ describe("claude-event-mapper", () => {
       expect(completed.length).toBeGreaterThan(0);
     });
 
-    it("maps result to completed event with usage", async () => {
+    it("maps result to usage event (completed is the harness's job)", async () => {
       const events = await mapAllFrames("claude-completes");
+      // result is a TURN boundary, not session terminal — mapper emits usage only
       const completedEvents = events.filter((e) => e.type === "completed");
-      expect(completedEvents).toHaveLength(1);
+      expect(completedEvents).toHaveLength(0);
 
       const usageEvents = events.filter((e) => e.type === "usage");
       expect(usageEvents.length).toBeGreaterThan(0);
