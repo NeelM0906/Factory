@@ -51,8 +51,7 @@ export function createLogger(options: CreateLoggerOptions = {}): Logger {
     const correlation = currentCorrelation();
     const redacted = containsSensitiveMaterial(message);
     const safeMessage = redacted ? redactSensitiveText(message) : message;
-    const attrs =
-      rawAttributes !== undefined ? safeAttributes(rawAttributes) : Object.freeze({});
+    const attrs = rawAttributes !== undefined ? safeAttributes(rawAttributes) : Object.freeze({});
 
     const record: LogRecord = {
       severity,

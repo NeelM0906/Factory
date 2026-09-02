@@ -19,15 +19,13 @@ describe("safe attributes", () => {
   });
 
   it("refuses to attach an attribute whose value carries credential material", () => {
-    expect(() =>
-      safeAttributes({ "http.url": `https://x/?token=${fakeToken}` })
-    ).toThrow(/redact/i);
+    expect(() => safeAttributes({ "http.url": `https://x/?token=${fakeToken}` })).toThrow(
+      /redact/i
+    );
   });
 
   it("refuses an attribute key that carries credential material", () => {
-    expect(() =>
-      safeAttributes({ [fakeToken]: "value" })
-    ).toThrow(/redact/i);
+    expect(() => safeAttributes({ [fakeToken]: "value" })).toThrow(/redact/i);
   });
 
   it("fails closed when a value cannot be serialized safely", () => {
@@ -51,18 +49,16 @@ describe("safe attributes", () => {
   });
 
   it("accepts an array of strings as an attribute value", () => {
-    const attrs = safeAttributes({ "tags": ["a", "b", "c"] });
+    const attrs = safeAttributes({ tags: ["a", "b", "c"] });
     expect(attrs.tags).toEqual(["a", "b", "c"]);
   });
 
   it("refuses an array containing credential material", () => {
-    expect(() =>
-      safeAttributes({ "tokens": [fakeToken] })
-    ).toThrow(/redact/i);
+    expect(() => safeAttributes({ tokens: [fakeToken] })).toThrow(/redact/i);
   });
 
   it("returns a frozen object", () => {
-    const attrs = safeAttributes({ "key": "value" });
+    const attrs = safeAttributes({ key: "value" });
     expect(Object.isFrozen(attrs)).toBe(true);
   });
 

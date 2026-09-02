@@ -52,9 +52,7 @@ export function AppShell({
         <ul className="as-rail__list">
           {NAVIGATION_DESTINATIONS.map((destination) => {
             const isDisabled = disabledDestinations?.has(destination) === true;
-            const description = isDisabled
-              ? disabledDescriptions?.[destination]
-              : undefined;
+            const description = isDisabled ? disabledDescriptions?.[destination] : undefined;
             return (
               <li key={destination}>
                 <a
@@ -62,9 +60,7 @@ export function AppShell({
                   href={isDisabled ? undefined : `#${destination}`}
                   aria-current={destination === activeDestination ? "page" : undefined}
                   {...(isDisabled ? { "aria-disabled": "true" as const } : {})}
-                  {...(description !== undefined
-                    ? { "aria-description": description }
-                    : {})}
+                  {...(description !== undefined ? { "aria-description": description } : {})}
                 >
                   <span className="as-rail__glyph" aria-hidden="true">
                     {NAVIGATION_LABELS[destination].slice(0, 1)}

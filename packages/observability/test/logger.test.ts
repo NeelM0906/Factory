@@ -1,11 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 
-import {
-  createLogger,
-  type LogRecord,
-  type LogSink,
-  type LogSeverity
-} from "../src/logger.js";
+import { createLogger, type LogRecord, type LogSink, type LogSeverity } from "../src/logger.js";
 import { createCorrelation, withCorrelation, type IdFactory } from "../src/correlation.js";
 
 const deterministicIds: IdFactory = {
@@ -17,7 +12,9 @@ const recordingSink = (): { readonly records: LogRecord[]; readonly sink: LogSin
   const records: LogRecord[] = [];
   return {
     records,
-    sink: (record: LogRecord) => { records.push(record); }
+    sink: (record: LogRecord) => {
+      records.push(record);
+    }
   };
 };
 
@@ -82,7 +79,9 @@ describe("structured logger", () => {
 
   it("does not propagate a sink error", () => {
     const onDiagnostic = vi.fn();
-    const throwingSink: LogSink = () => { throw new Error("sink boom"); };
+    const throwingSink: LogSink = () => {
+      throw new Error("sink boom");
+    };
     const logger = createLogger({
       sink: throwingSink,
       now: () => 1_000_000,
@@ -90,5 +89,14 @@ describe("structured logger", () => {
     });
     expect(() => logger.info("safe log")).not.toThrow();
     expect(onDiagnostic).toHaveBeenCalledTimes(1);
+  });
+
+  it("uses default sink, time source, and diagnostic handler when none are injected", () => {
+    const logger = createLogger();
+    // Should not throw — default sink is a noop
+    expect(() => logger.info("default logger")).not.toThrow();
+    expect(() => logger.debug("debug msg")).not.toThrow();
+    expect(() => logger.warn("warn msg")).not.toThrow();
+    expect(() => logger.error("error msg")).not.toThrow();
   });
 });

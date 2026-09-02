@@ -16,7 +16,10 @@ const fixedIds: IdFactory = {
 };
 
 let time = 1_725_000_000_000; // ms since epoch
-const fixedNow = (): number => { time += 100; return time; };
+const fixedNow = (): number => {
+  time += 100;
+  return time;
+};
 
 const recordSpan = (
   name: string,
@@ -25,12 +28,17 @@ const recordSpan = (
     readonly parentSpanId?: string;
     readonly attributes?: Record<string, unknown>;
     readonly status?: { readonly code: string; readonly message?: string };
-    readonly events?: readonly { readonly name: string; readonly attributes?: Record<string, unknown> }[];
+    readonly events?: readonly {
+      readonly name: string;
+      readonly attributes?: Record<string, unknown>;
+    }[];
     readonly exception?: Error;
   } = {}
 ): SpanRecord => {
   const spans: SpanRecord[] = [];
-  const exporter: SpanExporter = (span) => { spans.push(span); };
+  const exporter: SpanExporter = (span) => {
+    spans.push(span);
+  };
   const tracer = createTracer({ exporter, now: fixedNow, ids: fixedIds });
   const span = tracer.startSpan(name, {
     kind: (opts.kind ?? "internal") as "internal",
@@ -88,9 +96,7 @@ describe("OTLP span shape conformance", () => {
     expect(BigInt(otlp.endTimeUnixNano)).toBeGreaterThan(BigInt(otlp.startTimeUnixNano));
     expect(otlp.kind).toBe("SPAN_KIND_INTERNAL");
     expect(otlp.name).toBe("ingress");
-    expect(otlp.attributes).toEqual([
-      { key: "autostack.run.id", value: { stringValue: runId } }
-    ]);
+    expect(otlp.attributes).toEqual([{ key: "autostack.run.id", value: { stringValue: runId } }]);
     expect(otlp.status).toEqual({ code: "STATUS_CODE_OK" });
   });
 
@@ -132,9 +138,7 @@ describe("OTLP span shape conformance", () => {
     const event = otlp.events[0] as (typeof otlp.events)[number];
     expect(event.name).toBe("cache.miss");
     expect(event.timeUnixNano).toMatch(/^\d+$/);
-    expect(event.attributes).toEqual([
-      { key: "cache.key", value: { stringValue: "user:42" } }
-    ]);
+    expect(event.attributes).toEqual([{ key: "cache.key", value: { stringValue: "user:42" } }]);
   });
 
   it("maps status codes", () => {
@@ -170,5 +174,18 @@ describe("OTLP span shape conformance", () => {
     // Verify they're in the nanosecond range (> 1e18)
     expect(startNano).toBeGreaterThan(BigInt(1e15));
     expect(endNano).toBeGreaterThan(startNano);
+  });
+
+  it("maps string array attribute values to OTLP arrayValue", () => {
+    const recorded = recordSpan("array-attrs", {
+      attributes: { "http.tags": ["fast", "cached", "v2"] }
+    });
+    const otlp = toOtlpSpan(recorded);
+    const byKey = new Map(otlp.attributes.map((a) => [a.key, a.value]));
+    expect(byKey.get("http.tags")).toEqual({
+      arrayValue: {
+        values: [{ stringValue: "fast" }, { stringValue: "cached" }, { stringValue: "v2" }]
+      }
+    });
   });
 });

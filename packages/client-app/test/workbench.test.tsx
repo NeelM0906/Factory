@@ -8,10 +8,7 @@ import type { RunSummary } from "@autostack/contracts";
 
 import { Workbench } from "../src/workbench/workbench.js";
 import { RunSidebar } from "../src/workbench/run-sidebar.js";
-import {
-  DISABLED_DESTINATIONS,
-  WORKBENCH_DESTINATIONS
-} from "../src/workbench/navigation.js";
+import { DISABLED_DESTINATIONS, WORKBENCH_DESTINATIONS } from "../src/workbench/navigation.js";
 import type { AutoStackApiClient } from "../src/api-client.js";
 import type { FactoryController } from "../src/use-factory.js";
 
@@ -277,9 +274,7 @@ describe("Failure states", () => {
   });
 
   it("shows run supervision source absent state when no source is provided", () => {
-    const factory = makeFactory([
-      summary(1, "Implement feature", "implementing", "implement")
-    ]);
+    const factory = makeFactory([summary(1, "Implement feature", "implementing", "implement")]);
     render(
       <Workbench
         activeDestination="factory"
@@ -289,9 +284,7 @@ describe("Failure states", () => {
       />
     );
 
-    expect(
-      screen.getByText(/run supervision is not served by this build/i)
-    ).toBeVisible();
+    expect(screen.getByText(/run supervision is not served by this build/i)).toBeVisible();
   });
 
   it("shows desktop operation unavailable when runtimeBridge is absent", () => {

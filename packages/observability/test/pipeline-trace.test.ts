@@ -47,14 +47,7 @@ const PIPELINE_SPAN_NAMES = [
 ] as const;
 
 /** The six lifecycle stages that produce stage.latency data points. */
-const STAGE_NAMES = [
-  "triage",
-  "plan",
-  "implement",
-  "verify",
-  "review",
-  "publish"
-] as const;
+const STAGE_NAMES = ["triage", "plan", "implement", "verify", "review", "publish"] as const;
 
 describe("full-pipeline trace simulation", () => {
   it("drives one correlation through the full span set", () => {
@@ -62,16 +55,34 @@ describe("full-pipeline trace simulation", () => {
     const recorder = createRecordingExporter();
     const tracer = createTracer({
       exporter: recorder.spanExporter,
-      now: (() => { let t = 1_000_000; return () => { t += 100; return t; }; })(),
+      now: (() => {
+        let t = 1_000_000;
+        return () => {
+          t += 100;
+          return t;
+        };
+      })(),
       ids
     });
     const logger = createLogger({
       sink: recorder.logSink,
-      now: (() => { let t = 1_000_000; return () => { t += 100; return t; }; })()
+      now: (() => {
+        let t = 1_000_000;
+        return () => {
+          t += 100;
+          return t;
+        };
+      })()
     });
     const meter = createMeter({
       sink: recorder.metricSink,
-      now: (() => { let t = 1_000_000; return () => { t += 100; return t; }; })()
+      now: (() => {
+        let t = 1_000_000;
+        return () => {
+          t += 100;
+          return t;
+        };
+      })()
     });
 
     const stageLatency = meter.histogram("autostack.stage.latency");
@@ -150,7 +161,7 @@ describe("full-pipeline trace simulation", () => {
 
       // Record stage latencies
       for (const stage of STAGE_NAMES) {
-        stageLatency.record(Math.random() * 1000, { "stage": stage });
+        stageLatency.record(Math.random() * 1000, { stage: stage });
       }
 
       ingress.setStatus({ code: "ok" });
@@ -173,7 +184,10 @@ describe("full-pipeline trace simulation", () => {
     const orphanSpans = (allSpans: readonly SpanRecord[]): readonly SpanRecord[] => {
       const ids = new Set(allSpans.map((s) => s.spanId));
       return allSpans.filter(
-        (s) => s.parentSpanId !== undefined && !ids.has(s.parentSpanId) && s.parentSpanId !== rootCtx.spanId
+        (s) =>
+          s.parentSpanId !== undefined &&
+          !ids.has(s.parentSpanId) &&
+          s.parentSpanId !== rootCtx.spanId
       );
     };
     expect(orphanSpans(spans)).toEqual([]);

@@ -36,9 +36,7 @@ function validateValue(key: string, value: unknown): AttributeValue {
     const result: string[] = [];
     for (const item of value) {
       if (typeof item !== "string") {
-        throw new TypeError(
-          `Attribute "${key}" array contains a non-string element.`
-        );
+        throw new TypeError(`Attribute "${key}" array contains a non-string element.`);
       }
       if (containsSensitiveMaterial(item)) {
         throw new TypeError(
@@ -60,9 +58,7 @@ function validateValue(key: string, value: unknown): AttributeValue {
  * key or value contains credential material, or if a value cannot be
  * safely serialized.
  */
-export function safeAttributes(
-  input: Readonly<Record<string, unknown>>
-): Attributes {
+export function safeAttributes(input: Readonly<Record<string, unknown>>): Attributes {
   const result: Record<string, AttributeValue> = Object.create(null) as Record<
     string,
     AttributeValue

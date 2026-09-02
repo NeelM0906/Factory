@@ -78,9 +78,7 @@ describe("correlation context", () => {
   });
 
   it("creates a child from a parsed traceparent", () => {
-    const incoming = parseTraceparent(
-      "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01"
-    );
+    const incoming = parseTraceparent("00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01");
     const child = createCorrelation({ parent: incoming!, ids: deterministicIds });
     expect(child.traceId).toBe("4bf92f3577b34da6a3ce929d0e0e4736");
     expect(child.parentSpanId).toBe("00f067aa0ba902b7");
@@ -126,5 +124,30 @@ describe("withCorrelation", () => {
     const ctx = createCorrelation({ ids: deterministicIds });
     const result = withCorrelation(ctx, () => 42);
     expect(result).toBe(42);
+  });
+});
+
+describe("default ID factory", () => {
+  it("creates a root correlation with random IDs when no factory is injected", () => {
+    const ctx = createCorrelation();
+    expect(ctx.traceId).toMatch(/^[0-9a-f]{32}$/);
+    expect(ctx.spanId).toMatch(/^[0-9a-f]{16}$/);
+    expect(ctx.parentSpanId).toBeUndefined();
+  });
+
+  it("produces distinct IDs across calls", () => {
+    const a = createCorrelation();
+    const b = createCorrelation();
+    expect(a.traceId).not.toBe(b.traceId);
+    expect(a.spanId).not.toBe(b.spanId);
+  });
+
+  it("creates a child with the default span ID factory", () => {
+    const parent = createCorrelation();
+    const child = createCorrelation({ parent });
+    expect(child.traceId).toBe(parent.traceId);
+    expect(child.parentSpanId).toBe(parent.spanId);
+    expect(child.spanId).toMatch(/^[0-9a-f]{16}$/);
+    expect(child.spanId).not.toBe(parent.spanId);
   });
 });

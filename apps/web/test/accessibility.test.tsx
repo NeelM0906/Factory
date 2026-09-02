@@ -37,7 +37,9 @@ const makeStorage = (): ThemeStorage => {
   const store = new Map<string, string>();
   return {
     getItem: (key: string) => store.get(key) ?? null,
-    setItem: (key: string, value: string) => { store.set(key, value); }
+    setItem: (key: string, value: string) => {
+      store.set(key, value);
+    }
   };
 };
 
@@ -90,9 +92,15 @@ describe("Web accessibility gate", () => {
 
   it("has no accessibility violations in the error state", async () => {
     const badClient: AutoStackApiClient = {
-      health: vi.fn(async () => { throw new Error("unreachable"); }),
-      listRuns: vi.fn(async () => { throw new Error("unreachable"); }),
-      listRunEvents: vi.fn(async () => { throw new Error("unreachable"); }),
+      health: vi.fn(async () => {
+        throw new Error("unreachable");
+      }),
+      listRuns: vi.fn(async () => {
+        throw new Error("unreachable");
+      }),
+      listRunEvents: vi.fn(async () => {
+        throw new Error("unreachable");
+      }),
       createRun: vi.fn(),
       listApprovals: vi.fn(),
       decideApproval: vi.fn(),

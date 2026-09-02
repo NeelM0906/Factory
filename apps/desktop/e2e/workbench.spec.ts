@@ -8,12 +8,7 @@ import {
   assertScenarioUnchanged,
   createTestRepositoryScenario
 } from "./fixtures/test-repository.js";
-import {
-  assertAccessible,
-  attachScreenshot,
-  launch,
-  quitAndWait
-} from "./fixtures/desktop-app.js";
+import { assertAccessible, attachScreenshot, launch, quitAndWait } from "./fixtures/desktop-app.js";
 import { seedDashboardEvents } from "./fixtures/seed-dashboard-events.js";
 
 const desktop = resolve(import.meta.dirname, "..");
@@ -28,10 +23,7 @@ const buildVerifier = (): void => {
   if (result.status !== 0) throw new Error(result.stderr || result.stdout);
 };
 
-test("workbench dashboard, accessibility, theme, keyboard, and empty states", async (
-  {},
-  testInfo
-) => {
+test("workbench dashboard, accessibility, theme, keyboard, and empty states", async ({}, testInfo) => {
   buildVerifier();
   const scenario = await createTestRepositoryScenario();
   let application: ElectronApplication | undefined;
@@ -98,17 +90,13 @@ test("workbench dashboard, accessibility, theme, keyboard, and empty states", as
     const darkRadioAfterNav = page.getByRole("radio", { name: "Dark" });
     if (await darkRadioAfterNav.isVisible()) {
       await darkRadioAfterNav.click();
-      expect(
-        await page.evaluate(() => document.documentElement.dataset.theme)
-      ).toBe("dark");
+      expect(await page.evaluate(() => document.documentElement.dataset.theme)).toBe("dark");
       await assertAccessible(page);
       await attachScreenshot(page, testInfo, "dashboard-dark.png");
 
       // Switch back to light
       await page.getByRole("radio", { name: "Light" }).click();
-      expect(
-        await page.evaluate(() => document.documentElement.dataset.theme)
-      ).toBe("light");
+      expect(await page.evaluate(() => document.documentElement.dataset.theme)).toBe("light");
       await assertAccessible(page);
     }
 
@@ -130,9 +118,7 @@ test("workbench dashboard, accessibility, theme, keyboard, and empty states", as
     // ── 5. Reduced motion ──
     await page.emulateMedia({ reducedMotion: "reduce" });
     const duration = await page.evaluate(() =>
-      getComputedStyle(document.documentElement)
-        .getPropertyValue("--as-duration-standard")
-        .trim()
+      getComputedStyle(document.documentElement).getPropertyValue("--as-duration-standard").trim()
     );
     expect(duration).toBe("0ms");
 
@@ -140,9 +126,7 @@ test("workbench dashboard, accessibility, theme, keyboard, and empty states", as
     const reducedRadio = page.getByRole("radio", { name: /reduced/i });
     if (await reducedRadio.isVisible()) {
       await reducedRadio.click();
-      expect(
-        await page.evaluate(() => document.documentElement.dataset.motion)
-      ).toBe("reduced");
+      expect(await page.evaluate(() => document.documentElement.dataset.motion)).toBe("reduced");
     }
     await attachScreenshot(page, testInfo, "reduced-motion.png");
 
@@ -155,9 +139,7 @@ test("workbench dashboard, accessibility, theme, keyboard, and empty states", as
     }
 
     // Verify the supervision notice (D3 unavailable state)
-    await expect(
-      page.getByText(/run supervision is not served by this build/i)
-    ).toBeVisible();
+    await expect(page.getByText(/run supervision is not served by this build/i)).toBeVisible();
 
     // Verify the execution authority disclosure
     await expect(page.getByRole("alert")).toBeVisible();

@@ -246,8 +246,8 @@ function FactoryPanel({
       </section>
 
       <p className="muted supervision-notice">
-        Run supervision is not served by this build. Detailed session events, plan documents,
-        and verification reports require the supervision source.
+        Run supervision is not served by this build. Detailed session events, plan documents, and
+        verification reports require the supervision source.
       </p>
 
       <div className="factory-grid">

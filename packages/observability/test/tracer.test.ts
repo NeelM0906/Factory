@@ -40,7 +40,9 @@ const recordingExporter = (): {
   const spans: SpanRecord[] = [];
   return {
     spans,
-    exporter: (span: SpanRecord) => { spans.push(span); },
+    exporter: (span: SpanRecord) => {
+      spans.push(span);
+    },
     last: () => {
       const span = spans[spans.length - 1];
       if (span === undefined) throw new Error("No spans recorded");
@@ -91,7 +93,9 @@ describe("tracer", () => {
     const span = tracer.startSpan("safe-span", { kind: "internal" });
     expect(() => span.end()).not.toThrow();
     expect(onDiagnostic).toHaveBeenCalledTimes(1);
-    expect(onDiagnostic).toHaveBeenCalledWith(expect.objectContaining({ message: "exporter boom" }));
+    expect(onDiagnostic).toHaveBeenCalledWith(
+      expect.objectContaining({ message: "exporter boom" })
+    );
   });
 
   it("does not allocate span objects when using the no-op exporter", () => {
@@ -125,12 +129,12 @@ describe("tracer", () => {
     const { exporter, last } = recordingExporter();
     const tracer = createTracer({ exporter, now: deterministicNow, ids: deterministicIds });
     const span = tracer.startSpan("event-span", { kind: "internal" });
-    span.addEvent("something-happened", { "detail": "info" });
+    span.addEvent("something-happened", { detail: "info" });
     span.end();
     const recorded = last();
     expect(recorded.events).toHaveLength(1);
     expect(recorded.events[0]?.name).toBe("something-happened");
-    expect(recorded.events[0]?.attributes).toEqual({ "detail": "info" });
+    expect(recorded.events[0]?.attributes).toEqual({ detail: "info" });
   });
 
   it("records status on the span", () => {
@@ -183,7 +187,10 @@ describe("tracer", () => {
     let time = 1_000_000;
     const tracer = createTracer({
       exporter,
-      now: () => { time += 500; return time; },
+      now: () => {
+        time += 500;
+        return time;
+      },
       ids: deterministicIds
     });
     const span = tracer.startSpan("timed-span", { kind: "internal" });
@@ -192,5 +199,27 @@ describe("tracer", () => {
     expect(recorded.startedAt).toBe(1_000_500);
     expect(recorded.endedAt).toBe(1_001_000);
     expect(recorded.endedAt).toBeGreaterThan(recorded.startedAt);
+  });
+
+  it("uses the default ID factory and time source when none are injected", () => {
+    const { exporter, last } = recordingExporter();
+    const tracer = createTracer({ exporter });
+    const span = tracer.startSpan("default-ids-span", { kind: "internal" });
+    span.end();
+    const recorded = last();
+    expect(recorded.traceId).toMatch(/^[0-9a-f]{32}$/);
+    expect(recorded.spanId).toMatch(/^[0-9a-f]{16}$/);
+    expect(recorded.startedAt).toBeGreaterThan(0);
+    expect(recorded.endedAt).toBeGreaterThanOrEqual(recorded.startedAt);
+  });
+
+  it("uses the default noop diagnostic handler when none is injected", () => {
+    const throwingExporter: SpanExporter = () => {
+      throw new Error("exporter boom");
+    };
+    const tracer = createTracer({ exporter: throwingExporter });
+    const span = tracer.startSpan("no-diagnostic", { kind: "internal" });
+    // Should not throw even without an explicit onDiagnostic
+    expect(() => span.end()).not.toThrow();
   });
 });

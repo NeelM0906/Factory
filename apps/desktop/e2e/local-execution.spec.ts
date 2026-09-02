@@ -10,12 +10,7 @@ import {
   createTestRepositoryScenario
 } from "./fixtures/test-repository.js";
 import { seedApprovedExecution } from "./fixtures/seed-execution.js";
-import {
-  assertAccessible,
-  attachScreenshot,
-  launch,
-  quitAndWait
-} from "./fixtures/desktop-app.js";
+import { assertAccessible, attachScreenshot, launch, quitAndWait } from "./fixtures/desktop-app.js";
 
 const desktop = resolve(import.meta.dirname, "..");
 const workspace = resolve(desktop, "../..");

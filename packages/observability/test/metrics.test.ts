@@ -14,7 +14,9 @@ const recordingSink = (): { readonly records: MetricRecord[]; readonly sink: Met
   const records: MetricRecord[] = [];
   return {
     records,
-    sink: (record: MetricRecord) => { records.push(record); }
+    sink: (record: MetricRecord) => {
+      records.push(record);
+    }
   };
 };
 
@@ -23,12 +25,12 @@ describe("counter", () => {
     const { records, sink } = recordingSink();
     const meter = createMeter({ sink });
     const counter = meter.counter("test.counter");
-    counter.add(1, { "service": "web" });
+    counter.add(1, { service: "web" });
     expect(records).toHaveLength(1);
     expect(records[0]?.name).toBe("test.counter");
     expect(records[0]?.kind).toBe("counter");
     expect(records[0]?.value).toBe(1);
-    expect(records[0]?.attributes).toEqual({ "service": "web" });
+    expect(records[0]?.attributes).toEqual({ service: "web" });
   });
 
   it("throws on a negative counter value", () => {
@@ -36,6 +38,16 @@ describe("counter", () => {
     const meter = createMeter({ sink });
     const counter = meter.counter("test.counter");
     expect(() => counter.add(-1)).toThrow(/negative/i);
+  });
+
+  it("uses empty frozen attributes when none are provided", () => {
+    const { records, sink } = recordingSink();
+    const meter = createMeter({ sink });
+    const counter = meter.counter("test.counter_no_attrs");
+    counter.add(1);
+    expect(records).toHaveLength(1);
+    expect(records[0]?.attributes).toEqual({});
+    expect(Object.isFrozen(records[0]?.attributes)).toBe(true);
   });
 });
 
@@ -50,6 +62,16 @@ describe("up-down counter", () => {
     expect(records[0]?.value).toBe(5);
     expect(records[1]?.value).toBe(-3);
   });
+
+  it("uses empty frozen attributes when none are provided", () => {
+    const { records, sink } = recordingSink();
+    const meter = createMeter({ sink });
+    const upDown = meter.upDownCounter("test.up_down_no_attrs");
+    upDown.add(1);
+    expect(records).toHaveLength(1);
+    expect(records[0]?.attributes).toEqual({});
+    expect(Object.isFrozen(records[0]?.attributes)).toBe(true);
+  });
 });
 
 describe("histogram", () => {
@@ -57,10 +79,20 @@ describe("histogram", () => {
     const { records, sink } = recordingSink();
     const meter = createMeter({ sink });
     const histogram = meter.histogram("test.histogram");
-    histogram.record(42.5, { "unit": "ms" });
+    histogram.record(42.5, { unit: "ms" });
     expect(records).toHaveLength(1);
     expect(records[0]?.kind).toBe("histogram");
     expect(records[0]?.value).toBe(42.5);
+  });
+
+  it("uses empty frozen attributes when none are provided", () => {
+    const { records, sink } = recordingSink();
+    const meter = createMeter({ sink });
+    const histogram = meter.histogram("test.histogram_no_attrs");
+    histogram.record(10);
+    expect(records).toHaveLength(1);
+    expect(records[0]?.attributes).toEqual({});
+    expect(Object.isFrozen(records[0]?.attributes)).toBe(true);
   });
 });
 
@@ -70,9 +102,17 @@ describe("attribute safety on metrics", () => {
     const meter = createMeter({ sink });
     const counter = meter.counter("test.counter");
     const fakeToken = ["ghp", "a".repeat(36)].join("_");
-    expect(() =>
-      counter.add(1, { "token": fakeToken })
-    ).toThrow(/redact/i);
+    expect(() => counter.add(1, { token: fakeToken })).toThrow(/redact/i);
+  });
+});
+
+describe("default meter options", () => {
+  it("uses a noop sink and Date.now when no options are injected", () => {
+    const meter = createMeter();
+    // Should not throw — default sink is a noop
+    expect(() => meter.counter("default.counter").add(1)).not.toThrow();
+    expect(() => meter.upDownCounter("default.up_down").add(-1)).not.toThrow();
+    expect(() => meter.histogram("default.histogram").record(42)).not.toThrow();
   });
 });
 

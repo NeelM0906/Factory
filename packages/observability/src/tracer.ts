@@ -132,7 +132,8 @@ export function createTracer(options: CreateTracerOptions = {}): Tracer {
           events.push({
             name: eventName,
             timestamp: now(),
-            attributes: eventAttributes !== undefined ? safeAttributes(eventAttributes) : Object.freeze({})
+            attributes:
+              eventAttributes !== undefined ? safeAttributes(eventAttributes) : Object.freeze({})
           });
         },
 

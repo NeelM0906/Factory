@@ -288,6 +288,41 @@ textarea {
   line-height: 1.6;
 }
 
+.sidebar-group {
+  border: none;
+  margin: var(--as-space-4) 0 0;
+  padding: 0;
+}
+
+.sidebar-group-legend {
+  color: var(--as-text-muted);
+  font: 600 var(--as-text-xs) / 1.2 var(--as-font-mono);
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  margin-bottom: var(--as-space-2);
+}
+
+.attention-cue {
+  color: var(--as-signal);
+  margin-right: var(--as-space-1, 0.25rem);
+  font-size: 0.5rem;
+  vertical-align: middle;
+}
+
+.placeholder-panel {
+  padding: var(--as-space-7) var(--as-space-4);
+  text-align: center;
+}
+
+.placeholder-panel h2 {
+  margin: 0 0 var(--as-space-2);
+}
+
+.supervision-notice {
+  font-size: var(--as-text-xs);
+  font-style: italic;
+}
+
 @media (max-width: 64rem) {
   .factory-metrics {
     grid-template-columns: repeat(2, minmax(0, 1fr));

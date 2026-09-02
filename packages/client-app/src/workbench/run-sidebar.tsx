@@ -72,7 +72,12 @@ export function RunSidebar({ runs }: RunSidebarProps): ReactElement {
       <h2>Run history</h2>
       {groups.map((group) =>
         group.runs.length === 0 ? null : (
-          <fieldset key={group.label} className="sidebar-group" role="group" aria-label={group.label}>
+          <fieldset
+            key={group.label}
+            className="sidebar-group"
+            role="group"
+            aria-label={group.label}
+          >
             <legend className="sidebar-group-legend">{group.label}</legend>
             <ul className="sidebar-runs">
               {group.runs.map((run) => (

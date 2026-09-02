@@ -25,8 +25,14 @@ export function createRecordingExporter(): RecordingExporter {
     spans,
     logs,
     metrics,
-    spanExporter: (span: SpanRecord) => { spans.push(span); },
-    logSink: (record: LogRecord) => { logs.push(record); },
-    metricSink: (record: MetricRecord) => { metrics.push(record); }
+    spanExporter: (span: SpanRecord) => {
+      spans.push(span);
+    },
+    logSink: (record: LogRecord) => {
+      logs.push(record);
+    },
+    metricSink: (record: MetricRecord) => {
+      metrics.push(record);
+    }
   };
 }
