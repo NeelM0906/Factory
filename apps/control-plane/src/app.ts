@@ -3,8 +3,12 @@ import { ZodError } from "zod";
 
 import {
   ApiErrorSchema,
+  ApprovalDecisionRequestSchema,
+  ApprovalDecisionResponseSchema,
   CreateRunRequestSchema,
   HealthResponseSchema,
+  ListApprovalsQuerySchema,
+  ListApprovalsResponseSchema,
   LocalArtifactReadRequestSchema,
   LocalArtifactReadResponseSchema,
   LocalCancelRequestSchema,
@@ -21,9 +25,16 @@ import {
   LocalStartResponseSchema,
   type WorkspaceId
 } from "@autostack/contracts";
-import { OptimisticConcurrencyError, type DurableStore } from "@autostack/domain";
+import {
+  ApprovalDecisionConflictError,
+  IneligibleApproverError,
+  OptimisticConcurrencyError,
+  StaleApprovalEvidenceError,
+  type DurableStore
+} from "@autostack/domain";
 import type { ExecutorStatus } from "@autostack/workflow";
 
+import { ApprovalNotFoundError, ApprovalService, CrossRunApprovalError } from "./approval-service.js";
 import { createBearerAuth, createBearerAuthDigest } from "./auth.js";
 import { LocalExecutionService, LocalRunnerUnavailableError } from "./local-execution-service.js";
 import { IdempotencyConflictError, RunNotFoundError, RunService } from "./run-service.js";
@@ -106,6 +117,7 @@ export function createApp(dependencies: CreateAppDependencies): Hono {
   }
   const app = new Hono();
   const service = new RunService(dependencies);
+  const approvalService = new ApprovalService(dependencies);
   const auth =
     dependencies.token === undefined
       ? createBearerAuthDigest(dependencies.tokenDigest!)
@@ -185,6 +197,26 @@ export function createApp(dependencies: CreateAppDependencies): Hono {
       throw new HttpProblem(400, "invalid_request", "after must be a non-negative integer.");
     }
     return context.json(await service.events(context.req.param("runId"), after));
+  });
+
+  app.get("/v1/approvals", async (context) => {
+    const query = ListApprovalsQuerySchema.parse({
+      status: context.req.query("status"),
+      limit: context.req.query("limit"),
+      cursor: context.req.query("cursor")
+    });
+    return context.json(ListApprovalsResponseSchema.parse(await approvalService.list(query)));
+  });
+
+  app.post("/v1/runs/:runId/approvals/:approvalId/decision", async (context) => {
+    const rawBody = await readJsonBody(context.req.raw);
+    const body = ApprovalDecisionRequestSchema.parse(rawBody);
+    const response = await approvalService.decide(
+      context.req.param("runId"),
+      context.req.param("approvalId"),
+      body
+    );
+    return context.json(ApprovalDecisionResponseSchema.parse(response), response.replayed ? 200 : 200);
   });
 
   if (mode === "local") {
@@ -311,7 +343,31 @@ export function createApp(dependencies: CreateAppDependencies): Hono {
                       "local_runner_unavailable",
                       "The local runner is unavailable."
                     )
-                  : new HttpProblem(500, "internal_error", "The request could not be completed.");
+                  : error instanceof StaleApprovalEvidenceError
+                    ? new HttpProblem(
+                        409,
+                        "version_conflict",
+                        "The approval evidence has changed."
+                      )
+                    : error instanceof IneligibleApproverError
+                      ? new HttpProblem(
+                          403,
+                          "scope_mismatch",
+                          "The actor is not eligible to decide this approval."
+                        )
+                      : error instanceof ApprovalDecisionConflictError
+                        ? new HttpProblem(
+                            409,
+                            "idempotency_conflict",
+                            "The approval already has a different decision."
+                          )
+                        : error instanceof ApprovalNotFoundError || error instanceof CrossRunApprovalError
+                          ? new HttpProblem(
+                              404,
+                              "run_not_found",
+                              "The requested approval was not found."
+                            )
+                          : new HttpProblem(500, "internal_error", "The request could not be completed.");
 
     return context.json(
       ApiErrorSchema.parse({ error: { code: problem.code, message: problem.message } }),
