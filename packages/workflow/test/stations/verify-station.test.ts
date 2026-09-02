@@ -392,13 +392,13 @@ const runnerFor = (): RunnerProvider => ({
           cancelled: false,
           interrupted: false,
           transcript: ArtifactDescriptorSchema.parse({
-            id: ArtifactIdSchema.parse("art_123e4567-e89b-42d3-a456-426614174060"),
+            artifactId: ArtifactIdSchema.parse("art_123e4567-e89b-42d3-a456-426614174060"),
             workspaceId: WORKSPACE_ID,
             runId: RUN_ID,
             commandId: request.commandId,
             kind: "command_transcript",
-            contentType: "text/plain",
-            sizeBytes: 1024,
+            mediaType: "text/plain",
+            byteSize: 1024,
             digest: digestOf("0"),
             createdAt: NOW
           })
