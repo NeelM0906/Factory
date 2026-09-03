@@ -23,20 +23,26 @@
 - Main→utility: `apps/desktop/src/main/index.ts:20,228` forks utility process running control plane
 - **Fix applied:** `server.ts` now auto-registers pipeline stations in desktop mode with stub ports (previously omitted, leaving executor without handlers)
 
-### 2. GitHub App installation — DEFERRED
+### 2. GitHub App installation — PASS
 
-Requires user to register a GitHub App. Wiring guide at `docs/development/github-app-wiring.md`. Integration code exists behind `DeliveryIntegrationPort` with signed-fixture tests.
+- GitHub App "pff code" (App ID 4818205) registered and installed on NeelM0906/Factory
+- Credentials stored in macOS Keychain under `com.autostack.github-app`
+- Webhook route: `POST /ingress/github` with HMAC-SHA256 signature verification
+- Standalone entrypoint reads webhook secret from Keychain at startup
+- Live verification: Issue #3 created with `autostack` label, both `issues.opened` and `issues.labeled` deliveries received `202 Accepted` through ngrok tunnel
+- Dedup confirmed: replay of same delivery returns `200 { replayed: true }`
 
 ### 3. Slack app via Socket Mode — DEFERRED
 
 Requires user to create Slack app + Socket Mode token. Wiring guide at `docs/development/slack-app-wiring.md`. Socket-mode adapter exists in `packages/integration-slack/`.
 
-### 4. Task from desktop, Slack, GitHub issue with dedup — DEFERRED (partial)
+### 4. Task from desktop, Slack, GitHub issue with dedup — PASS (partial: Slack deferred)
 
 - Desktop intake: `apps/control-plane/src/ingress/delivery-to-intake.ts` (6 tests)
 - SQLite-backed ingress queue: `packages/db/src/sqlite-ingress-queue.ts` (8 tests)
-- Dedup by idempotency key: `packages/db/src/sqlite-durable-store.ts` idempotency_records table
-- GitHub/Slack paths require wiring (criteria 2, 3)
+- Dedup by idempotency key: in-process dedup set in `createIngressAdapter` (server.ts)
+- GitHub path verified live: `issues.labeled` delivery enqueued, replay returns `{ replayed: true }`
+- Slack path requires Slack app wiring (criteria 3)
 
 ### 5. Plan approval gate blocks implementation — PASS
 
@@ -127,14 +133,13 @@ Requires user to create Slack app + Socket Mode token. Wiring guide at `docs/dev
 
 | Status | Count | Criteria |
 |--------|-------|----------|
-| **PASS** | 10 | 1, 5, 6, 7, 8, 10, 11, 12, 14, 15, 16 |
-| **DEFERRED** | 5 | 2, 3, 4, 9, 13 |
+| **PASS** | 12 | 1, 2, 4, 5, 6, 7, 8, 10, 11, 12, 14, 15, 16 |
+| **DEFERRED** | 3 | 3, 9, 13 |
 | **FAIL** | 0 | — |
 
-All 10 criteria verifiable without external service wiring **pass**. The 5 deferred criteria require:
-- GitHub App registration (~5 min, guide at `docs/development/github-app-wiring.md`)
+12 criteria pass (including GitHub App webhook delivery verified live). 3 remain deferred:
 - Slack app + Socket Mode token (~5 min, guide at `docs/development/slack-app-wiring.md`)
-- Live desktop run with connected agent adapter
+- Live desktop run with connected agent adapter (criteria 9, 13)
 
 ## Known Issues
 
