@@ -7,8 +7,14 @@ import { serve as honoServe } from "@hono/node-server";
 import {
   ControlPlaneBootstrapSchema,
   createIdFactory,
-  type ControlPlaneBootstrap
+  type AgentHarnessPort,
+  type ControlPlaneBootstrap,
+  type DeliveryIntegrationPort,
+  type IdFactory,
+  type StoredDomainEvent,
+  type WorkspaceId
 } from "@autostack/contracts";
+import type { RunnerProvider } from "@autostack/domain";
 import { createSqliteIngressQueue, openDatabase, SqliteDurableStore } from "@autostack/db";
 import {
   createStageRetryAt,
@@ -107,6 +113,73 @@ const waitForListening = (server: Server): Promise<void> => {
 
 const retryAt = createStageRetryAt({ random: Math.random });
 
+const unconfiguredPort = (name: string): never => {
+  throw new TypeError(
+    `${name} is not yet configured. Connect an agent adapter, runner, or delivery integration first.`
+  );
+};
+
+const UNCONFIGURED_HARNESS: AgentHarnessPort = {
+  descriptor: {
+    schemaVersion: 1,
+    adapterId: "unconfigured",
+    kind: "native",
+    displayName: "Unconfigured",
+    capabilities: { resume: false, steering: false, permissions: false, structuredPlans: false }
+  },
+  start: () => unconfiguredPort("AgentHarnessPort"),
+  resume: () => unconfiguredPort("AgentHarnessPort"),
+  steer: () => unconfiguredPort("AgentHarnessPort"),
+  cancel: () => unconfiguredPort("AgentHarnessPort")
+};
+
+const UNCONFIGURED_RUNNER: RunnerProvider = {
+  capabilities: () => unconfiguredPort("RunnerProvider"),
+  inspectRepository: () => unconfiguredPort("RunnerProvider"),
+  prepareEnvironment: () => unconfiguredPort("RunnerProvider"),
+  listEnvironments: () => unconfiguredPort("RunnerProvider"),
+  startCommand: () => unconfiguredPort("RunnerProvider"),
+  readCommandEvents: async function* () { unconfiguredPort("RunnerProvider"); },
+  cancelCommand: () => unconfiguredPort("RunnerProvider"),
+  readArtifactChunk: () => unconfiguredPort("RunnerProvider"),
+  disposeEnvironment: () => unconfiguredPort("RunnerProvider")
+};
+
+const UNCONFIGURED_DELIVERY: DeliveryIntegrationPort = {
+  createDraftPullRequest: () => unconfiguredPort("DeliveryIntegrationPort"),
+  postSlackProgress: () => unconfiguredPort("DeliveryIntegrationPort")
+};
+
+function buildDefaultPipelineStations(
+  store: SqliteDurableStore,
+  ids: IdFactory,
+  workspaceId: WorkspaceId,
+  now: () => string
+): RegisterPipelineStationsDependencies {
+  return {
+    dependencies: {
+      now,
+      random: () => Math.random(),
+      ids,
+      harness: UNCONFIGURED_HARNESS,
+      runner: UNCONFIGURED_RUNNER,
+      delivery: UNCONFIGURED_DELIVERY,
+      readRunEvents: async (runId): Promise<readonly StoredDomainEvent[]> =>
+        store.readRunEvents({ workspaceId, runId }),
+      workspaceId,
+      actor: { kind: "system", id: "workflow" }
+    },
+    configuration: {
+      inspection: { sourcePath: "/tmp/autostack-unconfigured", baseRef: "main" },
+      cwdRoot: ".",
+      resourceLimits: { cpu: 2, memoryMb: 4_096, durationSeconds: 1_800 },
+      allowedPermissionKinds: [],
+      allowedCredentialRefIds: [],
+      eligibleApproverIds: ["local-user"]
+    }
+  };
+}
+
 export async function startControlPlane(
   options: StartControlPlaneOptions = {}
 ): Promise<ControlPlaneRuntime> {
@@ -154,8 +227,13 @@ export async function startControlPlane(
     const sensitiveValues =
       bootstrap === undefined ? [effectiveConfig.token] : [bootstrap.hostToken];
     const registry = new HandlerRegistry({ sensitiveValues });
-    if (options.pipelineStations !== undefined) {
-      registerPipelineStations(registry, options.pipelineStations);
+    const stationConfig =
+      options.pipelineStations ??
+      (bootstrap === undefined
+        ? undefined
+        : buildDefaultPipelineStations(store, ids, workspaceId, now));
+    if (stationConfig !== undefined) {
+      registerPipelineStations(registry, stationConfig);
     }
     const ingressQueue = createSqliteIngressQueue(database.connection);
     const channelBindings = createChannelBindingStore();

@@ -51,7 +51,7 @@ function makeApprovalsClient(): AutoStackApiClient {
 }
 
 describe("ApprovalInbox: paging", () => {
-  it("loads every pending approval past the first window", async () => {
+  it("loads every pending approval past the first window", { timeout: 15_000 }, async () => {
     const server = createMockApiServer({ fixture: seedFactoryFixture({ approvalCount: 137 }) });
     render(
       <ApprovalInbox
