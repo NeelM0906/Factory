@@ -21,6 +21,8 @@ import type { RunnerProvider } from "@autostack/domain";
 import { createSqliteIngressQueue, openDatabase, SqliteDurableStore } from "@autostack/db";
 import type { IngressQueue } from "@autostack/db";
 import {
+  createAppInstallationAuth,
+  createGitHubIntegration,
   GitHubUnsupportedEventError,
   parseGitHubDelivery,
   verifyGitHubSignature
@@ -85,6 +87,15 @@ export interface StartControlPlaneOptions {
    * verification. The secret is the webhook secret configured on the GitHub App.
    */
   readonly githubIngress?: { readonly webhookSecret: string };
+  /**
+   * When provided alongside `githubIngress`, constructs `createAppInstallationAuth` and
+   * `createGitHubIntegration` so the pipeline's publish station can create draft PRs.
+   */
+  readonly githubApp?: {
+    readonly appId: string;
+    readonly privateKeyPem: string;
+    readonly installationId: string;
+  };
 }
 
 export interface ControlPlaneRuntime {
@@ -188,7 +199,8 @@ function buildDefaultPipelineStations(
   store: SqliteDurableStore,
   ids: IdFactory,
   workspaceId: WorkspaceId,
-  now: () => string
+  now: () => string,
+  delivery?: DeliveryIntegrationPort
 ): RegisterPipelineStationsDependencies {
   return {
     dependencies: {
@@ -197,7 +209,7 @@ function buildDefaultPipelineStations(
       ids,
       harness: UNCONFIGURED_HARNESS,
       runner: UNCONFIGURED_RUNNER,
-      delivery: UNCONFIGURED_DELIVERY,
+      delivery: delivery ?? UNCONFIGURED_DELIVERY,
       readRunEvents: async (runId): Promise<readonly StoredDomainEvent[]> =>
         store.readRunEvents({ workspaceId, runId }),
       workspaceId,
@@ -261,11 +273,33 @@ export async function startControlPlane(
     const sensitiveValues =
       bootstrap === undefined ? [effectiveConfig.token] : [bootstrap.hostToken];
     const registry = new HandlerRegistry({ sensitiveValues });
+    let deliveryPort: DeliveryIntegrationPort | undefined;
+    if (options.githubApp !== undefined) {
+      const githubAuth = createAppInstallationAuth({
+        appId: options.githubApp.appId,
+        privateKeyPem: options.githubApp.privateKeyPem,
+        installationId: options.githubApp.installationId,
+        fetch: globalThis.fetch,
+        userAgent: "autostack-control-plane",
+        now: () => Date.now()
+      });
+      const githubIntegration = createGitHubIntegration({
+        auth: githubAuth,
+        fetch: globalThis.fetch,
+        now: () => Date.now(),
+        userAgent: "autostack-control-plane"
+      });
+      deliveryPort = {
+        createDraftPullRequest: (request) => githubIntegration.createDraftPullRequest(request),
+        postSlackProgress: () => unconfiguredPort("DeliveryIntegrationPort.postSlackProgress")
+      };
+      log(JSON.stringify({ level: "info", event: "github_app_integration_ready" }));
+    }
     const stationConfig =
       options.pipelineStations ??
       (bootstrap === undefined
         ? undefined
-        : buildDefaultPipelineStations(store, ids, workspaceId, now));
+        : buildDefaultPipelineStations(store, ids, workspaceId, now, deliveryPort));
     if (stationConfig !== undefined) {
       registerPipelineStations(registry, stationConfig);
     }
@@ -482,8 +516,16 @@ function readKeychainPassword(service: string, account: string): string | undefi
 
 if (isEntrypoint) {
   const webhookSecret = readKeychainPassword("com.autostack.github-app", "webhook-secret");
+  const appId = readKeychainPassword("com.autostack.github-app", "app-id");
+  const privateKeyHex = readKeychainPassword("com.autostack.github-app", "private-key-pem");
+  const installationId = readKeychainPassword("com.autostack.github-app", "installation-id");
+  const privateKeyPem =
+    privateKeyHex !== undefined ? Buffer.from(privateKeyHex, "hex").toString("utf8") : undefined;
+  const hasGitHubApp =
+    appId !== undefined && privateKeyPem !== undefined && installationId !== undefined;
   void startControlPlane({
-    ...(webhookSecret !== undefined ? { githubIngress: { webhookSecret } } : {})
+    ...(webhookSecret !== undefined ? { githubIngress: { webhookSecret } } : {}),
+    ...(hasGitHubApp ? { githubApp: { appId, privateKeyPem, installationId } } : {})
   }).catch((error: unknown) => {
     console.error(
       JSON.stringify({

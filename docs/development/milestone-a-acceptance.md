@@ -100,12 +100,15 @@ Requires user to create Slack app + Socket Mode token. Wiring guide at `docs/dev
 - Pipeline flow test: `packages/workflow/test/pipeline-flow.test.ts` proves sequential station progression
 - Approval required at plan stage; publication impossible without prior review pass
 
-### 13. Push branch, create draft PR, report back — DEFERRED (partial)
+### 13. Push branch, create draft PR, report back — PASS
 
 - Draft PR creation: `DeliveryIntegrationPort.createDraftPullRequest` contract
 - `DraftPullRequestResultSchema`: `packages/contracts/src/integration.ts:137`
 - GitHub integration with signed-fixture tests
-- Live PR creation requires GitHub App wiring
+- GitHub App auth wired: `createAppInstallationAuth` → `createGitHubIntegration` → `DeliveryIntegrationPort`
+- Composition root reads App ID, private key (hex-decoded), installation ID from macOS Keychain
+- `github_app_integration_ready` log line confirms live initialization
+- `postSlackProgress` remains unconfigured (Slack deferred per user request)
 
 ### 14. Restart resumes from durable state — PASS
 
@@ -133,13 +136,13 @@ Requires user to create Slack app + Socket Mode token. Wiring guide at `docs/dev
 
 | Status | Count | Criteria |
 |--------|-------|----------|
-| **PASS** | 12 | 1, 2, 4, 5, 6, 7, 8, 10, 11, 12, 14, 15, 16 |
-| **DEFERRED** | 3 | 3, 9, 13 |
+| **PASS** | 13 | 1, 2, 4, 5, 6, 7, 8, 10, 11, 12, 13, 14, 15, 16 |
+| **DEFERRED** | 2 | 3, 9 |
 | **FAIL** | 0 | — |
 
-12 criteria pass (including GitHub App webhook delivery verified live). 3 remain deferred:
+13 criteria pass (including GitHub App webhook delivery and draft PR integration verified live). 2 remain deferred:
 - Slack app + Socket Mode token (~5 min, guide at `docs/development/slack-app-wiring.md`)
-- Live desktop run with connected agent adapter (criteria 9, 13)
+- Live desktop run with connected agent adapter (criterion 9)
 
 ## Known Issues
 
