@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { execSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { join, resolve } from "node:path";
 
@@ -11,11 +12,19 @@ import {
   type ControlPlaneBootstrap,
   type DeliveryIntegrationPort,
   type IdFactory,
+  type IngressDelivery,
+  type IntegrationIngressPort,
   type StoredDomainEvent,
   type WorkspaceId
 } from "@autostack/contracts";
 import type { RunnerProvider } from "@autostack/domain";
 import { createSqliteIngressQueue, openDatabase, SqliteDurableStore } from "@autostack/db";
+import type { IngressQueue } from "@autostack/db";
+import {
+  GitHubUnsupportedEventError,
+  parseGitHubDelivery,
+  verifyGitHubSignature
+} from "@autostack/integration-github";
 import {
   createStageRetryAt,
   HandlerRegistry,
@@ -32,6 +41,7 @@ import {
   type ControlPlaneDesktopDispatcher,
   type ControlPlaneDesktopDispatcherDependencies
 } from "./desktop-dispatcher.js";
+import { registerGitHubIngress } from "./ingress/github.js";
 import { loadConfig, loadOrCreateLocalWorkspaceId, type ControlPlaneConfig } from "./config.js";
 import { createHostDaemonClient } from "./host-daemon-client.js";
 import { LocalArtifactService } from "./local-artifact-service.js";
@@ -70,6 +80,11 @@ export interface StartControlPlaneOptions {
    * concrete `AgentHarnessPort`, `RunnerProvider`, and `DeliveryIntegrationPort`.
    */
   readonly pipelineStations?: RegisterPipelineStationsDependencies;
+  /**
+   * When provided, registers `POST /ingress/github` on the Hono app with HMAC-SHA256 signature
+   * verification. The secret is the webhook secret configured on the GitHub App.
+   */
+  readonly githubIngress?: { readonly webhookSecret: string };
 }
 
 export interface ControlPlaneRuntime {
@@ -149,6 +164,25 @@ const UNCONFIGURED_DELIVERY: DeliveryIntegrationPort = {
   createDraftPullRequest: () => unconfiguredPort("DeliveryIntegrationPort"),
   postSlackProgress: () => unconfiguredPort("DeliveryIntegrationPort")
 };
+
+function createIngressAdapter(
+  queue: IngressQueue,
+  now: () => string
+): IntegrationIngressPort {
+  const seen = new Set<string>();
+  return {
+    accept: async (delivery: IngressDelivery): Promise<{ readonly replayed: boolean }> => {
+      if (seen.has(delivery.deduplicationKey)) return { replayed: true };
+      seen.add(delivery.deduplicationKey);
+      await queue.enqueue({
+        envelopeId: delivery.deduplicationKey,
+        payload: delivery,
+        enqueuedAt: now()
+      });
+      return { replayed: false };
+    }
+  };
+}
 
 function buildDefaultPipelineStations(
   store: SqliteDurableStore,
@@ -310,6 +344,21 @@ export async function startControlPlane(
       ...(localExecution === undefined ? {} : { localExecution }),
       ingress: { isOpen: () => ingressOpen }
     });
+    if (options.githubIngress !== undefined) {
+      const webhookSecret = options.githubIngress.webhookSecret;
+      const ingressPort = createIngressAdapter(ingressQueue, now);
+      registerGitHubIngress(app, {
+        ingress: ingressPort,
+        verifySignature: (input) =>
+          verifyGitHubSignature({ ...input, secret: webhookSecret }),
+        parseDelivery: parseGitHubDelivery,
+        isUnsupportedEvent: (error) => error instanceof GitHubUnsupportedEventError,
+        now,
+        isOpen: () => ingressOpen
+      });
+      log(JSON.stringify({ level: "info", event: "github_ingress_registered" }));
+    }
+
     const desktopDispatcher =
       localExecution === undefined || options.repositoryPaths === undefined
         ? undefined
@@ -419,8 +468,23 @@ export async function startControlPlane(
 const isEntrypoint =
   process.argv[1] !== undefined && resolve(process.argv[1]) === fileURLToPath(import.meta.url);
 
+function readKeychainPassword(service: string, account: string): string | undefined {
+  try {
+    const result = execSync(
+      `security find-generic-password -s ${JSON.stringify(service)} -a ${JSON.stringify(account)} -w`,
+      { encoding: "utf8", stdio: ["pipe", "pipe", "pipe"] }
+    );
+    return result.trim();
+  } catch {
+    return undefined;
+  }
+}
+
 if (isEntrypoint) {
-  void startControlPlane().catch((error: unknown) => {
+  const webhookSecret = readKeychainPassword("com.autostack.github-app", "webhook-secret");
+  void startControlPlane({
+    ...(webhookSecret !== undefined ? { githubIngress: { webhookSecret } } : {})
+  }).catch((error: unknown) => {
     console.error(
       JSON.stringify({
         level: "error",

@@ -50,6 +50,9 @@ importers:
       '@autostack/domain':
         specifier: workspace:*
         version: link:../../packages/domain
+      '@autostack/integration-github':
+        specifier: workspace:*
+        version: link:../../packages/integration-github
       '@autostack/workflow':
         specifier: workspace:*
         version: link:../../packages/workflow
