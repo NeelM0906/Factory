@@ -500,7 +500,9 @@ export async function startControlPlane(
 }
 
 const isEntrypoint =
-  process.argv[1] !== undefined && resolve(process.argv[1]) === fileURLToPath(import.meta.url);
+  process.argv[1] !== undefined &&
+  resolve(process.argv[1]) === fileURLToPath(import.meta.url) &&
+  (process as { parentPort?: unknown }).parentPort === undefined;
 
 function readKeychainPassword(service: string, account: string): string | undefined {
   try {

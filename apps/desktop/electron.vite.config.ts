@@ -20,6 +20,7 @@ export default defineConfig({
   renderer: {
     root: "src/renderer",
     plugins: [react()],
+    server: { host: "127.0.0.1" },
     build: { outDir: resolve(import.meta.dirname, "dist/renderer"), emptyOutDir: true }
   }
 });

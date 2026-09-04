@@ -279,6 +279,7 @@ void app
     ) {
       Reflect.apply(verifier.startupFailed, verifier, [error]);
     }
+    console.error("STARTUP FAILURE:", error instanceof Error ? error.stack ?? error.message : error);
     publishRuntimeStatus({ status: "degraded", message: "Desktop startup failed closed." });
     apiToken = undefined;
     app.quit();
